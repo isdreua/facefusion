@@ -124,7 +124,7 @@ def open_stream(stream_mode : StreamMode, stream_resolution : str, stream_fps : 
 			'-g', '30',
 			'-pix_fmt', 'yuv420p'
 		])
-		commands.extend(ffmpeg_builder.set_output('udp://127.0.0.1:27000?pkt_size=1316'))
+		commands.extend(ffmpeg_builder.set_output('udp://127.0.0.1:27000?pkt_size=1316&connect=0'))
 
 	if stream_mode == 'v4l2':
 		device_directory_path = '/sys/devices/virtual/video4linux'

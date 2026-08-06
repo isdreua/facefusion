@@ -114,6 +114,10 @@ def open_stream(stream_mode : StreamMode, stream_resolution : str, stream_fps : 
 	)
 
 	if stream_mode == 'udp':
+		commands.extend([
+			'-fflags', 'nobuffer',
+			'-flags', 'low_delay'
+		])
 		commands.extend(ffmpeg_builder.set_input('-'))
 		commands.extend(ffmpeg_builder.set_stream_mode('udp'))
 		commands.extend(ffmpeg_builder.set_stream_quality(2000))

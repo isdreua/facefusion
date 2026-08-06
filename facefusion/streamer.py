@@ -1,13 +1,14 @@
 import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
-from typing import Iterator, List
+from typing import Any, Iterator, List
 
 import cv2
 from tqdm import tqdm
 
 from facefusion import ffmpeg_builder, logger, state_manager, translator
 from facefusion.audio import create_empty_audio_frame
+from facefusion.common_helper import is_windows
 from facefusion.content_analyser import analyse_stream
 from facefusion.ffmpeg import open_ffmpeg
 from facefusion.filesystem import is_directory
@@ -78,7 +79,34 @@ def process_stream_frame(source_vision_frames : List[VisionFrame], target_vision
 	return temp_vision_frame
 
 
-def open_stream(stream_mode : StreamMode, stream_resolution : str, stream_fps : Fps) -> subprocess.Popen[bytes]:
+class WindowsVirtualCameraStream:
+	def __init__(self, resolution : str, fps : int):
+		import pyvirtualcam
+		from facefusion.vision import unpack_resolution
+		width, height = unpack_resolution(resolution)
+		self.width = width
+		self.height = height
+		try:
+			self.cam = pyvirtualcam.Camera(width = width, height = height, fps = fps, device = "facefusion")
+		except Exception:
+			self.cam = pyvirtualcam.Camera(width = width, height = height, fps = fps)
+		self.stdin = self
+
+	def write(self, data : bytes) -> None:
+		import numpy
+		frame = numpy.frombuffer(data, dtype = numpy.uint8).reshape((self.height, self.width, 3))
+		self.cam.send(frame)
+		self.cam.sleep_until_next_frame()
+
+	def __del__(self) -> None:
+		if hasattr(self, 'cam') and self.cam:
+			self.cam.close()
+
+
+def open_stream(stream_mode : StreamMode, stream_resolution : str, stream_fps : Fps) -> Any:
+	if stream_mode == 'v4l2' and is_windows():
+		return WindowsVirtualCameraStream(stream_resolution, stream_fps)
+
 	commands = ffmpeg_builder.chain(
 		ffmpeg_builder.capture_video(),
 		ffmpeg_builder.set_media_resolution(stream_resolution),

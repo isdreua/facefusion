@@ -50,4 +50,6 @@ def detect_local_camera_ids(id_start : int, id_end : int) -> List[int]:
 		if camera_capture and camera_capture.isOpened():
 			local_camera_ids.append(camera_id)
 
+	clear_camera_pool()
+
 	return local_camera_ids

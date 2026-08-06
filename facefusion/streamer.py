@@ -1,8 +1,7 @@
 import os
 import subprocess
-from collections import deque
 from concurrent.futures import ThreadPoolExecutor
-from typing import Deque, Iterator, List
+from typing import Iterator, List
 
 import cv2
 from tqdm import tqdm
@@ -18,30 +17,37 @@ from facefusion.vision import extract_vision_mask, is_vision_frame, read_static_
 
 
 def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -> Iterator[VisionFrame]:
-	capture_deque : Deque[VisionFrame] = deque()
 	source_vision_frames = read_static_images(state_manager.get_item('source_paths'))
+	max_queue_size = max(2, state_manager.get_item('execution_thread_count') * 2)
 
 	with tqdm(desc = translator.get('streaming'), unit = 'frame', disable = state_manager.get_item('log_level') in [ 'warn', 'error' ]) as progress:
-		with ThreadPoolExecutor(max_workers = state_manager.get_item('execution_thread_count')) as executor:
+		executor = ThreadPoolExecutor(max_workers = state_manager.get_item('execution_thread_count'))
+		try:
 			futures = []
 
 			while camera_capture and camera_capture.isOpened():
+				if len(futures) >= max_queue_size:
+					oldest_future = futures.pop(0)
+					capture_vision_frame = oldest_future.result()
+					progress.update()
+					yield capture_vision_frame
+					continue
+
 				_, capture_vision_frame = camera_capture.read()
 				if analyse_stream(capture_vision_frame, camera_fps):
 					camera_capture.release()
+					break
 
 				if is_vision_frame(capture_vision_frame):
 					future = executor.submit(process_stream_frame, source_vision_frames, capture_vision_frame)
 					futures.append(future)
 
-				for future_done in [ future for future in futures if future.done() ]:
-					capture_vision_frame = future_done.result()
-					capture_deque.append(capture_vision_frame)
-					futures.remove(future_done)
-
-				while capture_deque:
-					progress.update()
-					yield capture_deque.popleft()
+			for future in futures:
+				capture_vision_frame = future.result()
+				progress.update()
+				yield capture_vision_frame
+		finally:
+			executor.shutdown(wait=False)
 
 
 def process_stream_frame(source_vision_frames : List[VisionFrame], target_vision_frame : VisionFrame) -> VisionFrame:

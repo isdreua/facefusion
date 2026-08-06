@@ -18,7 +18,7 @@ from facefusion.vision import extract_vision_mask, is_vision_frame, read_static_
 
 def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -> Iterator[VisionFrame]:
 	source_vision_frames = read_static_images(state_manager.get_item('source_paths'))
-	max_queue_size = max(2, state_manager.get_item('execution_thread_count') * 2)
+	max_queue_size = max(1, state_manager.get_item('execution_thread_count'))
 
 	with tqdm(desc = translator.get('streaming'), unit = 'frame', disable = state_manager.get_item('log_level') in [ 'warn', 'error' ]) as progress:
 		executor = ThreadPoolExecutor(max_workers = state_manager.get_item('execution_thread_count'))
@@ -26,22 +26,26 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -
 			futures = []
 
 			while camera_capture and camera_capture.isOpened():
-				if len(futures) >= max_queue_size:
+				# 1. Yield any completed futures in chronological order
+				while futures and futures[0].done():
 					oldest_future = futures.pop(0)
 					capture_vision_frame = oldest_future.result()
 					progress.update()
 					yield capture_vision_frame
-					continue
 
+				# 2. Read the latest frame from the camera to keep the buffer fresh
 				_, capture_vision_frame = camera_capture.read()
 				if analyse_stream(capture_vision_frame, camera_fps):
 					camera_capture.release()
 					break
 
+				# 3. Process frame if we have queue capacity, otherwise drop it to prevent delay
 				if is_vision_frame(capture_vision_frame):
-					future = executor.submit(process_stream_frame, source_vision_frames, capture_vision_frame)
-					futures.append(future)
+					if len(futures) < max_queue_size:
+						future = executor.submit(process_stream_frame, source_vision_frames, capture_vision_frame)
+						futures.append(future)
 
+			# Yield any remaining frames in order
 			for future in futures:
 				capture_vision_frame = future.result()
 				progress.update()

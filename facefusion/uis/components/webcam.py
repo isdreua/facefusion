@@ -85,7 +85,7 @@ def pre_stop() -> Tuple[gradio.File, gradio.Image, gradio.Button, gradio.Button]
 
 def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : str, webcam_fps : Fps) -> Iterator[VisionFrame]:
 	state_manager.init_item('face_selector_mode', 'one')
-	state_manager.init_item('webcam_performance_overlay', False)
+	state_manager.init_item('webcam_performance_overlay', 'none')
 	state_manager.sync_state()
 
 	camera_capture = get_local_camera_capture(webcam_device_id)
@@ -104,8 +104,9 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 			capture_vision_frame = cv2.cvtColor(capture_vision_frame, cv2.COLOR_BGR2RGB)
 			capture_vision_frame = fit_cover_frame(capture_vision_frame, (webcam_width, webcam_height))
 
-			if state_manager.get_item('webcam_performance_overlay'):
-				capture_vision_frame = PERFORMANCE_OVERLAY.render(capture_vision_frame, capture_time)
+			overlay_mode = state_manager.get_item('webcam_performance_overlay')
+			if overlay_mode in [ 'simple', 'advanced' ]:
+				capture_vision_frame = PERFORMANCE_OVERLAY.render(capture_vision_frame, capture_time, overlay_mode)
 
 			if webcam_mode == 'inline':
 				yield capture_vision_frame

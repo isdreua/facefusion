@@ -12,7 +12,7 @@ WEBCAM_DEVICE_ID_DROPDOWN : Optional[gradio.Dropdown] = None
 WEBCAM_MODE_RADIO : Optional[gradio.Radio] = None
 WEBCAM_RESOLUTION_DROPDOWN : Optional[gradio.Dropdown] = None
 WEBCAM_FPS_SLIDER : Optional[gradio.Slider] = None
-WEBCAM_PERFORMANCE_OVERLAY_CHECKBOX : Optional[gradio.Checkbox] = None
+WEBCAM_PERFORMANCE_OVERLAY_RADIO : Optional[gradio.Radio] = None
 
 
 def render() -> None:
@@ -20,7 +20,7 @@ def render() -> None:
 	global WEBCAM_MODE_RADIO
 	global WEBCAM_RESOLUTION_DROPDOWN
 	global WEBCAM_FPS_SLIDER
-	global WEBCAM_PERFORMANCE_OVERLAY_CHECKBOX
+	global WEBCAM_PERFORMANCE_OVERLAY_RADIO
 
 	local_camera_ids = detect_local_camera_ids(0, 10) or [ 'none' ] #type:ignore[list-item]
 	WEBCAM_DEVICE_ID_DROPDOWN = gradio.Dropdown(
@@ -45,21 +45,22 @@ def render() -> None:
 		minimum = 1,
 		maximum = 30
 	)
-	WEBCAM_PERFORMANCE_OVERLAY_CHECKBOX = gradio.Checkbox(
-		label = translator.get('uis.webcam_performance_overlay_checkbox'),
-		value = False
+	WEBCAM_PERFORMANCE_OVERLAY_RADIO = gradio.Radio(
+		label = translator.get('uis.webcam_performance_overlay_radio'),
+		choices = [ 'none', 'simple', 'advanced' ],
+		value = 'none'
 	)
 	register_ui_component('webcam_device_id_dropdown', WEBCAM_DEVICE_ID_DROPDOWN)
 	register_ui_component('webcam_mode_radio', WEBCAM_MODE_RADIO)
 	register_ui_component('webcam_resolution_dropdown', WEBCAM_RESOLUTION_DROPDOWN)
 	register_ui_component('webcam_fps_slider', WEBCAM_FPS_SLIDER)
-	register_ui_component('webcam_performance_overlay_checkbox', WEBCAM_PERFORMANCE_OVERLAY_CHECKBOX)
+	register_ui_component('webcam_performance_overlay_radio', WEBCAM_PERFORMANCE_OVERLAY_RADIO)
 
 
 def listen() -> None:
-	if WEBCAM_PERFORMANCE_OVERLAY_CHECKBOX:
-		WEBCAM_PERFORMANCE_OVERLAY_CHECKBOX.change(update_performance_overlay, inputs = WEBCAM_PERFORMANCE_OVERLAY_CHECKBOX)
+	if WEBCAM_PERFORMANCE_OVERLAY_RADIO:
+		WEBCAM_PERFORMANCE_OVERLAY_RADIO.change(update_performance_overlay, inputs = WEBCAM_PERFORMANCE_OVERLAY_RADIO)
 
 
-def update_performance_overlay(performance_overlay : bool) -> None:
+def update_performance_overlay(performance_overlay : str) -> None:
 	state_manager.set_item('webcam_performance_overlay', performance_overlay)

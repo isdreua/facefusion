@@ -1,7 +1,8 @@
 import os
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Iterator, List
+from typing import Any, Iterator, List, Tuple
 
 import cv2
 from tqdm import tqdm
@@ -17,7 +18,7 @@ from facefusion.types import Fps, StreamMode, VisionFrame
 from facefusion.vision import extract_vision_mask, is_vision_frame, read_static_images
 
 
-def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -> Iterator[VisionFrame]:
+def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -> Iterator[Tuple[VisionFrame, float]]:
 	source_vision_frames = read_static_images(state_manager.get_item('source_paths'))
 	max_queue_size = max(1, state_manager.get_item('execution_thread_count'))
 
@@ -30,11 +31,12 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -
 				# 1. Yield any completed futures in chronological order
 				while futures and futures[0].done():
 					oldest_future = futures.pop(0)
-					capture_vision_frame = oldest_future.result()
+					capture_vision_frame, capture_time = oldest_future.result()
 					progress.update()
-					yield capture_vision_frame
+					yield capture_vision_frame, capture_time
 
 				# 2. Read the latest frame from the camera to keep the buffer fresh
+				capture_time = time.perf_counter()
 				_, capture_vision_frame = camera_capture.read()
 				if analyse_stream(capture_vision_frame, camera_fps):
 					camera_capture.release()
@@ -43,19 +45,19 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -
 				# 3. Process frame if we have queue capacity, otherwise drop it to prevent delay
 				if is_vision_frame(capture_vision_frame):
 					if len(futures) < max_queue_size:
-						future = executor.submit(process_stream_frame, source_vision_frames, capture_vision_frame)
+						future = executor.submit(process_stream_frame, source_vision_frames, capture_vision_frame, capture_time)
 						futures.append(future)
 
 			# Yield any remaining frames in order
 			for future in futures:
-				capture_vision_frame = future.result()
+				capture_vision_frame, capture_time = future.result()
 				progress.update()
-				yield capture_vision_frame
+				yield capture_vision_frame, capture_time
 		finally:
 			executor.shutdown(wait=False)
 
 
-def process_stream_frame(source_vision_frames : List[VisionFrame], target_vision_frame : VisionFrame) -> VisionFrame:
+def process_stream_frame(source_vision_frames : List[VisionFrame], target_vision_frame : VisionFrame, capture_time : float) -> Tuple[VisionFrame, float]:
 	source_audio_frame = create_empty_audio_frame()
 	source_voice_frame = create_empty_audio_frame()
 	temp_vision_frame = target_vision_frame.copy()
@@ -76,7 +78,7 @@ def process_stream_frame(source_vision_frames : List[VisionFrame], target_vision
 			})
 		logger.enable()
 
-	return temp_vision_frame
+	return temp_vision_frame, capture_time
 
 
 class WindowsVirtualCameraStream:

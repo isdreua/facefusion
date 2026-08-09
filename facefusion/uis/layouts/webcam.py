@@ -67,6 +67,7 @@ def listen() -> None:
 	lip_syncer_options.listen()
 	execution.listen()
 	execution_thread_count.listen()
+	webcam_options.listen()
 	webcam.listen()
 
 

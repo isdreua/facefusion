@@ -1,5 +1,6 @@
 import importlib
 import random
+import threading
 from functools import lru_cache
 from time import sleep, time
 from typing import List
@@ -21,6 +22,7 @@ INFERENCE_POOL_SET : InferencePoolSet =\
 	'ui': {}
 }
 MODEL_BYTES_CACHE = {}
+INFERENCE_LOCK = threading.Lock()
 
 
 def get_inference_pool(module_name : str, model_names : List[str], model_source_set : DownloadSet) -> InferencePool:
@@ -32,18 +34,19 @@ def get_inference_pool(module_name : str, model_names : List[str], model_source_
 	has_arena_leak = has_execution_provider('cuda') and get_onnxruntime_version() > (1, 24, 4)
 	app_context = detect_app_context()
 
-	for execution_device_id in execution_device_ids:
-		inference_context = get_inference_context(module_name, model_names, execution_device_id, execution_providers)
+	with INFERENCE_LOCK:
+		for execution_device_id in execution_device_ids:
+			inference_context = get_inference_context(module_name, model_names, execution_device_id, execution_providers)
 
-		if not has_arena_leak:
-			if app_context == 'cli' and INFERENCE_POOL_SET.get('ui').get(inference_context):
-				INFERENCE_POOL_SET['cli'][inference_context] = INFERENCE_POOL_SET.get('ui').get(inference_context)
-			if app_context == 'ui' and INFERENCE_POOL_SET.get('cli').get(inference_context):
-				INFERENCE_POOL_SET['ui'][inference_context] = INFERENCE_POOL_SET.get('cli').get(inference_context)
+			if not has_arena_leak:
+				if app_context == 'cli' and INFERENCE_POOL_SET.get('ui').get(inference_context):
+					INFERENCE_POOL_SET['cli'][inference_context] = INFERENCE_POOL_SET.get('ui').get(inference_context)
+				if app_context == 'ui' and INFERENCE_POOL_SET.get('cli').get(inference_context):
+					INFERENCE_POOL_SET['ui'][inference_context] = INFERENCE_POOL_SET.get('cli').get(inference_context)
 
-		if not INFERENCE_POOL_SET.get(app_context).get(inference_context):
-			inference_providers = resolve_static_inference_providers(module_name, execution_device_id)
-			INFERENCE_POOL_SET[app_context][inference_context] = create_inference_pool(model_source_set, inference_providers)
+			if not INFERENCE_POOL_SET.get(app_context).get(inference_context):
+				inference_providers = resolve_static_inference_providers(module_name, execution_device_id)
+				INFERENCE_POOL_SET[app_context][inference_context] = create_inference_pool(model_source_set, inference_providers)
 
 	current_inference_context = get_inference_context(module_name, model_names, random.choice(execution_device_ids), execution_providers)
 	return INFERENCE_POOL_SET.get(app_context).get(current_inference_context)

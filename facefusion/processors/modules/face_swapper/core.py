@@ -686,29 +686,33 @@ def prepare_source_frame(source_face : Face, source_vision_frame : VisionFrame) 
 	return source_vision_frame
 
 
+SOURCE_EMBEDDING_CACHE = {}
+
+
 def prepare_source_embedding(source_face : Face) -> Embedding:
+	cache_key = (id(source_face), state_manager.get_item('face_swapper_model'))
+	if cache_key in SOURCE_EMBEDDING_CACHE:
+		return SOURCE_EMBEDDING_CACHE[cache_key]
+
 	model_type = get_model_options().get('type')
 
 	if model_type == 'ghost':
 		source_embedding = source_face.embedding.reshape(-1, 512)
 		source_embedding, _ = convert_source_embedding(source_embedding)
 		source_embedding = source_embedding.reshape(1, -1)
-		return source_embedding
-
-	if model_type == 'hyperswap':
+	elif model_type == 'hyperswap':
 		source_embedding = source_face.embedding_norm.reshape((1, -1))
-		return source_embedding
-
-	if model_type == 'inswapper':
+	elif model_type == 'inswapper':
 		model_path = get_model_options().get('sources').get('face_swapper').get('path')
 		model_initializer = get_static_model_initializer(model_path)
 		source_embedding = source_face.embedding.reshape((1, -1))
 		source_embedding = numpy.dot(source_embedding, model_initializer) / numpy.linalg.norm(source_embedding)
-		return source_embedding
+	else:
+		source_embedding = source_face.embedding.reshape(-1, 512)
+		_, source_embedding_norm = convert_source_embedding(source_embedding)
+		source_embedding = source_embedding_norm.reshape(1, -1)
 
-	source_embedding = source_face.embedding.reshape(-1, 512)
-	_, source_embedding_norm = convert_source_embedding(source_embedding)
-	source_embedding = source_embedding_norm.reshape(1, -1)
+	SOURCE_EMBEDDING_CACHE[cache_key] = source_embedding
 	return source_embedding
 
 

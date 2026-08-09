@@ -18,9 +18,19 @@ from facefusion.types import Fps, StreamMode, VisionFrame
 from facefusion.vision import extract_vision_mask, is_vision_frame, read_static_images
 
 
+from types import ModuleType
+
 def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -> Iterator[Tuple[VisionFrame, float]]:
 	source_vision_frames = read_static_images(state_manager.get_item('source_paths'))
 	max_queue_size = max(1, state_manager.get_item('execution_thread_count'))
+	processor_modules = get_processors_modules(state_manager.get_item('processors'))
+	
+	# Pre-validate processors once before streaming starts to avoid per-frame disk I/O and face detection
+	for processor_module in processor_modules:
+		logger.disable()
+		processor_module.pre_process('stream')
+		logger.enable()
+
 	frame_index = 0
 	last_processed_frame = None
 
@@ -61,7 +71,7 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -
 					if should_skip and last_processed_frame is not None:
 						yield last_processed_frame, capture_time
 					elif len(futures) < max_queue_size:
-						future = executor.submit(process_stream_frame, source_vision_frames, capture_vision_frame, capture_time)
+						future = executor.submit(process_stream_frame, source_vision_frames, capture_vision_frame, capture_time, processor_modules)
 						futures.append(future)
 
 			# Yield any remaining frames in order
@@ -73,25 +83,23 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -
 			executor.shutdown(wait=False)
 
 
-def process_stream_frame(source_vision_frames : List[VisionFrame], target_vision_frame : VisionFrame, capture_time : float) -> Tuple[VisionFrame, float]:
+def process_stream_frame(source_vision_frames : List[VisionFrame], target_vision_frame : VisionFrame, capture_time : float, processor_modules : List[ModuleType]) -> Tuple[VisionFrame, float]:
 	source_audio_frame = create_empty_audio_frame()
 	source_voice_frame = create_empty_audio_frame()
 	temp_vision_frame = target_vision_frame.copy()
 	temp_vision_mask = extract_vision_mask(temp_vision_frame)
 
-	for processor_module in get_processors_modules(state_manager.get_item('processors')):
+	for processor_module in processor_modules:
 		logger.disable()
-		if processor_module.pre_process('stream'):
-			logger.enable()
-			temp_vision_frame, temp_vision_mask = processor_module.process_frame(
-			{
-				'source_vision_frames': source_vision_frames,
-				'source_audio_frame': source_audio_frame,
-				'source_voice_frame': source_voice_frame,
-				'target_vision_frames': [ target_vision_frame ],
-				'temp_vision_frame': temp_vision_frame,
-				'temp_vision_mask': temp_vision_mask
-			})
+		temp_vision_frame, temp_vision_mask = processor_module.process_frame(
+		{
+			'source_vision_frames': source_vision_frames,
+			'source_audio_frame': source_audio_frame,
+			'source_voice_frame': source_voice_frame,
+			'target_vision_frames': [ target_vision_frame ],
+			'temp_vision_frame': temp_vision_frame,
+			'temp_vision_mask': temp_vision_mask
+		})
 		logger.enable()
 
 	return temp_vision_frame, capture_time

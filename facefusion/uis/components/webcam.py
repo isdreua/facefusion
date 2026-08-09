@@ -6,6 +6,7 @@ import gradio
 from facefusion import state_manager, translator
 from facefusion.camera_manager import clear_camera_pool, get_local_camera_capture
 from facefusion.filesystem import has_image
+from facefusion.overlay import PERFORMANCE_OVERLAY
 from facefusion.streamer import multi_process_capture, open_stream
 from facefusion.types import Fps, VisionFrame, WebcamMode
 from facefusion.uis.core import get_ui_component
@@ -84,6 +85,7 @@ def pre_stop() -> Tuple[gradio.File, gradio.Image, gradio.Button, gradio.Button]
 
 def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : str, webcam_fps : Fps) -> Iterator[VisionFrame]:
 	state_manager.init_item('face_selector_mode', 'one')
+	state_manager.init_item('webcam_performance_overlay', False)
 	state_manager.sync_state()
 
 	camera_capture = get_local_camera_capture(webcam_device_id)
@@ -98,9 +100,12 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 		camera_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, webcam_height)
 		camera_capture.set(cv2.CAP_PROP_FPS, webcam_fps)
 
-		for capture_vision_frame in multi_process_capture(camera_capture, webcam_fps):
+		for capture_vision_frame, capture_time in multi_process_capture(camera_capture, webcam_fps):
 			capture_vision_frame = cv2.cvtColor(capture_vision_frame, cv2.COLOR_BGR2RGB)
 			capture_vision_frame = fit_cover_frame(capture_vision_frame, (webcam_width, webcam_height))
+
+			if state_manager.get_item('webcam_performance_overlay'):
+				capture_vision_frame = PERFORMANCE_OVERLAY.render(capture_vision_frame, capture_time)
 
 			if webcam_mode == 'inline':
 				yield capture_vision_frame

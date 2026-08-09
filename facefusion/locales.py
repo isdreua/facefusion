@@ -268,7 +268,8 @@ LOCALES : Locales =\
 			'webcam_device_id_dropdown': 'WEBCAM DEVICE ID',
 			'webcam_mode_radio': 'WEBCAM MODE',
 			'webcam_resolution_dropdown': 'WEBCAM RESOLUTION',
-			'webcam_performance_overlay_radio': 'PERFORMANCE OVERLAY'
+			'webcam_performance_overlay_radio': 'PERFORMANCE OVERLAY',
+			'webcam_frame_skipping_radio': 'FRAME SKIPPING'
 		}
 	}
 }

@@ -21,6 +21,8 @@ from facefusion.vision import extract_vision_mask, is_vision_frame, read_static_
 def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -> Iterator[Tuple[VisionFrame, float]]:
 	source_vision_frames = read_static_images(state_manager.get_item('source_paths'))
 	max_queue_size = max(1, state_manager.get_item('execution_thread_count'))
+	frame_index = 0
+	last_processed_frame = None
 
 	with tqdm(desc = translator.get('streaming'), unit = 'frame', disable = state_manager.get_item('log_level') in [ 'warn', 'error' ]) as progress:
 		executor = ThreadPoolExecutor(max_workers = state_manager.get_item('execution_thread_count'))
@@ -32,6 +34,7 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -
 				while futures and futures[0].done():
 					oldest_future = futures.pop(0)
 					capture_vision_frame, capture_time = oldest_future.result()
+					last_processed_frame = capture_vision_frame
 					progress.update()
 					yield capture_vision_frame, capture_time
 
@@ -42,9 +45,22 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -
 					camera_capture.release()
 					break
 
-				# 3. Process frame if we have queue capacity, otherwise drop it to prevent delay
+				# 3. Process frame or apply temporal skipping to sustain target FPS
 				if is_vision_frame(capture_vision_frame):
-					if len(futures) < max_queue_size:
+					frame_index += 1
+					skipping_mode = state_manager.get_item('webcam_frame_skipping') or 'disabled'
+
+					should_skip = False
+					if skipping_mode == '1-in-2' and frame_index % 2 != 0:
+						should_skip = True
+					elif skipping_mode == '1-in-3' and frame_index % 3 != 0:
+						should_skip = True
+					elif skipping_mode == 'adaptive' and len(futures) >= max_queue_size:
+						should_skip = True
+
+					if should_skip and last_processed_frame is not None:
+						yield last_processed_frame, capture_time
+					elif len(futures) < max_queue_size:
 						future = executor.submit(process_stream_frame, source_vision_frames, capture_vision_frame, capture_time)
 						futures.append(future)
 

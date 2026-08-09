@@ -20,6 +20,7 @@ INFERENCE_POOL_SET : InferencePoolSet =\
 	'cli': {},
 	'ui': {}
 }
+MODEL_BYTES_CACHE = {}
 
 
 def get_inference_pool(module_name : str, model_names : List[str], model_source_set : DownloadSet) -> InferencePool:
@@ -80,7 +81,11 @@ def create_inference_session(model_path : str, inference_providers : List[Infere
 	start_time = time()
 
 	try:
-		inference_session = InferenceSession(model_path, providers = inference_providers)
+		if model_path not in MODEL_BYTES_CACHE:
+			with open(model_path, 'rb') as model_file:
+				MODEL_BYTES_CACHE[model_path] = model_file.read()
+
+		inference_session = InferenceSession(MODEL_BYTES_CACHE.get(model_path), providers = inference_providers)
 		logger.debug(translator.get('loading_model_succeeded').format(model_name = model_file_name, seconds = calculate_end_time(start_time)), __name__)
 		return inference_session
 

@@ -134,9 +134,10 @@ class PerformanceOverlay:
 		cv2.putText(overlay, f'Res: {frame_width}x{frame_height} | Threads: {threads} ({prov_str})', (box_x + 10, cur_y), font, font_scale, (220, 230, 240), 1, cv2.LINE_AA)
 		cur_y += line_spacing
 
-		# Face Selector
+		# Face Selector & Frame Skipping
 		selector_mode = state_manager.get_item('face_selector_mode') or 'one'
-		cv2.putText(overlay, f'Face Selector: {selector_mode}', (box_x + 10, cur_y), font, font_scale, (220, 230, 240), 1, cv2.LINE_AA)
+		skipping_mode = state_manager.get_item('webcam_frame_skipping') or 'disabled'
+		cv2.putText(overlay, f'Selector: {selector_mode} | Skipping: {skipping_mode}', (box_x + 10, cur_y), font, font_scale, (220, 230, 240), 1, cv2.LINE_AA)
 		cur_y += line_spacing
 
 		# Active Processors and Models

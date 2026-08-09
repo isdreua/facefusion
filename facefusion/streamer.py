@@ -18,7 +18,38 @@ from facefusion.types import Fps, StreamMode, VisionFrame
 from facefusion.vision import extract_vision_mask, is_vision_frame, read_static_images
 
 
+import threading
+import queue
 from types import ModuleType
+
+class CameraCaptureThread(threading.Thread):
+	def __init__(self, camera_capture: cv2.VideoCapture):
+		super().__init__()
+		self.camera_capture = camera_capture
+		self.frame_queue = queue.Queue(maxsize=1)
+		self.running = True
+		self.daemon = True
+
+	def run(self):
+		while self.running and self.camera_capture.isOpened():
+			capture_time = time.perf_counter()
+			ret, frame = self.camera_capture.read()
+			if not ret:
+				self.running = False
+				break
+			if self.frame_queue.full():
+				try:
+					self.frame_queue.get_nowait()
+				except queue.Empty:
+					pass
+			self.frame_queue.put((capture_time, frame))
+
+	def stop(self):
+		self.running = False
+
+def analyse_stream_background(vision_frame: VisionFrame, video_fps: Fps, stop_event: threading.Event):
+	if analyse_stream(vision_frame, video_fps):
+		stop_event.set()
 
 def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -> Iterator[Tuple[VisionFrame, float]]:
 	source_vision_frames = read_static_images(state_manager.get_item('source_paths'))
@@ -35,11 +66,16 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -
 	last_processed_frame = None
 
 	with tqdm(desc = translator.get('streaming'), unit = 'frame', disable = state_manager.get_item('log_level') in [ 'warn', 'error' ]) as progress:
-		executor = ThreadPoolExecutor(max_workers = state_manager.get_item('execution_thread_count'))
+		# Add +1 to max_workers to accommodate the background NSFW analysis without stalling frame processing
+		executor = ThreadPoolExecutor(max_workers = state_manager.get_item('execution_thread_count') + 1)
+		capture_thread = CameraCaptureThread(camera_capture)
+		capture_thread.start()
+		stop_event = threading.Event()
+		
 		try:
 			futures = []
 
-			while camera_capture and camera_capture.isOpened():
+			while capture_thread.running and not stop_event.is_set():
 				# 1. Yield any completed futures in chronological order
 				while futures and futures[0].done():
 					oldest_future = futures.pop(0)
@@ -48,14 +84,16 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -
 					progress.update()
 					yield capture_vision_frame, capture_time
 
-				# 2. Read the latest frame from the camera to keep the buffer fresh
-				capture_time = time.perf_counter()
-				_, capture_vision_frame = camera_capture.read()
-				if analyse_stream(capture_vision_frame, camera_fps):
-					camera_capture.release()
-					break
+				# 2. Read the latest frame from the camera thread (non-blocking yield delay)
+				try:
+					capture_time, capture_vision_frame = capture_thread.frame_queue.get(timeout=0.005)
+				except queue.Empty:
+					continue
 
-				# 3. Process frame or apply temporal skipping to sustain target FPS
+				# 3. Fire-and-forget NSFW analysis to background to avoid blocking the main thread for 50ms+
+				executor.submit(analyse_stream_background, capture_vision_frame.copy(), camera_fps, stop_event)
+
+				# 4. Process frame or apply temporal skipping to sustain target FPS
 				if is_vision_frame(capture_vision_frame):
 					frame_index += 1
 					skipping_mode = state_manager.get_item('webcam_frame_skipping') or 'disabled'
@@ -74,12 +112,17 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -
 						future = executor.submit(process_stream_frame, source_vision_frames, capture_vision_frame, capture_time, processor_modules)
 						futures.append(future)
 
+			if stop_event.is_set():
+				camera_capture.release()
+
 			# Yield any remaining frames in order
 			for future in futures:
 				capture_vision_frame, capture_time = future.result()
 				progress.update()
 				yield capture_vision_frame, capture_time
 		finally:
+			capture_thread.stop()
+			capture_thread.join()
 			executor.shutdown(wait=False)
 
 

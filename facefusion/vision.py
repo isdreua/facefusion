@@ -233,6 +233,8 @@ def restrict_frame(vision_frame : VisionFrame, resolution : Resolution) -> Visio
 
 def fit_contain_frame(vision_frame : VisionFrame, resolution : Resolution) -> VisionFrame:
 	contain_width, contain_height = resolution
+	if vision_frame.shape[:2] == (contain_height, contain_width):
+		return vision_frame
 	height, width = vision_frame.shape[:2]
 	scale = min(contain_height / height, contain_width / width)
 	new_width = int(width * scale)
@@ -248,6 +250,8 @@ def fit_contain_frame(vision_frame : VisionFrame, resolution : Resolution) -> Vi
 
 def fit_cover_frame(vision_frame : VisionFrame, resolution : Resolution) -> VisionFrame:
 	cover_width, cover_height = resolution
+	if vision_frame.shape[:2] == (cover_height, cover_width):
+		return vision_frame
 	height, width = vision_frame.shape[:2]
 	scale = max(cover_width / width, cover_height / height)
 	new_width = int(width * scale)

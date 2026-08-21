@@ -3,7 +3,7 @@ import random
 import threading
 from functools import lru_cache
 from time import sleep, time
-from typing import List
+from typing import Dict, List
 
 from onnxruntime import InferenceSession
 
@@ -22,6 +22,7 @@ INFERENCE_POOL_SET : InferencePoolSet =\
 	'ui': {}
 }
 MODEL_BYTES_CACHE = {}
+INFERENCE_CONTEXT_MODEL_PATHS : Dict[str, List[str]] = {}
 INFERENCE_LOCK = threading.Lock()
 
 
@@ -48,6 +49,7 @@ def get_inference_pool(module_name : str, model_names : List[str], model_source_
 				if not INFERENCE_POOL_SET.get(app_context).get(inference_context):
 					inference_providers = resolve_static_inference_providers(module_name, execution_device_id)
 					INFERENCE_POOL_SET[app_context][inference_context] = create_inference_pool(model_source_set, inference_providers)
+					INFERENCE_CONTEXT_MODEL_PATHS[inference_context] = collect_model_paths(model_source_set)
 
 	current_inference_context = get_inference_context(module_name, model_names, random.choice(execution_device_ids), execution_providers)
 	return INFERENCE_POOL_SET.get(app_context).get(current_inference_context)
@@ -75,12 +77,18 @@ def create_inference_pool(model_source_set : DownloadSet, inference_providers : 
 	return inference_pool
 
 
+def collect_model_paths(model_source_set : DownloadSet) -> List[str]:
+	return [ model_source_set.get(model_name).get('path') for model_name in model_source_set.keys() if is_file(model_source_set.get(model_name).get('path')) ]
+
+
 def clear_inference_pool(module_name : str, model_names : List[str]) -> None:
 	execution_device_ids = state_manager.get_item('execution_device_ids')
 	execution_providers = state_manager.get_item('execution_providers')
 	app_context = detect_app_context()
 
 	if is_windows() and has_execution_provider('directml'):
+		for inference_context in list(INFERENCE_POOL_SET.get(app_context).keys()):
+			evict_model_bytes(inference_context)
 		INFERENCE_POOL_SET[app_context].clear()
 
 	for execution_device_id in execution_device_ids:
@@ -88,6 +96,12 @@ def clear_inference_pool(module_name : str, model_names : List[str]) -> None:
 
 		if INFERENCE_POOL_SET.get(app_context).get(inference_context):
 			del INFERENCE_POOL_SET[app_context][inference_context]
+			evict_model_bytes(inference_context)
+
+
+def evict_model_bytes(inference_context : str) -> None:
+	for model_path in INFERENCE_CONTEXT_MODEL_PATHS.pop(inference_context, []):
+		MODEL_BYTES_CACHE.pop(model_path, None)
 
 
 def create_inference_session(model_path : str, inference_providers : List[InferenceProvider]) -> InferenceSession:

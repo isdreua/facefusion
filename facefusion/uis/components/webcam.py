@@ -85,8 +85,6 @@ def pre_stop() -> Tuple[gradio.File, gradio.Image, gradio.Button, gradio.Button]
 
 def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : str, webcam_fps : Fps) -> Iterator[VisionFrame]:
 	state_manager.init_item('face_selector_mode', 'one')
-	state_manager.init_item('webcam_performance_overlay', 'none')
-	state_manager.init_item('webcam_frame_skipping', 'disabled')
 	state_manager.sync_state()
 
 	camera_capture = get_local_camera_capture(webcam_device_id)

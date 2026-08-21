@@ -591,6 +591,7 @@ def post_process() -> None:
 
 	if state_manager.get_item('video_memory_strategy') in [ 'strict', 'moderate' ]:
 		get_static_model_initializer.cache_clear()
+		SOURCE_EMBEDDING_CACHE.clear()
 		clear_inference_pool()
 
 	if state_manager.get_item('video_memory_strategy') == 'strict':

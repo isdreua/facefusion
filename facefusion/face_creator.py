@@ -101,17 +101,18 @@ def get_static_faces(vision_frames : List[VisionFrame]) -> List[Face]:
 	many_faces : List[Face] = []
 
 	for vision_frame in vision_frames:
-		faces = face_store.get_faces(vision_frame)
+		vision_hash = face_store.create_vision_hash(vision_frame)
+		faces = face_store.get_faces(vision_hash)
 
 		if not faces:
-			with face_store.resolve_lock(vision_frame):
-				faces = face_store.get_faces(vision_frame)
+			with face_store.resolve_lock(vision_hash):
+				faces = face_store.get_faces(vision_hash)
 
 				if not faces:
 					faces = get_many_faces([ vision_frame ])
 
 					if faces:
-						face_store.set_faces(vision_frame, faces)
+						face_store.set_faces(vision_hash, faces)
 
 		many_faces.extend(faces)
 

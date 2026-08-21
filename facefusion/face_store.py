@@ -18,19 +18,20 @@ def _limit_cache_size() -> None:
 			pass
 
 
-def get_faces(vision_frame : VisionFrame) -> Optional[List[Face]]:
+def create_vision_hash(vision_frame : VisionFrame) -> Optional[str]:
 	if is_vision_frame(vision_frame):
-		vision_hash = create_hash(vision_frame.tobytes())
-
-		if FACE_STORE.get(vision_hash):
-			return FACE_STORE.get(vision_hash).get('faces')
-
+		return create_hash(vision_frame.tobytes())
 	return None
 
 
-def set_faces(vision_frame : VisionFrame, faces : List[Face]) -> None:
-	if is_vision_frame(vision_frame):
-		vision_hash = create_hash(vision_frame.tobytes())
+def get_faces(vision_hash : Optional[str]) -> Optional[List[Face]]:
+	if vision_hash and FACE_STORE.get(vision_hash):
+		return FACE_STORE.get(vision_hash).get('faces')
+	return None
+
+
+def set_faces(vision_hash : Optional[str], faces : List[Face]) -> None:
+	if vision_hash:
 		if vision_hash not in FACE_STORE:
 			_limit_cache_size()
 		FACE_STORE.setdefault(vision_hash,
@@ -39,9 +40,8 @@ def set_faces(vision_frame : VisionFrame, faces : List[Face]) -> None:
 		})['faces'] = faces
 
 
-def resolve_lock(vision_frame : VisionFrame) -> threading.Lock:
-	if is_vision_frame(vision_frame):
-		vision_hash = create_hash(vision_frame.tobytes())
+def resolve_lock(vision_hash : Optional[str]) -> threading.Lock:
+	if vision_hash:
 		if vision_hash not in FACE_STORE:
 			_limit_cache_size()
 		return FACE_STORE.setdefault(vision_hash,

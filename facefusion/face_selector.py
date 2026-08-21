@@ -6,7 +6,7 @@ import numpy
 import facefusion.choices
 from facefusion import state_manager
 from facefusion.common_helper import get_first, get_middle
-from facefusion.face_creator import get_face_analysis_features, get_one_face, get_static_faces, set_face_analysis_features
+from facefusion.face_creator import get_face_analysis_features, get_one_face, get_static_faces, set_face_analysis_features, set_face_cache_bypass
 from facefusion.face_tracker import track_faces
 from facefusion.types import Face, FaceSelectorOrder, Gender, Race, Score, VisionFrame
 
@@ -41,10 +41,15 @@ def select_faces(reference_vision_frame : VisionFrame, source_vision_frames : Li
 	if FACE_SELECTION_CONTEXT.enabled and FACE_SELECTION_CONTEXT.target_faces is not None:
 		target_faces = FACE_SELECTION_CONTEXT.target_faces
 	else:
-		if state_manager.get_item('face_tracker_score') > 0:
-			target_faces = track_faces(target_vision_frames, state_manager.get_item('face_tracker_score'))
-		else:
-			target_faces = get_static_faces([ get_middle(target_vision_frames) ])
+		# Streamed target frames are unique, so hashing them for the face store only costs a full frame scan per frame
+		set_face_cache_bypass(FACE_SELECTION_CONTEXT.enabled)
+		try:
+			if state_manager.get_item('face_tracker_score') > 0:
+				target_faces = track_faces(target_vision_frames, state_manager.get_item('face_tracker_score'))
+			else:
+				target_faces = get_static_faces([ get_middle(target_vision_frames) ])
+		finally:
+			set_face_cache_bypass(False)
 		if FACE_SELECTION_CONTEXT.enabled:
 			FACE_SELECTION_CONTEXT.target_faces = target_faces
 

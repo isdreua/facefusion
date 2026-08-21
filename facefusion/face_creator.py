@@ -16,6 +16,7 @@ from facefusion.vision import is_vision_frame
 
 class FaceAnalysisContext(threading.local):
 	features : Optional[Set[str]] = None
+	cache_bypass = False
 
 
 FACE_ANALYSIS_CONTEXT = FaceAnalysisContext()
@@ -27,6 +28,14 @@ def set_face_analysis_features(face_analysis_features : Optional[Set[str]]) -> N
 
 def get_face_analysis_features() -> Optional[Set[str]]:
 	return getattr(FACE_ANALYSIS_CONTEXT, 'features', None)
+
+
+def set_face_cache_bypass(cache_bypass : bool) -> None:
+	FACE_ANALYSIS_CONTEXT.cache_bypass = cache_bypass
+
+
+def get_face_cache_bypass() -> bool:
+	return getattr(FACE_ANALYSIS_CONTEXT, 'cache_bypass', False)
 
 
 def create_faces(vision_frame : VisionFrame, bounding_boxes : List[BoundingBox], face_scores : List[Score], face_landmarks_5 : List[FaceLandmark5]) -> List[Face]:
@@ -123,6 +132,9 @@ def get_many_faces(vision_frames : List[VisionFrame]) -> List[Face]:
 
 
 def get_static_faces(vision_frames : List[VisionFrame]) -> List[Face]:
+	if get_face_cache_bypass():
+		return get_many_faces(vision_frames)
+
 	many_faces : List[Face] = []
 
 	for vision_frame in vision_frames:

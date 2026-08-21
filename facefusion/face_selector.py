@@ -5,14 +5,19 @@ import numpy
 import facefusion.choices
 from facefusion import state_manager
 from facefusion.common_helper import get_first, get_middle
-from facefusion.face_creator import get_one_face, get_static_faces
+from facefusion.face_creator import get_face_analysis_features, get_one_face, get_static_faces, set_face_analysis_features
 from facefusion.face_tracker import track_faces
 from facefusion.types import Face, FaceSelectorOrder, Gender, Race, Score, VisionFrame
 
 
 def select_faces(reference_vision_frame : VisionFrame, source_vision_frames : List[VisionFrame], target_vision_frames : List[VisionFrame], source_faces : Optional[List[Face]] = None) -> List[Face]:
 	if source_faces is None:
-		source_faces = get_static_faces(source_vision_frames)
+		face_analysis_features = get_face_analysis_features()
+		set_face_analysis_features(None)
+		try:
+			source_faces = get_static_faces(source_vision_frames)
+		finally:
+			set_face_analysis_features(face_analysis_features)
 
 	if state_manager.get_item('face_tracker_score') > 0:
 		target_faces = track_faces(target_vision_frames, state_manager.get_item('face_tracker_score'))
@@ -86,8 +91,10 @@ def sort_and_filter_faces(source_faces : List[Face], target_faces : List[Face]) 
 		if face_selector_race in facefusion.choices.races:
 			target_faces = filter_faces_by_race(target_faces, face_selector_race)
 
-		if state_manager.get_item('face_selector_age_start') or state_manager.get_item('face_selector_age_end'):
-			target_faces = filter_faces_by_age(target_faces, state_manager.get_item('face_selector_age_start'), state_manager.get_item('face_selector_age_end'))
+		face_selector_age_start = state_manager.get_item('face_selector_age_start') or 0
+		face_selector_age_end = state_manager.get_item('face_selector_age_end') or 100
+		if face_selector_age_start > 0 or face_selector_age_end < 100:
+			target_faces = filter_faces_by_age(target_faces, face_selector_age_start, face_selector_age_end)
 
 	return target_faces
 

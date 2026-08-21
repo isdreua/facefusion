@@ -1,8 +1,11 @@
 import os
+import queue
 import subprocess
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from types import ModuleType
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
 import cv2
 import numpy
@@ -12,16 +15,13 @@ from facefusion import ffmpeg_builder, logger, state_manager, translator
 from facefusion.audio import create_empty_audio_frame
 from facefusion.common_helper import is_windows
 from facefusion.content_analyser import analyse_frame
+from facefusion.face_creator import set_face_analysis_features
 from facefusion.ffmpeg import open_ffmpeg
 from facefusion.filesystem import is_directory
 from facefusion.processors.core import get_processors_modules
-from facefusion.types import Fps, Mask, StreamMode, VisionFrame
+from facefusion.types import AudioFrame, Fps, Mask, StreamMode, VisionFrame
 from facefusion.vision import extract_vision_mask, is_vision_frame, read_static_images
 
-
-import threading
-import queue
-from types import ModuleType
 
 class CameraCaptureThread(threading.Thread):
 	def __init__(self, camera_capture: cv2.VideoCapture):
@@ -59,6 +59,10 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -
 	processor_stream_inputs = {}
 	stream_vision_mask = None
 	face_swapper_model = state_manager.get_item('face_swapper_model')
+	source_audio_frame = create_empty_audio_frame()
+	source_voice_frame = create_empty_audio_frame()
+	source_audio_frame.setflags(write = False)
+	source_voice_frame.setflags(write = False)
 
 	# Pre-validate processors once before streaming starts to avoid per-frame disk I/O and face detection
 	validated_processor_modules = []
@@ -71,6 +75,7 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -
 			if hasattr(processor_module, 'prepare_stream_inputs'):
 				processor_stream_inputs[processor_module.__name__] = processor_module.prepare_stream_inputs(source_vision_frames)
 	processor_modules = validated_processor_modules
+	face_analysis_features = collect_stream_face_analysis_features(processor_modules)
 
 	frame_index = 0
 	nsfw_frame_index = 0
@@ -85,15 +90,33 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -
 		
 		try:
 			futures = []
+			discarded_futures = []
 
 			while capture_thread.running and not stop_event.is_set():
-				# 1. Yield any completed futures in chronological order
-				while futures and futures[0].done():
-					oldest_future = futures.pop(0)
-					capture_vision_frame, capture_time = oldest_future.result()
-					last_processed_frame = capture_vision_frame
-					progress.update()
-					yield capture_vision_frame, capture_time
+				discarded_futures = [ future for future in discarded_futures if not future.done() ]
+				skipping_mode = state_manager.get_item('webcam_frame_skipping') or 'disabled'
+
+				# 1. Preserve ordered output normally; adaptive mode drops stale work when a newer result is ready
+				if skipping_mode == 'adaptive':
+					completed_indices = [ index for index, (_, future) in enumerate(futures) if future.done() ]
+					if completed_indices:
+						latest_completed_index = completed_indices[-1]
+						_, latest_future = futures[latest_completed_index]
+						for _, stale_future in futures[:latest_completed_index]:
+							if not stale_future.cancel() and not stale_future.done():
+								discarded_futures.append(stale_future)
+						futures = futures[latest_completed_index + 1:]
+						capture_vision_frame, capture_time = latest_future.result()
+						last_processed_frame = capture_vision_frame
+						progress.update()
+						yield capture_vision_frame, capture_time
+				else:
+					while futures and futures[0][1].done():
+						_, oldest_future = futures.pop(0)
+						capture_vision_frame, capture_time = oldest_future.result()
+						last_processed_frame = capture_vision_frame
+						progress.update()
+						yield capture_vision_frame, capture_time
 
 				# 2. Read the latest frame from the camera thread (non-blocking yield delay)
 				try:
@@ -120,29 +143,28 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -
 						for processor_module in processor_modules:
 							if hasattr(processor_module, 'prepare_stream_inputs'):
 								processor_stream_inputs[processor_module.__name__] = processor_module.prepare_stream_inputs(source_vision_frames)
+						face_analysis_features = collect_stream_face_analysis_features(processor_modules)
 
 					frame_index += 1
-					skipping_mode = state_manager.get_item('webcam_frame_skipping') or 'disabled'
-
 					should_skip = False
 					if skipping_mode == '1-in-2' and frame_index % 2 != 0:
 						should_skip = True
 					elif skipping_mode == '1-in-3' and frame_index % 3 != 0:
 						should_skip = True
-					elif skipping_mode == 'adaptive' and len(futures) >= max_queue_size:
+					elif skipping_mode == 'adaptive' and len(futures) + len(discarded_futures) >= max_queue_size:
 						should_skip = True
 
 					if should_skip and last_processed_frame is not None:
 						yield last_processed_frame, capture_time
-					elif len(futures) < max_queue_size:
-						future = executor.submit(process_stream_frame, source_vision_frames, capture_vision_frame, capture_time, processor_modules, processor_stream_inputs, stream_vision_mask)
-						futures.append(future)
+					elif len(futures) + len(discarded_futures) < max_queue_size:
+						future = executor.submit(process_stream_frame, source_vision_frames, capture_vision_frame, capture_time, processor_modules, processor_stream_inputs, stream_vision_mask, source_audio_frame, source_voice_frame, face_analysis_features)
+						futures.append((frame_index, future))
 
 			if stop_event.is_set():
 				camera_capture.release()
 
 			# Yield any remaining frames in order
-			for future in futures:
+			for _, future in futures:
 				capture_vision_frame, capture_time = future.result()
 				progress.update()
 				yield capture_vision_frame, capture_time
@@ -154,32 +176,56 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -
 			executor.shutdown(wait=False)
 
 
-def process_stream_frame(source_vision_frames : List[VisionFrame], target_vision_frame : VisionFrame, capture_time : float, processor_modules : List[ModuleType], processor_stream_inputs : Optional[Dict[str, Dict[str, Any]]] = None, stream_vision_mask : Optional[Mask] = None) -> Tuple[VisionFrame, float]:
-	source_audio_frame = create_empty_audio_frame()
-	source_voice_frame = create_empty_audio_frame()
+def process_stream_frame(source_vision_frames : List[VisionFrame], target_vision_frame : VisionFrame, capture_time : float, processor_modules : List[ModuleType], processor_stream_inputs : Optional[Dict[str, Dict[str, Any]]] = None, stream_vision_mask : Optional[Mask] = None, source_audio_frame : Optional[AudioFrame] = None, source_voice_frame : Optional[AudioFrame] = None, face_analysis_features : Optional[Set[str]] = None) -> Tuple[VisionFrame, float]:
+	if source_audio_frame is None:
+		source_audio_frame = create_empty_audio_frame()
+	if source_voice_frame is None:
+		source_voice_frame = create_empty_audio_frame()
 	temp_vision_frame = target_vision_frame.copy()
 	if stream_vision_mask is not None and temp_vision_frame.ndim == 3 and temp_vision_frame.shape[2] == 3 and stream_vision_mask.shape == temp_vision_frame.shape[:2]:
 		temp_vision_mask = stream_vision_mask
 	else:
 		temp_vision_mask = extract_vision_mask(temp_vision_frame)
 
-	for processor_module in processor_modules:
-		logger.disable()
-		processor_inputs =\
-		{
-			'source_vision_frames': source_vision_frames,
-			'source_audio_frame': source_audio_frame,
-			'source_voice_frame': source_voice_frame,
-			'target_vision_frames': [ target_vision_frame ],
-			'temp_vision_frame': temp_vision_frame,
-			'temp_vision_mask': temp_vision_mask
-		}
-		if processor_stream_inputs:
-			processor_inputs.update(processor_stream_inputs.get(processor_module.__name__, {}))
-		temp_vision_frame, temp_vision_mask = processor_module.process_frame(processor_inputs)
+	set_face_analysis_features(face_analysis_features)
+	try:
+		for processor_module in processor_modules:
+			logger.disable()
+			processor_inputs =\
+			{
+				'source_vision_frames': source_vision_frames,
+				'source_audio_frame': source_audio_frame,
+				'source_voice_frame': source_voice_frame,
+				'target_vision_frames': [ target_vision_frame ],
+				'temp_vision_frame': temp_vision_frame,
+				'temp_vision_mask': temp_vision_mask
+			}
+			if processor_stream_inputs:
+				processor_inputs.update(processor_stream_inputs.get(processor_module.__name__, {}))
+			temp_vision_frame, temp_vision_mask = processor_module.process_frame(processor_inputs)
+			logger.enable()
+	finally:
 		logger.enable()
+		set_face_analysis_features(None)
 
 	return temp_vision_frame, capture_time
+
+
+def collect_stream_face_analysis_features(processor_modules : List[ModuleType]) -> Set[str]:
+	face_analysis_features : Set[str] = set()
+	for processor_module in processor_modules:
+		if hasattr(processor_module, 'get_stream_face_analysis_features'):
+			face_analysis_features.update(processor_module.get_stream_face_analysis_features())
+
+	if state_manager.get_item('face_selector_mode') == 'reference':
+		face_analysis_features.add('embedding')
+	if state_manager.get_item('face_selector_gender') or state_manager.get_item('face_selector_race'):
+		face_analysis_features.add('demographics')
+	face_selector_age_start = state_manager.get_item('face_selector_age_start') or 0
+	face_selector_age_end = state_manager.get_item('face_selector_age_end') or 100
+	if face_selector_age_start > 0 or face_selector_age_end < 100:
+		face_analysis_features.add('demographics')
+	return face_analysis_features
 
 
 class WindowsVirtualCameraStream:

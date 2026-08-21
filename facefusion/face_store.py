@@ -18,9 +18,12 @@ def _limit_cache_size() -> None:
 			pass
 
 
-def create_vision_hash(vision_frame : VisionFrame) -> Optional[str]:
+def create_vision_hash(vision_frame : VisionFrame, cache_scope : Optional[str] = None) -> Optional[str]:
 	if is_vision_frame(vision_frame):
-		return create_hash(vision_frame.tobytes())
+		vision_hash = create_hash(vision_frame.tobytes())
+		if cache_scope:
+			return vision_hash + ':' + cache_scope
+		return vision_hash
 	return None
 
 

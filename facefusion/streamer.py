@@ -12,6 +12,7 @@ import numpy
 from tqdm import tqdm
 
 from facefusion import ffmpeg_builder, logger, state_manager, translator
+from facefusion.app_context import detect_app_context, set_app_context_override
 from facefusion.audio import create_empty_audio_frame
 from facefusion.common_helper import is_windows
 from facefusion.content_analyser import analyse_frame
@@ -188,6 +189,8 @@ def process_stream_frame(source_vision_frames : List[VisionFrame], target_vision
 	else:
 		temp_vision_mask = extract_vision_mask(temp_vision_frame)
 
+	# Resolve the app context once instead of walking the stack on every state lookup of this frame
+	set_app_context_override(detect_app_context())
 	set_face_analysis_features(face_analysis_features)
 	begin_face_selection_context()
 	try:
@@ -210,6 +213,7 @@ def process_stream_frame(source_vision_frames : List[VisionFrame], target_vision
 		logger.enable()
 		end_face_selection_context()
 		set_face_analysis_features(None)
+		set_app_context_override(None)
 
 	return temp_vision_frame, capture_time
 

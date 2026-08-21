@@ -15,7 +15,7 @@ onnxruntime.set_default_logger_severity(3)
 
 
 def has_execution_provider(execution_provider : ExecutionProvider) -> bool:
-	return execution_provider in get_available_execution_providers()
+	return execution_provider in detect_available_execution_providers()
 
 
 @lru_cache()
@@ -28,7 +28,8 @@ def get_onnxruntime_version() -> Tuple[int, int, int]:
 	return major_version, minor_version, patch_version
 
 
-def get_available_execution_providers() -> List[ExecutionProvider]:
+@lru_cache()
+def detect_available_execution_providers() -> Tuple[ExecutionProvider, ...]:
 	inference_session_providers = onnxruntime.get_available_providers()
 	available_execution_providers : List[ExecutionProvider] = []
 
@@ -37,7 +38,11 @@ def get_available_execution_providers() -> List[ExecutionProvider]:
 			index = facefusion.choices.execution_providers.index(execution_provider)
 			available_execution_providers.insert(index, execution_provider)
 
-	return available_execution_providers
+	return tuple(available_execution_providers)
+
+
+def get_available_execution_providers() -> List[ExecutionProvider]:
+	return list(detect_available_execution_providers())
 
 
 def create_inference_providers(execution_device_id : int, execution_providers : List[ExecutionProvider]) -> List[InferenceProvider]:

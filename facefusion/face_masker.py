@@ -3,6 +3,7 @@ from typing import List, Tuple
 
 import cv2
 import numpy
+from cv2.typing import Size
 
 import facefusion.choices
 from facefusion import inference_manager, state_manager
@@ -185,8 +186,8 @@ def pre_check() -> bool:
 	return conditional_download_hashes(model_hash_set) and conditional_download_sources(model_source_set)
 
 
-def create_box_mask(crop_vision_frame : VisionFrame, face_mask_blur : float, face_mask_padding : Padding) -> Mask:
-	crop_size = crop_vision_frame.shape[:2][::-1]
+@lru_cache(maxsize = 128)
+def create_box_mask(crop_size : Size, face_mask_blur : float, face_mask_padding : Padding) -> Mask:
 	blur_amount = int(crop_size[0] * 0.5 * face_mask_blur)
 	blur_area = max(blur_amount // 2, 1)
 	box_mask : Mask = numpy.ones(crop_size).astype(numpy.float32)
@@ -197,6 +198,7 @@ def create_box_mask(crop_vision_frame : VisionFrame, face_mask_blur : float, fac
 
 	if blur_amount > 0:
 		box_mask = cv2.GaussianBlur(box_mask, (0, 0), blur_amount * 0.25)
+	box_mask.setflags(write = False)
 	return box_mask
 
 

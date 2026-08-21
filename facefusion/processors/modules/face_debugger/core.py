@@ -140,7 +140,7 @@ def draw_face_mask(target_face : Face, temp_vision_frame : VisionFrame) -> Visio
 		mask_color = 0, 165, 255
 
 	if 'box' in state_manager.get_item('face_mask_types'):
-		box_mask = create_box_mask(crop_vision_frame, 0, state_manager.get_item('face_mask_padding'))
+		box_mask = create_box_mask(crop_vision_frame.shape[:2][::-1], 0, state_manager.get_item('face_mask_padding'))
 		crop_masks.append(box_mask)
 
 	if 'occlusion' in state_manager.get_item('face_mask_types'):

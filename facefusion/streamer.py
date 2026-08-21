@@ -147,18 +147,25 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -
 								processor_stream_inputs[processor_module.__name__] = processor_module.prepare_stream_inputs(source_vision_frames)
 						face_analysis_features = collect_stream_face_analysis_features(processor_modules)
 
+					# Only unfinished work occupies a worker, so results awaiting their turn in the ordered
+					# output must not block submission and leave the executor idle behind a slow frame
+					pending_total = len(discarded_futures)
+					for _, future in futures:
+						if not future.done():
+							pending_total += 1
+
 					frame_index += 1
 					should_skip = False
 					if skipping_mode == '1-in-2' and frame_index % 2 != 0:
 						should_skip = True
 					elif skipping_mode == '1-in-3' and frame_index % 3 != 0:
 						should_skip = True
-					elif skipping_mode == 'adaptive' and len(futures) + len(discarded_futures) >= max_queue_size:
+					elif skipping_mode == 'adaptive' and pending_total >= max_queue_size:
 						should_skip = True
 
 					if should_skip and last_processed_frame is not None:
 						yield last_processed_frame, capture_time
-					elif len(futures) + len(discarded_futures) < max_queue_size:
+					elif pending_total < max_queue_size and len(futures) < max_queue_size * 2:
 						future = executor.submit(process_stream_frame, source_vision_frames, capture_vision_frame, capture_time, processor_modules, processor_stream_inputs, stream_vision_mask, source_audio_frame, source_voice_frame, face_analysis_features)
 						futures.append((frame_index, future))
 

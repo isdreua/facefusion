@@ -444,15 +444,19 @@ def forward_with_yunet(detect_vision_frame : VisionFrame) -> Detection:
 
 def prepare_detect_frame(temp_vision_frame : VisionFrame, face_detector_size : str) -> VisionFrame:
 	face_detector_width, face_detector_height = unpack_resolution(face_detector_size)
-	detect_vision_frame = numpy.zeros((face_detector_height, face_detector_width, 3))
-	detect_vision_frame[:temp_vision_frame.shape[0], :temp_vision_frame.shape[1], :] = temp_vision_frame
-	detect_vision_frame = numpy.expand_dims(detect_vision_frame.transpose(2, 0, 1), axis = 0).astype(numpy.float32)
+	temp_height, temp_width = temp_vision_frame.shape[:2]
+	detect_vision_frame = numpy.zeros((1, 3, face_detector_height, face_detector_width), dtype = numpy.float32)
+	detect_vision_frame[0, :, :temp_height, :temp_width] = temp_vision_frame.transpose(2, 0, 1)
 	return detect_vision_frame
 
 
+# Normalizes in place, so the caller has to own the frame as returned by prepare_detect_frame
 def normalize_detect_frame(detect_vision_frame : VisionFrame, normalize_range : Sequence[int]) -> VisionFrame:
 	if normalize_range == [ -1, 1 ]:
-		return (detect_vision_frame - 127.5) / 128.0
+		numpy.subtract(detect_vision_frame, 127.5, out = detect_vision_frame)
+		numpy.divide(detect_vision_frame, 128.0, out = detect_vision_frame)
+		return detect_vision_frame
 	if normalize_range == [ 0, 1 ]:
-		return detect_vision_frame / 255.0
+		numpy.divide(detect_vision_frame, 255.0, out = detect_vision_frame)
+		return detect_vision_frame
 	return detect_vision_frame

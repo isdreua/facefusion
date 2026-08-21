@@ -1,3 +1,4 @@
+import threading
 from typing import List, Optional
 
 import numpy
@@ -10,6 +11,24 @@ from facefusion.face_tracker import track_faces
 from facefusion.types import Face, FaceSelectorOrder, Gender, Race, Score, VisionFrame
 
 
+class FaceSelectionContext(threading.local):
+	target_faces : Optional[List[Face]] = None
+	enabled = False
+
+
+FACE_SELECTION_CONTEXT = FaceSelectionContext()
+
+
+def begin_face_selection_context() -> None:
+	FACE_SELECTION_CONTEXT.target_faces = None
+	FACE_SELECTION_CONTEXT.enabled = True
+
+
+def end_face_selection_context() -> None:
+	FACE_SELECTION_CONTEXT.target_faces = None
+	FACE_SELECTION_CONTEXT.enabled = False
+
+
 def select_faces(reference_vision_frame : VisionFrame, source_vision_frames : List[VisionFrame], target_vision_frames : List[VisionFrame], source_faces : Optional[List[Face]] = None) -> List[Face]:
 	if source_faces is None:
 		face_analysis_features = get_face_analysis_features()
@@ -19,10 +38,15 @@ def select_faces(reference_vision_frame : VisionFrame, source_vision_frames : Li
 		finally:
 			set_face_analysis_features(face_analysis_features)
 
-	if state_manager.get_item('face_tracker_score') > 0:
-		target_faces = track_faces(target_vision_frames, state_manager.get_item('face_tracker_score'))
+	if FACE_SELECTION_CONTEXT.enabled and FACE_SELECTION_CONTEXT.target_faces is not None:
+		target_faces = FACE_SELECTION_CONTEXT.target_faces
 	else:
-		target_faces = get_static_faces([ get_middle(target_vision_frames) ])
+		if state_manager.get_item('face_tracker_score') > 0:
+			target_faces = track_faces(target_vision_frames, state_manager.get_item('face_tracker_score'))
+		else:
+			target_faces = get_static_faces([ get_middle(target_vision_frames) ])
+		if FACE_SELECTION_CONTEXT.enabled:
+			FACE_SELECTION_CONTEXT.target_faces = target_faces
 
 	if state_manager.get_item('face_selector_mode') == 'many':
 		return sort_and_filter_faces(source_faces, target_faces)

@@ -16,6 +16,7 @@ from facefusion.audio import create_empty_audio_frame
 from facefusion.common_helper import is_windows
 from facefusion.content_analyser import analyse_frame
 from facefusion.face_creator import set_face_analysis_features
+from facefusion.face_selector import begin_face_selection_context, end_face_selection_context
 from facefusion.ffmpeg import open_ffmpeg
 from facefusion.filesystem import is_directory
 from facefusion.processors.core import get_processors_modules
@@ -188,6 +189,7 @@ def process_stream_frame(source_vision_frames : List[VisionFrame], target_vision
 		temp_vision_mask = extract_vision_mask(temp_vision_frame)
 
 	set_face_analysis_features(face_analysis_features)
+	begin_face_selection_context()
 	try:
 		for processor_module in processor_modules:
 			logger.disable()
@@ -206,6 +208,7 @@ def process_stream_frame(source_vision_frames : List[VisionFrame], target_vision
 			logger.enable()
 	finally:
 		logger.enable()
+		end_face_selection_context()
 		set_face_analysis_features(None)
 
 	return temp_vision_frame, capture_time

@@ -742,29 +742,33 @@ def convert_source_embedding(source_embedding : Embedding) -> Tuple[Embedding, E
 
 
 def prepare_crop_frame(crop_vision_frame : VisionFrame) -> VisionFrame:
-	model_mean = get_model_options().get('mean')
-	model_standard_deviation = get_model_options().get('standard_deviation')
+	model_options = get_model_options()
+	model_mean = numpy.asarray(model_options.get('mean'), dtype = numpy.float32)
+	model_standard_deviation = numpy.asarray(model_options.get('standard_deviation'), dtype = numpy.float32)
 
-	crop_vision_frame = crop_vision_frame[:, :, ::-1] / 255.0
-	crop_vision_frame = (crop_vision_frame - model_mean) / model_standard_deviation
-	crop_vision_frame = crop_vision_frame.transpose(2, 0, 1)
-	crop_vision_frame = numpy.expand_dims(crop_vision_frame, axis = 0).astype(numpy.float32)
-	return crop_vision_frame
+	crop_vision_frame = crop_vision_frame[:, :, ::-1].astype(numpy.float32)
+	numpy.divide(crop_vision_frame, 255.0, out = crop_vision_frame)
+	numpy.subtract(crop_vision_frame, model_mean, out = crop_vision_frame)
+	numpy.divide(crop_vision_frame, model_standard_deviation, out = crop_vision_frame)
+	crop_vision_frame = numpy.ascontiguousarray(crop_vision_frame.transpose(2, 0, 1))
+	return numpy.expand_dims(crop_vision_frame, axis = 0)
 
 
 def normalize_crop_frame(crop_vision_frame : VisionFrame) -> VisionFrame:
-	model_type = get_model_options().get('type')
-	model_mean = get_model_options().get('mean')
-	model_standard_deviation = get_model_options().get('standard_deviation')
+	model_options = get_model_options()
+	model_type = model_options.get('type')
+	model_mean = numpy.asarray(model_options.get('mean'), dtype = numpy.float32)
+	model_standard_deviation = numpy.asarray(model_options.get('standard_deviation'), dtype = numpy.float32)
 
-	crop_vision_frame = crop_vision_frame.transpose(1, 2, 0)
+	crop_vision_frame = numpy.ascontiguousarray(crop_vision_frame.transpose(1, 2, 0), dtype = numpy.float32)
 
 	if model_type in [ 'ghost', 'hififace', 'hyperswap', 'uniface' ]:
-		crop_vision_frame = crop_vision_frame * model_standard_deviation + model_mean
+		numpy.multiply(crop_vision_frame, model_standard_deviation, out = crop_vision_frame)
+		numpy.add(crop_vision_frame, model_mean, out = crop_vision_frame)
 
-	crop_vision_frame = crop_vision_frame.clip(0, 1)
-	crop_vision_frame = crop_vision_frame[:, :, ::-1] * 255
-	return crop_vision_frame
+	numpy.clip(crop_vision_frame, 0, 1, out = crop_vision_frame)
+	numpy.multiply(crop_vision_frame, 255, out = crop_vision_frame)
+	return numpy.ascontiguousarray(crop_vision_frame[:, :, ::-1])
 
 
 def extract_source_face(source_vision_frames : List[VisionFrame]) -> Optional[Face]:

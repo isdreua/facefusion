@@ -10,7 +10,7 @@ from tqdm import tqdm
 from facefusion import ffmpeg_builder, logger, state_manager, translator
 from facefusion.audio import create_empty_audio_frame
 from facefusion.common_helper import is_windows
-from facefusion.content_analyser import analyse_stream
+from facefusion.content_analyser import analyse_frame
 from facefusion.ffmpeg import open_ffmpeg
 from facefusion.filesystem import is_directory
 from facefusion.processors.core import get_processors_modules
@@ -47,8 +47,8 @@ class CameraCaptureThread(threading.Thread):
 	def stop(self):
 		self.running = False
 
-def analyse_stream_background(vision_frame: VisionFrame, video_fps: Fps, stop_event: threading.Event):
-	if analyse_stream(vision_frame, video_fps):
+def analyse_frame_background(vision_frame: VisionFrame, stop_event: threading.Event):
+	if analyse_frame(vision_frame):
 		stop_event.set()
 
 def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -> Iterator[Tuple[VisionFrame, float]]:
@@ -63,6 +63,7 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -
 		logger.enable()
 
 	frame_index = 0
+	nsfw_frame_index = 0
 	last_processed_frame = None
 
 	with tqdm(desc = translator.get('streaming'), unit = 'frame', disable = state_manager.get_item('log_level') in [ 'warn', 'error' ]) as progress:
@@ -90,8 +91,10 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -
 				except queue.Empty:
 					continue
 
-				# 3. Fire-and-forget NSFW analysis to background to avoid blocking the main thread for 50ms+
-				executor.submit(analyse_stream_background, capture_vision_frame.copy(), camera_fps, stop_event)
+				# 3. Sample NSFW analysis to ~once per second, only copying/submitting the sampled frame
+				nsfw_frame_index += 1
+				if nsfw_frame_index % max(1, int(camera_fps)) == 0:
+					executor.submit(analyse_frame_background, capture_vision_frame.copy(), stop_event)
 
 				# 4. Process frame or apply temporal skipping to sustain target FPS
 				if is_vision_frame(capture_vision_frame):

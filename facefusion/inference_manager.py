@@ -14,7 +14,7 @@ from facefusion.execution import create_inference_providers, get_onnxruntime_ver
 from facefusion.exit_helper import fatal_exit
 from facefusion.filesystem import get_file_name, is_file
 from facefusion.time_helper import calculate_end_time
-from facefusion.types import DownloadSet, ExecutionProvider, InferencePool, InferencePoolSet, InferenceProvider
+from facefusion.types import AppContext, DownloadSet, ExecutionProvider, InferencePool, InferencePoolSet, InferenceProvider
 
 INFERENCE_POOL_SET : InferencePoolSet =\
 {
@@ -34,22 +34,33 @@ def get_inference_pool(module_name : str, model_names : List[str], model_source_
 	has_arena_leak = has_execution_provider('cuda') and get_onnxruntime_version() > (1, 24, 4)
 	app_context = detect_app_context()
 
-	with INFERENCE_LOCK:
-		for execution_device_id in execution_device_ids:
-			inference_context = get_inference_context(module_name, model_names, execution_device_id, execution_providers)
+	if is_inference_pool_cold(module_name, model_names, execution_device_ids, execution_providers, app_context):
+		with INFERENCE_LOCK:
+			for execution_device_id in execution_device_ids:
+				inference_context = get_inference_context(module_name, model_names, execution_device_id, execution_providers)
 
-			if not has_arena_leak:
-				if app_context == 'cli' and INFERENCE_POOL_SET.get('ui').get(inference_context):
-					INFERENCE_POOL_SET['cli'][inference_context] = INFERENCE_POOL_SET.get('ui').get(inference_context)
-				if app_context == 'ui' and INFERENCE_POOL_SET.get('cli').get(inference_context):
-					INFERENCE_POOL_SET['ui'][inference_context] = INFERENCE_POOL_SET.get('cli').get(inference_context)
+				if not has_arena_leak:
+					if app_context == 'cli' and INFERENCE_POOL_SET.get('ui').get(inference_context):
+						INFERENCE_POOL_SET['cli'][inference_context] = INFERENCE_POOL_SET.get('ui').get(inference_context)
+					if app_context == 'ui' and INFERENCE_POOL_SET.get('cli').get(inference_context):
+						INFERENCE_POOL_SET['ui'][inference_context] = INFERENCE_POOL_SET.get('cli').get(inference_context)
 
-			if not INFERENCE_POOL_SET.get(app_context).get(inference_context):
-				inference_providers = resolve_static_inference_providers(module_name, execution_device_id)
-				INFERENCE_POOL_SET[app_context][inference_context] = create_inference_pool(model_source_set, inference_providers)
+				if not INFERENCE_POOL_SET.get(app_context).get(inference_context):
+					inference_providers = resolve_static_inference_providers(module_name, execution_device_id)
+					INFERENCE_POOL_SET[app_context][inference_context] = create_inference_pool(model_source_set, inference_providers)
 
 	current_inference_context = get_inference_context(module_name, model_names, random.choice(execution_device_ids), execution_providers)
 	return INFERENCE_POOL_SET.get(app_context).get(current_inference_context)
+
+
+def is_inference_pool_cold(module_name : str, model_names : List[str], execution_device_ids : List[int], execution_providers : List[ExecutionProvider], app_context : AppContext) -> bool:
+	for execution_device_id in execution_device_ids:
+		inference_context = get_inference_context(module_name, model_names, execution_device_id, execution_providers)
+
+		if not INFERENCE_POOL_SET.get(app_context).get(inference_context):
+			return True
+
+	return False
 
 
 def create_inference_pool(model_source_set : DownloadSet, inference_providers : List[InferenceProvider]) -> InferencePool:

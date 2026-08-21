@@ -690,7 +690,7 @@ SOURCE_EMBEDDING_CACHE = {}
 
 
 def prepare_source_embedding(source_face : Face) -> Embedding:
-	cache_key = (id(source_face), state_manager.get_item('face_swapper_model'))
+	cache_key = (source_face.embedding.tobytes(), state_manager.get_item('face_swapper_model'))
 	if cache_key in SOURCE_EMBEDDING_CACHE:
 		return SOURCE_EMBEDDING_CACHE[cache_key]
 

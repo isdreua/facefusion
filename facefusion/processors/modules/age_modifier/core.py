@@ -139,6 +139,10 @@ def get_common_modules() -> List[ModuleType]:
 	return [ content_analyser, face_classifier, face_detector, face_landmarker, face_masker, face_recognizer ]
 
 
+def get_stream_face_analysis_features() -> List[str]:
+	return [ 'demographics' ]
+
+
 def pre_check() -> bool:
 	model_hash_set = get_model_options().get('hashes')
 	model_source_set = get_model_options().get('sources')

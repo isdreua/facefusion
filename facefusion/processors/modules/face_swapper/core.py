@@ -807,6 +807,12 @@ def prepare_stream_inputs(source_vision_frames : List[VisionFrame]) -> Dict[str,
 	return stream_inputs
 
 
+def get_stream_face_analysis_features() -> List[str]:
+	if get_model_options().get('type') in [ 'hififace', 'hyperswap', 'inswapper', 'simswap' ]:
+		return [ 'embedding' ]
+	return []
+
+
 def process_frame(inputs : FaceSwapperInputs) -> ProcessorOutputs:
 	reference_vision_frame = inputs.get('reference_vision_frame')
 	source_vision_frames = inputs.get('source_vision_frames')

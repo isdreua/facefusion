@@ -1,4 +1,5 @@
-from typing import List, Optional
+import threading
+from typing import List, Optional, Set
 
 import numpy
 
@@ -11,6 +12,21 @@ from facefusion.face_landmarker import detect_face_landmark, estimate_face_landm
 from facefusion.face_recognizer import calculate_face_embedding
 from facefusion.types import BoundingBox, Face, FaceLandmark5, FaceLandmarkSet, FaceScoreSet, Score, VisionFrame
 from facefusion.vision import is_vision_frame
+
+
+class FaceAnalysisContext(threading.local):
+	features : Optional[Set[str]] = None
+
+
+FACE_ANALYSIS_CONTEXT = FaceAnalysisContext()
+
+
+def set_face_analysis_features(face_analysis_features : Optional[Set[str]]) -> None:
+	FACE_ANALYSIS_CONTEXT.features = face_analysis_features
+
+
+def get_face_analysis_features() -> Optional[Set[str]]:
+	return getattr(FACE_ANALYSIS_CONTEXT, 'features', None)
 
 
 def create_faces(vision_frame : VisionFrame, bounding_boxes : List[BoundingBox], face_scores : List[Score], face_landmarks_5 : List[FaceLandmark5]) -> List[Face]:
@@ -45,8 +61,17 @@ def create_faces(vision_frame : VisionFrame, bounding_boxes : List[BoundingBox],
 			'detector': face_score,
 			'landmarker': face_landmark_score_68
 		}
-		face_embedding, face_embedding_norm = calculate_face_embedding(vision_frame, face_landmark_set.get('5/68'))
-		gender, age, race = classify_face(vision_frame, face_landmark_set.get('5/68'))
+		face_analysis_features = get_face_analysis_features()
+		if face_analysis_features is None or 'embedding' in face_analysis_features:
+			face_embedding, face_embedding_norm = calculate_face_embedding(vision_frame, face_landmark_set.get('5/68'))
+		else:
+			face_embedding = numpy.zeros(512, dtype = numpy.float32)
+			face_embedding_norm = numpy.zeros(512, dtype = numpy.float32)
+
+		if face_analysis_features is None or 'demographics' in face_analysis_features:
+			gender, age, race = classify_face(vision_frame, face_landmark_set.get('5/68'))
+		else:
+			gender, age, race = None, range(0), None
 
 		faces.append(Face(
 			origin = 'detect',
@@ -101,7 +126,11 @@ def get_static_faces(vision_frames : List[VisionFrame]) -> List[Face]:
 	many_faces : List[Face] = []
 
 	for vision_frame in vision_frames:
-		vision_hash = face_store.create_vision_hash(vision_frame)
+		face_analysis_features = get_face_analysis_features()
+		cache_scope = None
+		if face_analysis_features is not None:
+			cache_scope = ','.join(sorted(face_analysis_features)) or 'minimal'
+		vision_hash = face_store.create_vision_hash(vision_frame, cache_scope)
 		faces = face_store.get_faces(vision_hash)
 
 		if not faces:

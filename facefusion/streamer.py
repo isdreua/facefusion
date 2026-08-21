@@ -58,7 +58,8 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -
 	processor_modules = get_processors_modules(state_manager.get_item('processors'))
 	processor_stream_inputs = {}
 	stream_vision_mask = None
-	
+	face_swapper_model = state_manager.get_item('face_swapper_model')
+
 	# Pre-validate processors once before streaming starts to avoid per-frame disk I/O and face detection
 	validated_processor_modules = []
 	for processor_module in processor_modules:
@@ -110,6 +111,16 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -
 					if capture_vision_frame.ndim == 3 and capture_vision_frame.shape[2] == 3 and (stream_vision_mask is None or stream_vision_mask.shape != capture_vision_frame.shape[:2]):
 						stream_vision_mask = numpy.full(capture_vision_frame.shape[:2], 255, dtype = numpy.uint8)
 						stream_vision_mask.setflags(write = False)
+
+					# Refresh the cached source inputs if the face swapper model changed mid-stream,
+					# since the cached embedding/prepared-frame format is tied to the previous model
+					current_face_swapper_model = state_manager.get_item('face_swapper_model')
+					if current_face_swapper_model != face_swapper_model:
+						face_swapper_model = current_face_swapper_model
+						for processor_module in processor_modules:
+							if hasattr(processor_module, 'prepare_stream_inputs'):
+								processor_stream_inputs[processor_module.__name__] = processor_module.prepare_stream_inputs(source_vision_frames)
+
 					frame_index += 1
 					skipping_mode = state_manager.get_item('webcam_frame_skipping') or 'disabled'
 
@@ -137,7 +148,9 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -
 				yield capture_vision_frame, capture_time
 		finally:
 			capture_thread.stop()
-			capture_thread.join()
+			capture_thread.join(timeout = 1.0)
+			if capture_thread.is_alive():
+				logger.warn(translator.get('stream_camera_capture_hung'), __name__)
 			executor.shutdown(wait=False)
 
 

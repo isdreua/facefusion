@@ -50,6 +50,7 @@ LOCALES : Locales =\
 		'ui_layout_not_implemented': 'ui layout {ui_layout} not implemented correctly',
 		'stream_not_loaded': 'stream {stream_mode} could not be loaded',
 		'stream_not_supported': 'stream not supported',
+		'stream_camera_capture_hung': 'camera capture thread did not exit cleanly',
 		'job_created': 'job {job_id} created',
 		'job_not_created': 'job {job_id} not created',
 		'job_submitted': 'job {job_id} submitted',

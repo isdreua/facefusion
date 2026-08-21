@@ -14,40 +14,54 @@ class PerformanceOverlay:
 		self.window_size = window_size
 		self.history_size = history_size
 		self.timestamps : Deque[float] = deque(maxlen = window_size)
+		self.processed_timestamps : Deque[float] = deque(maxlen = window_size)
 		self.latencies : Deque[float] = deque(maxlen = window_size)
 		self.fps_history : Deque[float] = deque(maxlen = history_size)
 		self.latency_history : Deque[float] = deque(maxlen = history_size)
-		self.last_frame_time = time.perf_counter()
+		self.last_processed_time = time.perf_counter()
+		self.last_instant_fps = 0.0
+		self.last_latency = 0.0
 
-	def update(self, capture_time : float) -> Tuple[float, float, float, float]:
+	# Frames re-delivered by frame skipping carry an already processed frame, so counting them
+	# would report the delivery rate as if it were the rate at which frames actually get processed
+	def update(self, capture_time : float, is_duplicate : bool = False) -> Tuple[float, float, float, float, float]:
 		current_time = time.perf_counter()
-		dt = current_time - self.last_frame_time
-		self.last_frame_time = current_time
-
-		instant_fps = 1.0 / dt if dt > 0 else 0.0
-		latency_ms = (current_time - capture_time) * 1000.0 if capture_time > 0 else 0.0
-
 		self.timestamps.append(current_time)
-		self.latencies.append(latency_ms)
 
-		if len(self.timestamps) > 1:
-			total_elapsed = self.timestamps[-1] - self.timestamps[0]
-			average_fps = (len(self.timestamps) - 1) / total_elapsed if total_elapsed > 0 else instant_fps
+		if is_duplicate:
+			instant_fps = self.last_instant_fps
+			latency_ms = self.last_latency
 		else:
-			average_fps = instant_fps
+			processed_delta = current_time - self.last_processed_time
+			self.last_processed_time = current_time
+			instant_fps = 1.0 / processed_delta if processed_delta > 0 else 0.0
+			latency_ms = (current_time - capture_time) * 1000.0 if capture_time > 0 else 0.0
+			self.last_instant_fps = instant_fps
+			self.last_latency = latency_ms
+			self.processed_timestamps.append(current_time)
+			self.latencies.append(latency_ms)
+			self.fps_history.append(instant_fps)
+			self.latency_history.append(latency_ms)
 
+		average_fps = self.calculate_rate(self.processed_timestamps, current_time, instant_fps)
+		output_fps = self.calculate_rate(self.timestamps, current_time, instant_fps)
 		average_latency = sum(self.latencies) / len(self.latencies) if self.latencies else latency_ms
 
-		self.fps_history.append(instant_fps)
-		self.latency_history.append(latency_ms)
+		return instant_fps, average_fps, latency_ms, average_latency, output_fps
 
-		return instant_fps, average_fps, latency_ms, average_latency
+	# Measures against the current time so a stalled pipeline decays towards zero instead of freezing
+	def calculate_rate(self, timestamps : Deque[float], current_time : float, fallback_rate : float) -> float:
+		if len(timestamps) > 1:
+			total_elapsed = current_time - timestamps[0]
+			if total_elapsed > 0:
+				return (len(timestamps) - 1) / total_elapsed
+		return fallback_rate
 
-	def render(self, vision_frame : VisionFrame, capture_time : float, mode : str = 'simple') -> VisionFrame:
+	def render(self, vision_frame : VisionFrame, capture_time : float, mode : str = 'simple', is_duplicate : bool = False) -> VisionFrame:
 		frame_height, frame_width = vision_frame.shape[:2]
 
 		# 1. Render Top-Left Performance HUD
-		vision_frame = self._render_performance_hud(vision_frame, capture_time)
+		vision_frame = self._render_performance_hud(vision_frame, capture_time, is_duplicate)
 
 		# 2. Render Top-Right Pipeline Inspector HUD if advanced mode is enabled
 		if mode == 'advanced':
@@ -55,8 +69,8 @@ class PerformanceOverlay:
 
 		return vision_frame
 
-	def _render_performance_hud(self, vision_frame : VisionFrame, capture_time : float) -> VisionFrame:
-		instant_fps, avg_fps, instant_lat, avg_lat = self.update(capture_time)
+	def _render_performance_hud(self, vision_frame : VisionFrame, capture_time : float, is_duplicate : bool = False) -> VisionFrame:
+		instant_fps, avg_fps, instant_lat, avg_lat, output_fps = self.update(capture_time, is_duplicate)
 		frame_height, frame_width = vision_frame.shape[:2]
 
 		box_x, box_y = 12, 12
@@ -79,8 +93,9 @@ class PerformanceOverlay:
 
 		# Header
 		cv2.putText(overlay, 'PERFORMANCE DEBUG', (box_x + 10, box_y + 18), font, 0.45, (0, 210, 255), 1, cv2.LINE_AA)
+		cv2.putText(overlay, f'OUT {output_fps:4.1f}', (box_x + 240, box_y + 18), font, 0.4, (140, 160, 180), 1, cv2.LINE_AA)
 
-		# Metrics Readout
+		# Metrics Readout, reporting the rate at which frames get processed rather than delivered
 		fps_text = f'FPS: {instant_fps:5.1f}  (Avg: {avg_fps:4.1f})'
 		lat_text = f'Ping: {instant_lat:5.1f}ms (Avg: {avg_lat:4.1f}ms)'
 		cv2.putText(overlay, fps_text, (box_x + 10, box_y + 36), font, font_scale, (0, 255, 120), 1, cv2.LINE_AA)

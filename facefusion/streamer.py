@@ -54,7 +54,7 @@ def analyse_frame_background(vision_frame: VisionFrame, stop_event: threading.Ev
 	if analyse_frame(vision_frame):
 		stop_event.set()
 
-def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -> Iterator[Tuple[VisionFrame, float]]:
+def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -> Iterator[Tuple[VisionFrame, float, bool]]:
 	source_vision_frames = read_static_images(state_manager.get_item('source_paths'))
 	max_queue_size = max(1, state_manager.get_item('execution_thread_count'))
 	processor_modules = get_processors_modules(state_manager.get_item('processors'))
@@ -111,14 +111,14 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -
 						capture_vision_frame, capture_time = latest_future.result()
 						last_processed_frame = capture_vision_frame
 						progress.update()
-						yield capture_vision_frame, capture_time
+						yield capture_vision_frame, capture_time, False
 				else:
 					while futures and futures[0][1].done():
 						_, oldest_future = futures.pop(0)
 						capture_vision_frame, capture_time = oldest_future.result()
 						last_processed_frame = capture_vision_frame
 						progress.update()
-						yield capture_vision_frame, capture_time
+						yield capture_vision_frame, capture_time, False
 
 				# 2. Read the latest frame from the camera thread (non-blocking yield delay)
 				try:
@@ -164,7 +164,7 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -
 						should_skip = True
 
 					if should_skip and last_processed_frame is not None:
-						yield last_processed_frame, capture_time
+						yield last_processed_frame, capture_time, True
 					elif pending_total < max_queue_size and len(futures) < max_queue_size * 2:
 						future = executor.submit(process_stream_frame, source_vision_frames, capture_vision_frame, capture_time, processor_modules, processor_stream_inputs, stream_vision_mask, source_audio_frame, source_voice_frame, face_analysis_features)
 						futures.append((frame_index, future))
@@ -176,7 +176,7 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -
 			for _, future in futures:
 				capture_vision_frame, capture_time = future.result()
 				progress.update()
-				yield capture_vision_frame, capture_time
+				yield capture_vision_frame, capture_time, False
 		finally:
 			capture_thread.stop()
 			capture_thread.join(timeout = 1.0)

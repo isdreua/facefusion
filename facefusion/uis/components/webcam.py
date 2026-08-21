@@ -99,13 +99,13 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 		camera_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, webcam_height)
 		camera_capture.set(cv2.CAP_PROP_FPS, webcam_fps)
 
-		for capture_vision_frame, capture_time in multi_process_capture(camera_capture, webcam_fps):
+		for capture_vision_frame, capture_time, is_duplicate in multi_process_capture(camera_capture, webcam_fps):
 			capture_vision_frame = cv2.cvtColor(capture_vision_frame, cv2.COLOR_BGR2RGB)
 			capture_vision_frame = fit_cover_frame(capture_vision_frame, (webcam_width, webcam_height))
 
 			overlay_mode = state_manager.get_item('webcam_performance_overlay')
 			if overlay_mode in [ 'simple', 'advanced' ]:
-				capture_vision_frame = PERFORMANCE_OVERLAY.render(capture_vision_frame, capture_time, overlay_mode)
+				capture_vision_frame = PERFORMANCE_OVERLAY.render(capture_vision_frame, capture_time, overlay_mode, is_duplicate)
 
 			if webcam_mode == 'inline':
 				yield capture_vision_frame

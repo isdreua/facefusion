@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 
 import numpy
 
@@ -10,8 +10,9 @@ from facefusion.face_tracker import track_faces
 from facefusion.types import Face, FaceSelectorOrder, Gender, Race, Score, VisionFrame
 
 
-def select_faces(reference_vision_frame : VisionFrame, source_vision_frames : List[VisionFrame], target_vision_frames : List[VisionFrame]) -> List[Face]:
-	source_faces = get_static_faces(source_vision_frames)
+def select_faces(reference_vision_frame : VisionFrame, source_vision_frames : List[VisionFrame], target_vision_frames : List[VisionFrame], source_faces : Optional[List[Face]] = None) -> List[Face]:
+	if source_faces is None:
+		source_faces = get_static_faces(source_vision_frames)
 
 	if state_manager.get_item('face_tracker_score') > 0:
 		target_faces = track_faces(target_vision_frames, state_manager.get_item('face_tracker_score'))

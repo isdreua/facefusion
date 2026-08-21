@@ -1,7 +1,7 @@
 from argparse import ArgumentParser
 from functools import lru_cache
 from types import ModuleType
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy
@@ -598,7 +598,7 @@ def post_process() -> None:
 			common_module.clear_inference_pool()
 
 
-def swap_face(source_face : Face, target_face : Face, source_vision_frame : VisionFrame, temp_vision_frame : VisionFrame) -> VisionFrame:
+def swap_face(source_face : Face, target_face : Face, source_vision_frame : VisionFrame, temp_vision_frame : VisionFrame, source_embedding : Optional[Embedding] = None, prepared_source_frame : Optional[VisionFrame] = None) -> VisionFrame:
 	model_template = get_model_options().get('template')
 	model_size = get_model_options().get('size')
 	pixel_boost_size = unpack_resolution(state_manager.get_item('face_swapper_pixel_boost'))
@@ -618,7 +618,7 @@ def swap_face(source_face : Face, target_face : Face, source_vision_frame : Visi
 	pixel_boost_vision_frames = implode_pixel_boost(crop_vision_frame, pixel_boost_total, model_size)
 	for pixel_boost_vision_frame in pixel_boost_vision_frames:
 		pixel_boost_vision_frame = prepare_crop_frame(pixel_boost_vision_frame)
-		pixel_boost_vision_frame = forward_swap_face(source_face, target_face, source_vision_frame, pixel_boost_vision_frame)
+		pixel_boost_vision_frame = forward_swap_face(source_face, target_face, source_vision_frame, pixel_boost_vision_frame, source_embedding, prepared_source_frame)
 		pixel_boost_vision_frame = normalize_crop_frame(pixel_boost_vision_frame)
 		temp_vision_frames.append(pixel_boost_vision_frame)
 	crop_vision_frame = explode_pixel_boost(temp_vision_frames, pixel_boost_total, model_size, pixel_boost_size)
@@ -637,7 +637,7 @@ def swap_face(source_face : Face, target_face : Face, source_vision_frame : Visi
 	return paste_vision_frame
 
 
-def forward_swap_face(source_face : Face, target_face : Face, source_vision_frame : VisionFrame, crop_vision_frame : VisionFrame) -> VisionFrame:
+def forward_swap_face(source_face : Face, target_face : Face, source_vision_frame : VisionFrame, crop_vision_frame : VisionFrame, source_embedding : Optional[Embedding] = None, prepared_source_frame : Optional[VisionFrame] = None) -> VisionFrame:
 	face_swapper = get_inference_pool().get('face_swapper')
 	model_type = get_model_options().get('type')
 	face_swapper_inputs = {}
@@ -645,11 +645,14 @@ def forward_swap_face(source_face : Face, target_face : Face, source_vision_fram
 	for face_swapper_input in face_swapper.get_inputs():
 		if face_swapper_input.name == 'source':
 			if model_type in [ 'blendswap', 'uniface' ]:
-				face_swapper_inputs[face_swapper_input.name] = prepare_source_frame(source_face, source_vision_frame)
+				if prepared_source_frame is None:
+					prepared_source_frame = prepare_source_frame(source_face, source_vision_frame)
+				face_swapper_inputs[face_swapper_input.name] = prepared_source_frame
 			else:
-				source_embedding = prepare_source_embedding(source_face)
-				source_embedding = balance_source_embedding(source_embedding, target_face.embedding)
-				face_swapper_inputs[face_swapper_input.name] = source_embedding
+				if source_embedding is None:
+					source_embedding = prepare_source_embedding(source_face)
+				balanced_source_embedding = balance_source_embedding(source_embedding, target_face.embedding)
+				face_swapper_inputs[face_swapper_input.name] = balanced_source_embedding
 		if face_swapper_input.name == 'target':
 			face_swapper_inputs[face_swapper_input.name] = crop_vision_frame
 
@@ -777,6 +780,32 @@ def extract_source_face(source_vision_frames : List[VisionFrame]) -> Optional[Fa
 	return average_face_identity(source_faces)
 
 
+def prepare_stream_inputs(source_vision_frames : List[VisionFrame]) -> Dict[str, Any]:
+	source_faces = []
+	source_face_candidates = []
+	for source_vision_frame in source_vision_frames:
+		frame_faces = get_static_faces([ source_vision_frame ])
+		source_faces.extend(frame_faces)
+		frame_faces = sort_faces_by_order(frame_faces, 'large-small')
+		if frame_faces:
+			source_face_candidates.append(get_first(frame_faces))
+	source_face = average_face_identity(source_face_candidates)
+	stream_inputs =\
+	{
+		'source_faces': source_faces,
+		'source_face': source_face
+	}
+
+	if source_face:
+		model_type = get_model_options().get('type')
+		if model_type in [ 'blendswap', 'uniface' ]:
+			stream_inputs['prepared_source_frame'] = prepare_source_frame(source_face, get_first(source_vision_frames))
+		else:
+			stream_inputs['source_embedding'] = prepare_source_embedding(source_face)
+
+	return stream_inputs
+
+
 def process_frame(inputs : FaceSwapperInputs) -> ProcessorOutputs:
 	reference_vision_frame = inputs.get('reference_vision_frame')
 	source_vision_frames = inputs.get('source_vision_frames')
@@ -785,14 +814,17 @@ def process_frame(inputs : FaceSwapperInputs) -> ProcessorOutputs:
 	temp_vision_mask = inputs.get('temp_vision_mask')
 
 	target_vision_frame = get_middle(target_vision_frames)
-	source_face = extract_source_face(source_vision_frames)
-	target_faces = select_faces(reference_vision_frame, source_vision_frames, target_vision_frames)
+	source_faces = inputs.get('source_faces')
+	source_face = inputs.get('source_face') or extract_source_face(source_vision_frames)
+	source_embedding = inputs.get('source_embedding')
+	prepared_source_frame = inputs.get('prepared_source_frame')
+	target_faces = select_faces(reference_vision_frame, source_vision_frames, target_vision_frames, source_faces)
 
 	if source_face and target_faces:
 		source_vision_frame = get_first(source_vision_frames)
 
 		for target_face in target_faces:
 			target_face = scale_face(target_face, target_vision_frame, temp_vision_frame)
-			temp_vision_frame = swap_face(source_face, target_face, source_vision_frame, temp_vision_frame)
+			temp_vision_frame = swap_face(source_face, target_face, source_vision_frame, temp_vision_frame, source_embedding, prepared_source_frame)
 
 	return temp_vision_frame, temp_vision_mask

@@ -2,7 +2,7 @@ import os
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Iterator, List, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import cv2
 from tqdm import tqdm
@@ -55,12 +55,19 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -
 	source_vision_frames = read_static_images(state_manager.get_item('source_paths'))
 	max_queue_size = max(1, state_manager.get_item('execution_thread_count'))
 	processor_modules = get_processors_modules(state_manager.get_item('processors'))
+	processor_stream_inputs = {}
 	
 	# Pre-validate processors once before streaming starts to avoid per-frame disk I/O and face detection
+	validated_processor_modules = []
 	for processor_module in processor_modules:
 		logger.disable()
-		processor_module.pre_process('stream')
+		is_processor_ready = processor_module.pre_process('stream')
 		logger.enable()
+		if is_processor_ready:
+			validated_processor_modules.append(processor_module)
+			if hasattr(processor_module, 'prepare_stream_inputs'):
+				processor_stream_inputs[processor_module.__name__] = processor_module.prepare_stream_inputs(source_vision_frames)
+	processor_modules = validated_processor_modules
 
 	frame_index = 0
 	nsfw_frame_index = 0
@@ -112,7 +119,7 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -
 					if should_skip and last_processed_frame is not None:
 						yield last_processed_frame, capture_time
 					elif len(futures) < max_queue_size:
-						future = executor.submit(process_stream_frame, source_vision_frames, capture_vision_frame, capture_time, processor_modules)
+						future = executor.submit(process_stream_frame, source_vision_frames, capture_vision_frame, capture_time, processor_modules, processor_stream_inputs)
 						futures.append(future)
 
 			if stop_event.is_set():
@@ -129,7 +136,7 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -
 			executor.shutdown(wait=False)
 
 
-def process_stream_frame(source_vision_frames : List[VisionFrame], target_vision_frame : VisionFrame, capture_time : float, processor_modules : List[ModuleType]) -> Tuple[VisionFrame, float]:
+def process_stream_frame(source_vision_frames : List[VisionFrame], target_vision_frame : VisionFrame, capture_time : float, processor_modules : List[ModuleType], processor_stream_inputs : Optional[Dict[str, Dict[str, Any]]] = None) -> Tuple[VisionFrame, float]:
 	source_audio_frame = create_empty_audio_frame()
 	source_voice_frame = create_empty_audio_frame()
 	temp_vision_frame = target_vision_frame.copy()
@@ -137,7 +144,7 @@ def process_stream_frame(source_vision_frames : List[VisionFrame], target_vision
 
 	for processor_module in processor_modules:
 		logger.disable()
-		temp_vision_frame, temp_vision_mask = processor_module.process_frame(
+		processor_inputs =\
 		{
 			'source_vision_frames': source_vision_frames,
 			'source_audio_frame': source_audio_frame,
@@ -145,7 +152,10 @@ def process_stream_frame(source_vision_frames : List[VisionFrame], target_vision
 			'target_vision_frames': [ target_vision_frame ],
 			'temp_vision_frame': temp_vision_frame,
 			'temp_vision_mask': temp_vision_mask
-		})
+		}
+		if processor_stream_inputs:
+			processor_inputs.update(processor_stream_inputs.get(processor_module.__name__, {}))
+		temp_vision_frame, temp_vision_mask = processor_module.process_frame(processor_inputs)
 		logger.enable()
 
 	return temp_vision_frame, capture_time

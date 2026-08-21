@@ -1,11 +1,15 @@
 from typing import Dict, List, Literal, TypeAlias, TypedDict
 
-from facefusion.types import Mask, VisionFrame
+from facefusion.types import Embedding, Face, Mask, VisionFrame
 
 FaceSwapperInputs = TypedDict('FaceSwapperInputs',
 {
 	'reference_vision_frame' : VisionFrame,
 	'source_vision_frames' : List[VisionFrame],
+	'source_faces' : List[Face],
+	'source_face' : Face,
+	'source_embedding' : Embedding,
+	'prepared_source_frame' : VisionFrame,
 	'target_vision_frames' : List[VisionFrame],
 	'temp_vision_frame' : VisionFrame,
 	'temp_vision_mask' : Mask

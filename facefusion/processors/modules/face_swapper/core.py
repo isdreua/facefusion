@@ -608,7 +608,7 @@ def swap_face(source_face : Face, target_face : Face, source_vision_frame : Visi
 	crop_masks = []
 
 	if 'box' in state_manager.get_item('face_mask_types'):
-		box_mask = create_box_mask(crop_vision_frame, state_manager.get_item('face_mask_blur'), state_manager.get_item('face_mask_padding'))
+		box_mask = create_box_mask(crop_vision_frame.shape[:2][::-1], state_manager.get_item('face_mask_blur'), state_manager.get_item('face_mask_padding'))
 		crop_masks.append(box_mask)
 
 	if 'occlusion' in state_manager.get_item('face_mask_types'):

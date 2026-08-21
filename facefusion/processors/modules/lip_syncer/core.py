@@ -193,7 +193,7 @@ def sync_lip(target_face : Face, source_voice_frame : AudioFrame, temp_vision_fr
 
 	if model_type == 'edtalk':
 		lip_syncer_weight = numpy.array([ state_manager.get_item('lip_syncer_weight') ]).astype(numpy.float32)
-		box_mask = create_box_mask(crop_vision_frame, state_manager.get_item('face_mask_blur'), state_manager.get_item('face_mask_padding'))
+		box_mask = create_box_mask(crop_vision_frame.shape[:2][::-1], state_manager.get_item('face_mask_blur'), state_manager.get_item('face_mask_padding'))
 		crop_masks.append(box_mask)
 		crop_vision_frame = prepare_crop_frame(crop_vision_frame)
 		crop_vision_frame = forward_edtalk(source_voice_frame, crop_vision_frame, lip_syncer_weight)

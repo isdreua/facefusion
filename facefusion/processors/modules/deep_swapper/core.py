@@ -335,7 +335,7 @@ def swap_face(target_face : Face, temp_vision_frame : VisionFrame) -> VisionFram
 	model_size = get_model_size()
 	crop_vision_frame, affine_matrix = warp_face_by_face_landmark_5(temp_vision_frame, target_face.landmark_set.get('5/68'), model_template, model_size)
 	crop_vision_frame_raw = crop_vision_frame.copy()
-	box_mask = create_box_mask(crop_vision_frame, state_manager.get_item('face_mask_blur'), state_manager.get_item('face_mask_padding'))
+	box_mask = create_box_mask(crop_vision_frame.shape[:2][::-1], state_manager.get_item('face_mask_blur'), state_manager.get_item('face_mask_padding'))
 	crop_masks =\
 	[
 		box_mask

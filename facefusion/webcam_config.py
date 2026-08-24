@@ -9,6 +9,7 @@ DEFAULT_WEBCAM_CONFIG : Dict[str, Any] =\
 	'auto_start': False,
 	'device_id': 0,
 	'mode': 'inline',
+	'headless_mode': 'v4l2',
 	'resolution': '320x240',
 	'fps': 30,
 	'frame_skipping': 'adaptive',
@@ -48,6 +49,8 @@ def load_webcam_config(config_path : str) -> Dict[str, Any]:
 		webcam_config['device_id'] = content.get('device_id')
 	if content.get('mode') in WEBCAM_MODES:
 		webcam_config['mode'] = content.get('mode')
+	if content.get('headless_mode') in [ 'udp', 'v4l2' ]:
+		webcam_config['headless_mode'] = content.get('headless_mode')
 	if content.get('resolution') in WEBCAM_RESOLUTIONS:
 		webcam_config['resolution'] = content.get('resolution')
 	if isinstance(content.get('fps'), int) and 1 <= content.get('fps') <= 30:

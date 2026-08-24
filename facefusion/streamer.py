@@ -328,7 +328,6 @@ class WindowsVirtualCameraStream:
 		import numpy
 		frame = numpy.frombuffer(data, dtype = numpy.uint8).reshape((self.height, self.width, 3))
 		self.cam.send(frame)
-		self.cam.sleep_until_next_frame()
 
 	def __del__(self) -> None:
 		self.close()

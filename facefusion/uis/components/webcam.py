@@ -12,6 +12,7 @@ from facefusion.types import Fps, VisionFrame, WebcamMode
 from facefusion.uis.core import get_ui_component
 from facefusion.uis.types import File
 from facefusion.vision import fit_cover_frame, unpack_resolution
+from facefusion.webcam_config import load_webcam_config
 
 SOURCE_FILE : Optional[gradio.File] = None
 WEBCAM_IMAGE : Optional[gradio.Image] = None
@@ -61,6 +62,19 @@ def listen() -> None:
 		start_event.then(pre_stop)
 		WEBCAM_STOP_BUTTON.click(stop, cancels = start_event, outputs = WEBCAM_IMAGE)
 		WEBCAM_STOP_BUTTON.click(pre_stop, outputs = [ SOURCE_FILE, WEBCAM_IMAGE, WEBCAM_START_BUTTON, WEBCAM_STOP_BUTTON ])
+
+
+def listen_auto_start(ui : gradio.Blocks) -> None:
+	webcam_config = load_webcam_config(state_manager.get_item('webcam_config'))
+	webcam_device_id_dropdown = get_ui_component('webcam_device_id_dropdown')
+	webcam_mode_radio = get_ui_component('webcam_mode_radio')
+	webcam_resolution_dropdown = get_ui_component('webcam_resolution_dropdown')
+	webcam_fps_slider = get_ui_component('webcam_fps_slider')
+
+	if webcam_config.get('auto_start') and webcam_device_id_dropdown and webcam_mode_radio and webcam_resolution_dropdown and webcam_fps_slider:
+		load_event = ui.load(pre_start, outputs = [ SOURCE_FILE, WEBCAM_IMAGE, WEBCAM_START_BUTTON, WEBCAM_STOP_BUTTON ])
+		start_event = load_event.then(start, inputs = [ webcam_device_id_dropdown, webcam_mode_radio, webcam_resolution_dropdown, webcam_fps_slider ], outputs = WEBCAM_IMAGE)
+		start_event.then(pre_stop)
 
 
 def update_source(files : List[File]) -> gradio.File:

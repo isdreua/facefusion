@@ -1,6 +1,6 @@
 import time
 from collections import deque
-from typing import Deque, Dict, List, Optional, Tuple
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
 import cv2
 import numpy
@@ -57,7 +57,7 @@ class PerformanceOverlay:
 				return (len(timestamps) - 1) / total_elapsed
 		return fallback_rate
 
-	def render(self, vision_frame : VisionFrame, capture_time : float, mode : str = 'simple', is_duplicate : bool = False, timing : Optional[Dict[str, float]] = None) -> VisionFrame:
+	def render(self, vision_frame : VisionFrame, capture_time : float, mode : str = 'simple', is_duplicate : bool = False, timing : Optional[Dict[str, Any]] = None) -> VisionFrame:
 		# The caller must pass an exclusively owned frame because overlays are rendered in place.
 
 		# 1. Render Top-Left Performance HUD
@@ -115,7 +115,7 @@ class PerformanceOverlay:
 
 		return overlay
 
-	def _render_pipeline_inspector(self, vision_frame : VisionFrame, timing : Optional[Dict[str, float]] = None) -> VisionFrame:
+	def _render_pipeline_inspector(self, vision_frame : VisionFrame, timing : Optional[Dict[str, Any]] = None) -> VisionFrame:
 		frame_height, frame_width = vision_frame.shape[:2]
 
 		box_w = 310
@@ -163,6 +163,11 @@ class PerformanceOverlay:
 			budget_status = 'OVER BUDGET' if frame_interval_ms and p95_latency > frame_interval_ms else 'within budget'
 			cv2.putText(overlay, f'Bottleneck: {bottleneck} | {budget_status}', (box_x + 10, cur_y), font, font_scale, (80, 120, 255) if budget_status == 'OVER BUDGET' else (120, 220, 140), 1, cv2.LINE_AA)
 			cur_y += line_spacing
+			processor_times = timing.get('processor_times') or {}
+			if processor_times:
+				slowest_processor = max(processor_times, key = processor_times.get)
+				cv2.putText(overlay, f'{slowest_processor}: {processor_times[slowest_processor]:.1f} ms', (box_x + 10, cur_y), font, font_scale, (80, 210, 255), 1, cv2.LINE_AA)
+				cur_y += line_spacing
 			from facefusion.streamer import get_content_analysis_metrics
 			analysis_metrics = get_content_analysis_metrics()
 			if analysis_metrics.get('runs'):

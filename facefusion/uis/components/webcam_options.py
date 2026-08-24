@@ -103,6 +103,8 @@ def listen() -> None:
 		WEBCAM_PERFORMANCE_OVERLAY_RADIO.change(update_performance_overlay, inputs = WEBCAM_PERFORMANCE_OVERLAY_RADIO)
 	if WEBCAM_FRAME_SKIPPING_RADIO:
 		WEBCAM_FRAME_SKIPPING_RADIO.change(update_frame_skipping, inputs = WEBCAM_FRAME_SKIPPING_RADIO)
+	if WEBCAM_CAMERA_BACKEND_DROPDOWN and WEBCAM_DEVICE_ID_DROPDOWN:
+		WEBCAM_CAMERA_BACKEND_DROPDOWN.change(update_camera_backend, inputs = WEBCAM_CAMERA_BACKEND_DROPDOWN, outputs = WEBCAM_DEVICE_ID_DROPDOWN)
 
 
 def update_performance_overlay(performance_overlay : str) -> None:
@@ -111,3 +113,8 @@ def update_performance_overlay(performance_overlay : str) -> None:
 
 def update_frame_skipping(frame_skipping : str) -> None:
 	state_manager.set_item('webcam_frame_skipping', frame_skipping)
+
+
+def update_camera_backend(camera_backend : str) -> gradio.Dropdown:
+	local_camera_ids = detect_local_camera_ids(0, 10, camera_backend) or [ 'none' ] #type:ignore[list-item]
+	return gradio.Dropdown(value = get_first(local_camera_ids), choices = local_camera_ids)

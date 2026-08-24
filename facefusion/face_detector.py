@@ -153,7 +153,10 @@ def pre_check() -> bool:
 
 def detect_faces(vision_frame : VisionFrame) -> Tuple[List[BoundingBox], List[Score], List[FaceLandmark5]]:
 	margin_top, margin_right, margin_bottom, margin_left = prepare_margin(vision_frame)
-	margin_vision_frame = numpy.pad(vision_frame, ((margin_top, margin_bottom), (margin_left, margin_right), (0, 0)))
+	if margin_top == 0 and margin_right == 0 and margin_bottom == 0 and margin_left == 0:
+		margin_vision_frame = vision_frame
+	else:
+		margin_vision_frame = numpy.pad(vision_frame, ((margin_top, margin_bottom), (margin_left, margin_right), (0, 0)))
 	all_bounding_boxes : List[BoundingBox] = []
 	all_face_scores : List[Score] = []
 	all_face_landmarks_5 : List[FaceLandmark5] = []
@@ -182,8 +185,10 @@ def detect_faces(vision_frame : VisionFrame) -> Tuple[List[BoundingBox], List[Sc
 		all_face_scores.extend(face_scores)
 		all_face_landmarks_5.extend(face_landmarks_5)
 
-	all_bounding_boxes = [ normalize_bounding_box(all_bounding_box) - numpy.array([ margin_left, margin_top, margin_left, margin_top ]) for all_bounding_box in all_bounding_boxes ]
-	all_face_landmarks_5 = [ all_face_landmark_5 - numpy.array([ margin_left, margin_top ]) for all_face_landmark_5 in all_face_landmarks_5 ]
+	all_bounding_boxes = [ normalize_bounding_box(all_bounding_box) for all_bounding_box in all_bounding_boxes ]
+	if margin_left != 0 or margin_top != 0:
+		all_bounding_boxes = [ all_bounding_box - numpy.array([ margin_left, margin_top, margin_left, margin_top ]) for all_bounding_box in all_bounding_boxes ]
+		all_face_landmarks_5 = [ all_face_landmark_5 - numpy.array([ margin_left, margin_top ]) for all_face_landmark_5 in all_face_landmarks_5 ]
 	return all_bounding_boxes, all_face_scores, all_face_landmarks_5
 
 

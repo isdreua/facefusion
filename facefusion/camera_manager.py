@@ -1,7 +1,8 @@
-from typing import List
+from typing import List, Optional
 
 import cv2
 
+from facefusion import logger
 from facefusion.types import CameraPoolSet
 
 CAMERA_POOL_SET : CameraPoolSet =\
@@ -10,13 +11,31 @@ CAMERA_POOL_SET : CameraPoolSet =\
 }
 
 
-def get_local_camera_capture(camera_id : int) -> cv2.VideoCapture:
-	camera_key = str(camera_id)
+def configure_camera_capture(camera_capture : cv2.VideoCapture, width : Optional[int] = None, height : Optional[int] = None, fps : Optional[int] = None) -> None:
+	property_results = []
+	if width is not None:
+		property_results.append(('width', width, camera_capture.set(cv2.CAP_PROP_FRAME_WIDTH, width)))
+	if height is not None:
+		property_results.append(('height', height, camera_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, height)))
+	if fps is not None:
+		property_results.append(('fps', fps, camera_capture.set(cv2.CAP_PROP_FPS, fps)))
+	property_results.append(('buffer', 1, camera_capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)))
+	backend_name = camera_capture.getBackendName() if hasattr(camera_capture, 'getBackendName') else 'unknown'
+	logger.debug('camera configuration backend=' + str(backend_name) + ' results=' + str(property_results), __name__)
+
+
+def get_local_camera_capture(camera_id : int, width : Optional[int] = None, height : Optional[int] = None, fps : Optional[int] = None) -> cv2.VideoCapture:
+	camera_key = ':'.join(map(str, [ 'local', camera_id, width, height, fps ]))
 
 	if camera_key not in CAMERA_POOL_SET.get('capture'):
+		for pooled_key, pooled_capture in list(CAMERA_POOL_SET.get('capture').items()):
+			if pooled_key.startswith('local:' + str(camera_id) + ':'):
+				pooled_capture.release()
+				del CAMERA_POOL_SET['capture'][pooled_key]
 		camera_capture = cv2.VideoCapture(camera_id)
 
 		if camera_capture.isOpened():
+			configure_camera_capture(camera_capture, width, height, fps)
 			CAMERA_POOL_SET['capture'][camera_key] = camera_capture
 
 	return CAMERA_POOL_SET.get('capture').get(camera_key)
@@ -27,6 +46,7 @@ def get_remote_camera_capture(camera_url : str) -> cv2.VideoCapture:
 		camera_capture = cv2.VideoCapture(camera_url)
 
 		if camera_capture.isOpened():
+			configure_camera_capture(camera_capture)
 			CAMERA_POOL_SET['capture'][camera_url] = camera_capture
 
 	return CAMERA_POOL_SET.get('capture').get(camera_url)
@@ -44,12 +64,11 @@ def detect_local_camera_ids(id_start : int, id_end : int) -> List[int]:
 
 	for camera_id in range(id_start, id_end):
 		cv2.utils.logging.setLogLevel(0)
-		camera_capture = get_local_camera_capture(camera_id)
+		camera_capture = cv2.VideoCapture(camera_id)
 		cv2.utils.logging.setLogLevel(3)
 
-		if camera_capture and camera_capture.isOpened():
+		if camera_capture.isOpened():
 			local_camera_ids.append(camera_id)
-
-	clear_camera_pool()
+		camera_capture.release()
 
 	return local_camera_ids

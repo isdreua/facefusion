@@ -23,15 +23,12 @@ def run() -> int:
 		return 2
 
 	state_manager.sync_state()
-	camera_capture = get_local_camera_capture(webcam_device_id)
+	webcam_width, webcam_height = unpack_resolution(webcam_resolution)
+	camera_capture = get_local_camera_capture(webcam_device_id, webcam_width, webcam_height, webcam_fps)
 	if not camera_capture or not camera_capture.isOpened():
 		logger.error('webcam device could not be opened', __name__)
 		return 1
 
-	webcam_width, webcam_height = unpack_resolution(webcam_resolution)
-	camera_capture.set(cv2.CAP_PROP_FRAME_WIDTH, webcam_width)
-	camera_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, webcam_height)
-	camera_capture.set(cv2.CAP_PROP_FPS, webcam_fps)
 	stream = open_stream(webcam_mode, webcam_resolution, webcam_fps)
 
 	try:

@@ -101,18 +101,13 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 	state_manager.init_item('face_selector_mode', 'one')
 	state_manager.sync_state()
 
-	camera_capture = get_local_camera_capture(webcam_device_id)
+	webcam_width, webcam_height = unpack_resolution(webcam_resolution)
+	camera_capture = get_local_camera_capture(webcam_device_id, webcam_width, webcam_height, webcam_fps)
 	stream = None
 
 	if webcam_mode in [ 'udp', 'v4l2' ]:
 		stream = open_stream(webcam_mode, webcam_resolution, webcam_fps) #type:ignore[arg-type]
-	webcam_width, webcam_height = unpack_resolution(webcam_resolution)
-
 	if camera_capture and camera_capture.isOpened():
-		camera_capture.set(cv2.CAP_PROP_FRAME_WIDTH, webcam_width)
-		camera_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, webcam_height)
-		camera_capture.set(cv2.CAP_PROP_FPS, webcam_fps)
-
 		for capture_vision_frame, capture_time, is_duplicate in multi_process_capture(camera_capture, webcam_fps):
 			capture_vision_frame = cv2.cvtColor(capture_vision_frame, cv2.COLOR_BGR2RGB)
 			capture_vision_frame = fit_cover_frame(capture_vision_frame, (webcam_width, webcam_height))

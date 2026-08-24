@@ -19,7 +19,7 @@ from facefusion.processors.modules.face_enhancer import choices as face_enhancer
 from facefusion.processors.modules.face_enhancer.types import FaceEnhancerInputs, FaceEnhancerWeight
 from facefusion.processors.types import ProcessorOutputs
 from facefusion.program_helper import find_argument_group
-from facefusion.thread_helper import thread_semaphore
+from facefusion.thread_helper import conditional_thread_semaphore
 from facefusion.types import ApplyStateItem, Args, DownloadScope, Face, InferencePool, ModelOptions, ModelSet, ProcessMode, VisionFrame
 from facefusion.vision import blend_frame, read_static_image, read_static_video_frame
 
@@ -381,7 +381,7 @@ def forward(crop_vision_frame : VisionFrame, face_enhancer_weight : FaceEnhancer
 		if face_enhancer_input.name == 'weight':
 			face_enhancer_inputs[face_enhancer_input.name] = face_enhancer_weight
 
-	with thread_semaphore():
+	with conditional_thread_semaphore():
 		crop_vision_frame = face_enhancer.run(None, face_enhancer_inputs)[0][0]
 
 	return crop_vision_frame

@@ -58,7 +58,7 @@ class PerformanceOverlay:
 		return fallback_rate
 
 	def render(self, vision_frame : VisionFrame, capture_time : float, mode : str = 'simple', is_duplicate : bool = False) -> VisionFrame:
-		frame_height, frame_width = vision_frame.shape[:2]
+		# The caller must pass an exclusively owned frame because overlays are rendered in place.
 
 		# 1. Render Top-Left Performance HUD
 		vision_frame = self._render_performance_hud(vision_frame, capture_time, is_duplicate)
@@ -79,7 +79,7 @@ class PerformanceOverlay:
 		if frame_width < box_w + 24 or frame_height < box_h + 24:
 			return vision_frame
 
-		overlay = vision_frame.copy()
+		overlay = vision_frame
 		sub_img = overlay[box_y:box_y + box_h, box_x:box_x + box_w]
 		dark_rect = numpy.zeros(sub_img.shape, dtype = numpy.uint8)
 		dark_rect[:] = (15, 20, 28)
@@ -124,7 +124,7 @@ class PerformanceOverlay:
 		if box_x < 340 or frame_height < box_h + 24:
 			return vision_frame
 
-		overlay = vision_frame.copy()
+		overlay = vision_frame
 		sub_img = overlay[box_y:box_y + box_h, box_x:box_x + box_w]
 		dark_rect = numpy.zeros(sub_img.shape, dtype = numpy.uint8)
 		dark_rect[:] = (15, 20, 28)

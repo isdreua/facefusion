@@ -1,3 +1,4 @@
+import time
 from typing import Any
 
 import cv2
@@ -36,13 +37,14 @@ def run() -> int:
 	stream_writer.start()
 
 	try:
-		for capture_vision_frame, capture_time, is_duplicate in multi_process_capture(camera_capture, webcam_fps, webcam_execution_thread_count):
+		for capture_vision_frame, capture_time, is_duplicate, timing in multi_process_capture(camera_capture, webcam_fps, webcam_execution_thread_count):
 			capture_vision_frame = cv2.cvtColor(capture_vision_frame, cv2.COLOR_BGR2RGB)
 			capture_vision_frame = fit_cover_frame(capture_vision_frame, (webcam_width, webcam_height))
+			timing['post_processing_finished'] = time.perf_counter()
 			overlay_mode = state_manager.get_item('webcam_performance_overlay')
 			if overlay_mode in [ 'simple', 'advanced' ]:
-				capture_vision_frame = PERFORMANCE_OVERLAY.render(capture_vision_frame, capture_time, overlay_mode, is_duplicate)
-			stream_writer.submit(capture_vision_frame)
+				capture_vision_frame = PERFORMANCE_OVERLAY.render(capture_vision_frame, capture_time, overlay_mode, is_duplicate, timing)
+			stream_writer.submit(capture_vision_frame, timing)
 	finally:
 		clear_camera_pool()
 		if stream_writer:

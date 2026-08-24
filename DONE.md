@@ -181,3 +181,19 @@ This document records all the steps, changes, and architectural decisions made a
 ### Verification:
 - Python syntax compilation and `git diff --check` pass.
 - The focused pytest suite remains unavailable in this workspace because its Python environment does not provide `pytest` or `numpy`.
+
+---
+
+## 12. Live Webcam Processor Activation
+
+**Goal:** Make Face Enhancer output visible when the module is enabled while the webcam is already streaming.
+
+### Changes Made:
+- **Refreshed the active processor pipeline:** The capture loop now detects changes to the configured processor names and rebuilds the validated processor-module list used for subsequent frames.
+  - *Cause:* The webcam previously captured the processor list only once at startup. Enabling Face Enhancer changed the UI state, but the running stream continued submitting frames only to the previously active Face Swapper.
+- **Centralized stream processor preparation:** Initial startup and live refresh now share `prepare_stream_processors()`, including `pre_process('stream')` validation and optional per-stream input preparation.
+- **Added a regression test:** The new test verifies that a newly selected Face Enhancer module is validated, included, and has its stream inputs prepared.
+
+### Verification:
+- Python syntax compilation and `git diff --check` pass.
+- The focused pytest suite remains unavailable in this workspace because its Python environment does not provide `pytest` or `numpy`.

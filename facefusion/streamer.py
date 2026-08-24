@@ -307,8 +307,12 @@ class WindowsVirtualCameraStream:
 		self.cam.sleep_until_next_frame()
 
 	def __del__(self) -> None:
+		self.close()
+
+	def close(self) -> None:
 		if hasattr(self, 'cam') and self.cam:
 			self.cam.close()
+			self.cam = None
 
 
 def open_stream(stream_mode : StreamMode, stream_resolution : str, stream_fps : Fps) -> Any:
@@ -353,4 +357,4 @@ def open_stream(stream_mode : StreamMode, stream_resolution : str, stream_fps : 
 		else:
 			logger.error(translator.get('stream_not_loaded').format(stream_mode = stream_mode), __name__)
 
-	return open_ffmpeg(commands)
+	return open_ffmpeg(commands, capture_stdout = False)

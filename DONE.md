@@ -369,3 +369,10 @@ This document records all the steps, changes, and architectural decisions made a
 
 - Camera capture threads now always clear their running state when their read loop exits.
 - Stream cleanup releases the camera before joining the capture thread, allowing blocked backend reads to unblock.
+
+---
+
+## 29. Complete Webcam Diagnostic Plumbing
+
+- Changing the camera backend now re-probes and updates the device dropdown without polluting the capture pool.
+- Frame timing records include each processor's elapsed time, and advanced diagnostics identify the slowest active processor.

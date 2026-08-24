@@ -32,7 +32,7 @@ class LatestFrameWriter:
 		if self.error:
 			raise RuntimeError('webcam output transport failed to start') from self.error
 
-	def submit(self, frame : VisionFrame, timing : Optional[Dict[str, float]] = None) -> None:
+	def submit(self, frame : VisionFrame, timing : Optional[Dict[str, Any]] = None) -> None:
 		if self.error:
 			raise RuntimeError('webcam output transport failed') from self.error
 		if self.stop_event.is_set():

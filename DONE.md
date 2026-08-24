@@ -269,3 +269,17 @@ This document records all the steps, changes, and architectural decisions made a
 ### Verification:
 - Python syntax compilation, JSON syntax validation, and `git diff --check` pass.
 - End-to-end virtual-camera testing remains unavailable in this workspace because it lacks the Windows camera environment and runtime dependencies.
+
+---
+
+## 17. Centralized Webcam Capture Configuration
+
+**Goal:** Apply camera format and minimal buffering consistently in UI and headless webcam sessions.
+
+### Changes Made:
+- Added a shared camera-session configuration path with width, height, FPS, then one-frame buffer ordering.
+- Isolated discovery probes from the reusable capture pool and made local cache entries format-aware.
+- Added focused tests for configuration order, cache reuse/eviction, and discovery cleanup.
+
+### Verification:
+- Focused tests and syntax checks are run as part of this commit.

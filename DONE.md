@@ -291,3 +291,11 @@ This document records all the steps, changes, and architectural decisions made a
 - Added an independently configurable inline preview cap, defaulting to 640x480.
 - The cap is applied only before Gradio delivery; UDP and virtual-camera dimensions are unchanged.
 - Added UI, JSON example, validation, and auto-start plumbing.
+
+---
+
+## 19. Webcam-Specific Inference Concurrency
+
+- Added a dedicated webcam worker limit, defaulting to two, without changing batch concurrency.
+- Wired the value through UI, JSON auto-start, and headless webcam sessions.
+- The scheduler admission window and executor use the same session-scoped worker limit.

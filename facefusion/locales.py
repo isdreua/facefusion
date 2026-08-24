@@ -271,7 +271,8 @@ LOCALES : Locales =\
 			'webcam_resolution_dropdown': 'WEBCAM RESOLUTION',
 			'webcam_performance_overlay_radio': 'PERFORMANCE OVERLAY',
 			'webcam_frame_skipping_radio': 'FRAME SKIPPING',
-			'webcam_inline_preview_resolution_dropdown': 'INLINE PREVIEW RESOLUTION'
+			'webcam_inline_preview_resolution_dropdown': 'INLINE PREVIEW RESOLUTION',
+			'webcam_execution_thread_count_slider': 'WEBCAM WORKERS'
 		}
 	}
 }

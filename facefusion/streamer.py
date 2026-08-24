@@ -40,12 +40,17 @@ class CameraCaptureThread(threading.Thread):
 			if not ret:
 				self.running = False
 				break
-			if self.frame_queue.full():
+			try:
+				self.frame_queue.put_nowait((capture_time, frame))
+			except queue.Full:
 				try:
 					self.frame_queue.get_nowait()
 				except queue.Empty:
 					pass
-			self.frame_queue.put((capture_time, frame))
+				try:
+					self.frame_queue.put_nowait((capture_time, frame))
+				except queue.Full:
+					pass
 
 	def stop(self):
 		self.running = False

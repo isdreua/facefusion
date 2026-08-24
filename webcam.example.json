@@ -93,10 +93,10 @@
     "frame_skipping_options": ["adaptive", "disabled", "1-in-2", "1-in-3"],
     "performance_overlay": "none",
     "performance_overlay_options": ["none", "simple", "advanced"],
-    "inline_preview_resolution": "640x480",
-    "inline_preview_resolution_options": ["native", "320x240", "640x480", "960x540"],
-    "execution_thread_count": 2,
-    "execution_thread_count_options": [1, 2, 3, 4, 5, 6, 7, 8],
-    "camera_backend": "auto",
-    "camera_backend_options": ["auto", "msmf", "dshow"]
+    "webcam_inline_preview_resolution": "640x480",
+    "webcam_inline_preview_resolution_options": ["native", "320x240", "640x480", "960x540"],
+    "webcam_execution_thread_count": 2,
+    "webcam_execution_thread_count_options": [1, 2, 3, 4, 5, 6, 7, 8],
+    "webcam_camera_backend": "auto",
+    "webcam_camera_backend_options": ["auto", "msmf", "dshow"]
 }

@@ -15,9 +15,9 @@ DEFAULT_WEBCAM_CONFIG : Dict[str, Any] =\
 	'fps': 30,
 	'frame_skipping': 'adaptive',
 	'performance_overlay': 'none',
-	'inline_preview_resolution': '640x480',
-	'execution_thread_count': 2,
-	'camera_backend': 'auto'
+	'webcam_inline_preview_resolution': '640x480',
+	'webcam_execution_thread_count': 2,
+	'webcam_camera_backend': 'auto'
 }
 WEBCAM_MODES = [ 'inline', 'udp', 'v4l2' ]
 WEBCAM_RESOLUTIONS = [ '320x240', '640x480', '800x600', '1024x768', '1280x720', '1280x960', '1920x1080' ]
@@ -65,12 +65,12 @@ def load_webcam_config(config_path : str) -> Dict[str, Any]:
 		webcam_config['frame_skipping'] = content.get('frame_skipping')
 	if content.get('performance_overlay') in WEBCAM_PERFORMANCE_OVERLAYS:
 		webcam_config['performance_overlay'] = content.get('performance_overlay')
-	if content.get('inline_preview_resolution') in WEBCAM_INLINE_PREVIEW_RESOLUTIONS:
-		webcam_config['inline_preview_resolution'] = content.get('inline_preview_resolution')
-	if isinstance(content.get('execution_thread_count'), int) and 1 <= content.get('execution_thread_count') <= 8:
-		webcam_config['execution_thread_count'] = content.get('execution_thread_count')
-	if content.get('camera_backend') in WEBCAM_CAMERA_BACKENDS:
-		webcam_config['camera_backend'] = content.get('camera_backend')
+	if content.get('webcam_inline_preview_resolution') in WEBCAM_INLINE_PREVIEW_RESOLUTIONS:
+		webcam_config['webcam_inline_preview_resolution'] = content.get('webcam_inline_preview_resolution')
+	if isinstance(content.get('webcam_execution_thread_count'), int) and 1 <= content.get('webcam_execution_thread_count') <= 8:
+		webcam_config['webcam_execution_thread_count'] = content.get('webcam_execution_thread_count')
+	if content.get('webcam_camera_backend') in WEBCAM_CAMERA_BACKENDS:
+		webcam_config['webcam_camera_backend'] = content.get('webcam_camera_backend')
 
 	return webcam_config
 

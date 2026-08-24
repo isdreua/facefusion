@@ -32,7 +32,7 @@ def render() -> None:
 	global WEBCAM_CAMERA_BACKEND_DROPDOWN
 
 	webcam_config = load_webcam_config(state_manager.get_item('webcam_config'))
-	local_camera_ids = detect_local_camera_ids(0, 10, webcam_config.get('camera_backend')) or [ 'none' ] #type:ignore[list-item]
+	local_camera_ids = detect_local_camera_ids(0, 10, webcam_config.get('webcam_camera_backend')) or [ 'none' ] #type:ignore[list-item]
 	webcam_device_id = webcam_config.get('device_id')
 	if webcam_device_id not in local_camera_ids:
 		webcam_device_id = get_first(local_camera_ids)
@@ -73,11 +73,11 @@ def render() -> None:
 	WEBCAM_INLINE_PREVIEW_RESOLUTION_DROPDOWN = gradio.Dropdown(
 		label = translator.get('uis.webcam_inline_preview_resolution_dropdown'),
 		choices = WEBCAM_INLINE_PREVIEW_RESOLUTIONS,
-		value = webcam_config.get('inline_preview_resolution')
+		value = webcam_config.get('webcam_inline_preview_resolution')
 	)
 	WEBCAM_EXECUTION_THREAD_COUNT_SLIDER = gradio.Slider(
 		label = translator.get('uis.webcam_execution_thread_count_slider'),
-		value = webcam_config.get('execution_thread_count'),
+		value = webcam_config.get('webcam_execution_thread_count'),
 		step = 1,
 		minimum = 1,
 		maximum = 8
@@ -85,7 +85,7 @@ def render() -> None:
 	WEBCAM_CAMERA_BACKEND_DROPDOWN = gradio.Dropdown(
 		label = translator.get('uis.webcam_camera_backend_dropdown'),
 		choices = WEBCAM_CAMERA_BACKENDS,
-		value = webcam_config.get('camera_backend')
+		value = webcam_config.get('webcam_camera_backend')
 	)
 	register_ui_component('webcam_device_id_dropdown', WEBCAM_DEVICE_ID_DROPDOWN)
 	register_ui_component('webcam_mode_radio', WEBCAM_MODE_RADIO)

@@ -58,10 +58,11 @@ def listen() -> None:
 	webcam_fps_slider = get_ui_component('webcam_fps_slider')
 	webcam_inline_preview_resolution_dropdown = get_ui_component('webcam_inline_preview_resolution_dropdown')
 	webcam_execution_thread_count_slider = get_ui_component('webcam_execution_thread_count_slider')
+	webcam_camera_backend_dropdown = get_ui_component('webcam_camera_backend_dropdown')
 
-	if webcam_device_id_dropdown and webcam_mode_radio and webcam_resolution_dropdown and webcam_fps_slider and webcam_inline_preview_resolution_dropdown and webcam_execution_thread_count_slider:
+	if webcam_device_id_dropdown and webcam_mode_radio and webcam_resolution_dropdown and webcam_fps_slider and webcam_inline_preview_resolution_dropdown and webcam_execution_thread_count_slider and webcam_camera_backend_dropdown:
 		WEBCAM_START_BUTTON.click(pre_start, outputs = [ SOURCE_FILE, WEBCAM_IMAGE, WEBCAM_START_BUTTON, WEBCAM_STOP_BUTTON ])
-		start_event = WEBCAM_START_BUTTON.click(start, inputs = [ webcam_device_id_dropdown, webcam_mode_radio, webcam_resolution_dropdown, webcam_fps_slider, webcam_inline_preview_resolution_dropdown, webcam_execution_thread_count_slider ], outputs = WEBCAM_IMAGE)
+		start_event = WEBCAM_START_BUTTON.click(start, inputs = [ webcam_device_id_dropdown, webcam_mode_radio, webcam_resolution_dropdown, webcam_fps_slider, webcam_inline_preview_resolution_dropdown, webcam_execution_thread_count_slider, webcam_camera_backend_dropdown ], outputs = WEBCAM_IMAGE)
 		start_event.then(pre_stop)
 		WEBCAM_STOP_BUTTON.click(stop, cancels = start_event, outputs = WEBCAM_IMAGE)
 		WEBCAM_STOP_BUTTON.click(pre_stop, outputs = [ SOURCE_FILE, WEBCAM_IMAGE, WEBCAM_START_BUTTON, WEBCAM_STOP_BUTTON ])
@@ -75,10 +76,11 @@ def listen_auto_start(ui : gradio.Blocks) -> None:
 	webcam_fps_slider = get_ui_component('webcam_fps_slider')
 	webcam_inline_preview_resolution_dropdown = get_ui_component('webcam_inline_preview_resolution_dropdown')
 	webcam_execution_thread_count_slider = get_ui_component('webcam_execution_thread_count_slider')
+	webcam_camera_backend_dropdown = get_ui_component('webcam_camera_backend_dropdown')
 
-	if webcam_config.get('auto_start') and webcam_device_id_dropdown and webcam_mode_radio and webcam_resolution_dropdown and webcam_fps_slider and webcam_inline_preview_resolution_dropdown and webcam_execution_thread_count_slider:
+	if webcam_config.get('auto_start') and webcam_device_id_dropdown and webcam_mode_radio and webcam_resolution_dropdown and webcam_fps_slider and webcam_inline_preview_resolution_dropdown and webcam_execution_thread_count_slider and webcam_camera_backend_dropdown:
 		load_event = ui.load(pre_start, outputs = [ SOURCE_FILE, WEBCAM_IMAGE, WEBCAM_START_BUTTON, WEBCAM_STOP_BUTTON ])
-		start_event = load_event.then(start, inputs = [ webcam_device_id_dropdown, webcam_mode_radio, webcam_resolution_dropdown, webcam_fps_slider, webcam_inline_preview_resolution_dropdown, webcam_execution_thread_count_slider ], outputs = WEBCAM_IMAGE)
+		start_event = load_event.then(start, inputs = [ webcam_device_id_dropdown, webcam_mode_radio, webcam_resolution_dropdown, webcam_fps_slider, webcam_inline_preview_resolution_dropdown, webcam_execution_thread_count_slider, webcam_camera_backend_dropdown ], outputs = WEBCAM_IMAGE)
 		start_event.then(pre_stop)
 
 
@@ -102,12 +104,12 @@ def pre_stop() -> Tuple[gradio.File, gradio.Image, gradio.Button, gradio.Button]
 	return gradio.File(visible = True), gradio.Image(visible = False), gradio.Button(visible = True), gradio.Button(visible = False)
 
 
-def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : str, webcam_fps : Fps, inline_preview_resolution : str = '640x480', webcam_execution_thread_count : int = 2) -> Iterator[VisionFrame]:
+def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : str, webcam_fps : Fps, inline_preview_resolution : str = '640x480', webcam_execution_thread_count : int = 2, webcam_camera_backend : str = 'auto') -> Iterator[VisionFrame]:
 	state_manager.init_item('face_selector_mode', 'one')
 	state_manager.sync_state()
 
 	webcam_width, webcam_height = unpack_resolution(webcam_resolution)
-	camera_capture = get_local_camera_capture(webcam_device_id, webcam_width, webcam_height, webcam_fps)
+	camera_capture = get_local_camera_capture(webcam_device_id, webcam_width, webcam_height, webcam_fps, webcam_camera_backend)
 	stream_writer = None
 	if camera_capture and camera_capture.isOpened():
 		if webcam_mode in [ 'udp', 'v4l2' ]:

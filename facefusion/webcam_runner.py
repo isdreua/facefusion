@@ -18,6 +18,7 @@ def run() -> int:
 	webcam_resolution = webcam_config.get('resolution')
 	webcam_fps = webcam_config.get('fps')
 	webcam_execution_thread_count = webcam_config.get('execution_thread_count')
+	webcam_camera_backend = webcam_config.get('camera_backend')
 	stream_writer : Any = None
 
 	if webcam_mode not in [ 'udp', 'v4l2' ]:
@@ -26,7 +27,7 @@ def run() -> int:
 
 	state_manager.sync_state()
 	webcam_width, webcam_height = unpack_resolution(webcam_resolution)
-	camera_capture = get_local_camera_capture(webcam_device_id, webcam_width, webcam_height, webcam_fps)
+	camera_capture = get_local_camera_capture(webcam_device_id, webcam_width, webcam_height, webcam_fps, webcam_camera_backend)
 	if not camera_capture or not camera_capture.isOpened():
 		logger.error('webcam device could not be opened', __name__)
 		return 1

@@ -16,8 +16,8 @@ def test_load_webcam_config(tmp_path):
 		'frame_skipping': 'adaptive',
 		'frame_skipping_options': [ 'adaptive', 'disabled' ],
 		'performance_overlay': 'simple',
-		'inline_preview_resolution': '960x540',
-		'execution_thread_count': 1
+		'webcam_inline_preview_resolution': '960x540',
+		'webcam_execution_thread_count': 1
 	}), encoding = 'utf-8')
 
 	webcam_config = load_webcam_config(str(config_path))
@@ -28,8 +28,8 @@ def test_load_webcam_config(tmp_path):
 	assert webcam_config['fps'] == 25
 	assert webcam_config['frame_skipping'] == 'adaptive'
 	assert webcam_config['performance_overlay'] == 'simple'
-	assert webcam_config['inline_preview_resolution'] == '960x540'
-	assert webcam_config['execution_thread_count'] == 1
+	assert webcam_config['webcam_inline_preview_resolution'] == '960x540'
+	assert webcam_config['webcam_execution_thread_count'] == 1
 	assert 'fps_options' not in webcam_config
 	assert 'frame_skipping_options' not in webcam_config
 

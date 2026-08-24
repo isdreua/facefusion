@@ -355,3 +355,10 @@ This document records all the steps, changes, and architectural decisions made a
 - Pacing now occurs in the shared writer at the requested FPS for every fixed-rate virtual-camera transport.
 - Writer failures surface to producers, and FFmpeg termination is available as blocked-write escalation.
 - Camera cleanup now covers writer startup failures in both UI and headless paths.
+
+---
+
+## 27. Align Webcam Profile Key Names
+
+- Aligned the three new top-level JSON controls with the approved `webcam_*` names.
+- Kept the webcam worker count unambiguous from nested batch `settings.execution_thread_count`.

@@ -18,8 +18,8 @@ def run() -> int:
 	webcam_mode = webcam_config.get('headless_mode')
 	webcam_resolution = webcam_config.get('resolution')
 	webcam_fps = webcam_config.get('fps')
-	webcam_execution_thread_count = webcam_config.get('execution_thread_count')
-	webcam_camera_backend = webcam_config.get('camera_backend')
+	webcam_execution_thread_count = webcam_config.get('webcam_execution_thread_count')
+	webcam_camera_backend = webcam_config.get('webcam_camera_backend')
 	stream_writer : Any = None
 
 	if webcam_mode not in [ 'udp', 'v4l2' ]:

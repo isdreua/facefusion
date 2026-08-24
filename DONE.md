@@ -362,3 +362,10 @@ This document records all the steps, changes, and architectural decisions made a
 
 - Aligned the three new top-level JSON controls with the approved `webcam_*` names.
 - Kept the webcam worker count unambiguous from nested batch `settings.execution_thread_count`.
+
+---
+
+## 28. Unblock Webcam Capture Shutdown
+
+- Camera capture threads now always clear their running state when their read loop exits.
+- Stream cleanup releases the camera before joining the capture thread, allowing blocked backend reads to unblock.

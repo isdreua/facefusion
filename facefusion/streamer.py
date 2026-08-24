@@ -42,29 +42,31 @@ class CameraCaptureThread(threading.Thread):
 
 	def run(self):
 		consecutive_read_failures = 0
-		while self.running and self.camera_capture.isOpened():
-			capture_time = time.perf_counter()
-			ret, frame = self.camera_capture.read()
-			capture_read_end = time.perf_counter()
-			if not ret:
-				consecutive_read_failures += 1
-				if not self.camera_capture.isOpened() or consecutive_read_failures >= self.MAX_CONSECUTIVE_READ_FAILURES:
-					self.running = False
-					break
-				time.sleep(self.READ_FAILURE_RETRY_DELAY)
-				continue
-			consecutive_read_failures = 0
-			try:
-				self.frame_queue.put_nowait((capture_time, capture_read_end, frame))
-			except queue.Full:
-				try:
-					self.frame_queue.get_nowait()
-				except queue.Empty:
-					pass
+		try:
+			while self.running and self.camera_capture.isOpened():
+				capture_time = time.perf_counter()
+				ret, frame = self.camera_capture.read()
+				capture_read_end = time.perf_counter()
+				if not ret:
+					consecutive_read_failures += 1
+					if not self.camera_capture.isOpened() or consecutive_read_failures >= self.MAX_CONSECUTIVE_READ_FAILURES:
+						break
+					time.sleep(self.READ_FAILURE_RETRY_DELAY)
+					continue
+				consecutive_read_failures = 0
 				try:
 					self.frame_queue.put_nowait((capture_time, capture_read_end, frame))
 				except queue.Full:
-					pass
+					try:
+						self.frame_queue.get_nowait()
+					except queue.Empty:
+						pass
+					try:
+						self.frame_queue.put_nowait((capture_time, capture_read_end, frame))
+					except queue.Full:
+						pass
+		finally:
+			self.running = False
 
 	def stop(self):
 		self.running = False
@@ -241,6 +243,8 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 		finally:
 			set_app_context_override(None)
 			capture_thread.stop()
+			if hasattr(camera_capture, 'release'):
+				camera_capture.release()
 			capture_thread.join(timeout = 1.0)
 			if capture_thread.is_alive():
 				logger.warn(translator.get('stream_camera_capture_hung'), __name__)

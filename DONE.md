@@ -315,3 +315,11 @@ This document records all the steps, changes, and architectural decisions made a
 - Adaptive and temporal scheduler skips no longer re-yield the last processed frame.
 - Inline and UDP avoid duplicate conversion, overlay, and transport work.
 - Constant-rate virtual-camera repetition remains owned by the latest-frame writer.
+
+---
+
+## 22. Optional Webcam Camera Backend
+
+- Added top-level JSON/UI selection for auto, MSMF, and DirectShow, with auto as the default.
+- Explicit Windows backend failures warn and fall back once to automatic selection.
+- Capture caching distinguishes backend and format, and discovery probes use the selected backend.

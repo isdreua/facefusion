@@ -2,6 +2,7 @@ from functools import lru_cache
 from typing import Any, Dict
 
 from facefusion.json import read_json
+from facefusion.common_helper import is_windows
 
 
 DEFAULT_WEBCAM_CONFIG : Dict[str, Any] =\
@@ -15,13 +16,15 @@ DEFAULT_WEBCAM_CONFIG : Dict[str, Any] =\
 	'frame_skipping': 'adaptive',
 	'performance_overlay': 'none',
 	'inline_preview_resolution': '640x480',
-	'execution_thread_count': 2
+	'execution_thread_count': 2,
+	'camera_backend': 'auto'
 }
 WEBCAM_MODES = [ 'inline', 'udp', 'v4l2' ]
 WEBCAM_RESOLUTIONS = [ '320x240', '640x480', '800x600', '1024x768', '1280x720', '1280x960', '1920x1080' ]
 WEBCAM_FRAME_SKIPPING_MODES = [ 'adaptive', 'disabled', '1-in-2', '1-in-3' ]
 WEBCAM_PERFORMANCE_OVERLAYS = [ 'none', 'simple', 'advanced' ]
 WEBCAM_INLINE_PREVIEW_RESOLUTIONS = [ 'native', '320x240', '640x480', '960x540' ]
+WEBCAM_CAMERA_BACKENDS = [ 'auto', 'msmf', 'dshow' ] if is_windows() else [ 'auto' ]
 WEBCAM_STATE_KEYS =\
 [
 	'source_paths', 'processors', 'execution_device_ids', 'execution_providers', 'execution_thread_count', 'video_memory_strategy',
@@ -66,6 +69,8 @@ def load_webcam_config(config_path : str) -> Dict[str, Any]:
 		webcam_config['inline_preview_resolution'] = content.get('inline_preview_resolution')
 	if isinstance(content.get('execution_thread_count'), int) and 1 <= content.get('execution_thread_count') <= 8:
 		webcam_config['execution_thread_count'] = content.get('execution_thread_count')
+	if content.get('camera_backend') in WEBCAM_CAMERA_BACKENDS:
+		webcam_config['camera_backend'] = content.get('camera_backend')
 
 	return webcam_config
 

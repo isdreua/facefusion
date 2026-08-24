@@ -66,6 +66,7 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -
 	processor_stream_inputs = {}
 	stream_vision_mask = None
 	face_swapper_model = state_manager.get_item('face_swapper_model')
+	face_swapper_weight = state_manager.get_item('face_swapper_weight')
 	source_audio_frame = create_empty_audio_frame()
 	source_voice_frame = create_empty_audio_frame()
 	source_audio_frame.setflags(write = False)
@@ -146,11 +147,17 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -
 					# Refresh the cached source inputs if the face swapper model changed mid-stream,
 					# since the cached embedding/prepared-frame format is tied to the previous model
 					current_face_swapper_model = state_manager.get_item('face_swapper_model')
-					if current_face_swapper_model != face_swapper_model:
+					current_face_swapper_weight = state_manager.get_item('face_swapper_weight')
+					face_swapper_model_changed = current_face_swapper_model != face_swapper_model
+					face_swapper_weight_changed = current_face_swapper_weight != face_swapper_weight
+					if face_swapper_model_changed:
 						face_swapper_model = current_face_swapper_model
 						for processor_module in processor_modules:
 							if hasattr(processor_module, 'prepare_stream_inputs'):
 								processor_stream_inputs[processor_module.__name__] = processor_module.prepare_stream_inputs(source_vision_frames)
+					if face_swapper_weight_changed:
+						face_swapper_weight = current_face_swapper_weight
+					if face_swapper_model_changed or face_swapper_weight_changed:
 						face_analysis_features = collect_stream_face_analysis_features(processor_modules)
 
 					# Only unfinished work occupies a worker, so results awaiting their turn in the ordered

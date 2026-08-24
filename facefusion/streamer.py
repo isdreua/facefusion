@@ -69,11 +69,31 @@ def analyse_frame_background(vision_frame: VisionFrame, stop_event: threading.Ev
 	if analyse_frame(vision_frame):
 		stop_event.set()
 
+
+def prepare_stream_processors(processor_names : List[str], source_vision_frames : List[VisionFrame]) -> Tuple[List[ModuleType], Dict[str, Dict[str, Any]]]:
+	processor_modules = get_processors_modules(processor_names)
+	validated_processor_modules = []
+	processor_stream_inputs = {}
+
+	for processor_module in processor_modules:
+		logger.disable()
+		try:
+			is_processor_ready = processor_module.pre_process('stream')
+		finally:
+			logger.enable()
+		if is_processor_ready:
+			validated_processor_modules.append(processor_module)
+			if hasattr(processor_module, 'prepare_stream_inputs'):
+				processor_stream_inputs[processor_module.__name__] = processor_module.prepare_stream_inputs(source_vision_frames)
+
+	return validated_processor_modules, processor_stream_inputs
+
+
 def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -> Iterator[Tuple[VisionFrame, float, bool]]:
 	source_vision_frames = read_static_images(state_manager.get_item('source_paths'))
 	max_queue_size = max(1, state_manager.get_item('execution_thread_count'))
-	processor_modules = get_processors_modules(state_manager.get_item('processors'))
-	processor_stream_inputs = {}
+	processor_names = list(state_manager.get_item('processors') or [])
+	processor_modules, processor_stream_inputs = prepare_stream_processors(processor_names, source_vision_frames)
 	stream_vision_mask = None
 	face_swapper_model = state_manager.get_item('face_swapper_model')
 	face_swapper_weight = state_manager.get_item('face_swapper_weight')
@@ -82,17 +102,6 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -
 	source_audio_frame.setflags(write = False)
 	source_voice_frame.setflags(write = False)
 
-	# Pre-validate processors once before streaming starts to avoid per-frame disk I/O and face detection
-	validated_processor_modules = []
-	for processor_module in processor_modules:
-		logger.disable()
-		is_processor_ready = processor_module.pre_process('stream')
-		logger.enable()
-		if is_processor_ready:
-			validated_processor_modules.append(processor_module)
-			if hasattr(processor_module, 'prepare_stream_inputs'):
-				processor_stream_inputs[processor_module.__name__] = processor_module.prepare_stream_inputs(source_vision_frames)
-	processor_modules = validated_processor_modules
 	face_analysis_features = collect_stream_face_analysis_features(processor_modules)
 
 	frame_index = 0
@@ -114,6 +123,11 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -
 			while capture_thread.running and not stop_event.is_set():
 				discarded_futures = [ future for future in discarded_futures if not future.done() ]
 				skipping_mode = state_manager.get_item('webcam_frame_skipping') or 'disabled'
+				current_processor_names = list(state_manager.get_item('processors') or [])
+				if current_processor_names != processor_names:
+					processor_names = current_processor_names
+					processor_modules, processor_stream_inputs = prepare_stream_processors(processor_names, source_vision_frames)
+					face_analysis_features = collect_stream_face_analysis_features(processor_modules)
 
 				# 1. Preserve ordered output normally; adaptive mode drops stale work when a newer result is ready
 				if skipping_mode == 'adaptive':

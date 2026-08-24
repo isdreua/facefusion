@@ -147,6 +147,21 @@ def prepare_capture_test(monkeypatch, capture, context_calls, processor_modules 
 	return streamer.multi_process_capture(capture, 30)
 
 
+def test_prepare_stream_processors_includes_newly_enabled_processor(monkeypatch):
+	prepared_frames = []
+	processor_module = ModuleType('face_enhancer_test')
+	processor_module.pre_process = lambda mode: mode == 'stream'
+	processor_module.prepare_stream_inputs = lambda frames: prepared_frames.extend(frames) or { 'ready': True }
+	monkeypatch.setattr(streamer, 'get_processors_modules', lambda processors: [ processor_module ])
+	source_frame = numpy.zeros((2, 2, 3), dtype = numpy.uint8)
+
+	processor_modules, processor_stream_inputs = streamer.prepare_stream_processors([ 'face_enhancer' ], [ source_frame ])
+
+	assert processor_modules == [ processor_module ]
+	assert processor_stream_inputs == { 'face_enhancer_test': { 'ready': True } }
+	assert prepared_frames == [ source_frame ]
+
+
 def test_capture_context_is_cleared_after_normal_completion(monkeypatch):
 	context_calls = []
 	generator = prepare_capture_test(monkeypatch, FakeFrameQueue(), context_calls)

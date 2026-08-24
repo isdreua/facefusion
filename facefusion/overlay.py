@@ -156,6 +156,13 @@ class PerformanceOverlay:
 			process_ms = (timing.get('processing_finished', 0) - timing.get('processing_started', 0)) * 1000
 			cv2.putText(overlay, f'Capture {capture_ms:.1f} | Queue {queue_ms:.1f} | Process {process_ms:.1f} ms', (box_x + 10, cur_y), font, font_scale, (255, 190, 80), 1, cv2.LINE_AA)
 			cur_y += line_spacing
+			stages = { 'capture': capture_ms, 'queue': queue_ms, 'process': process_ms }
+			bottleneck = max(stages, key = stages.get)
+			p95_latency = float(numpy.percentile(self.latencies, 95)) if self.latencies else 0.0
+			frame_interval_ms = timing.get('frame_interval_ms', 0.0)
+			budget_status = 'OVER BUDGET' if frame_interval_ms and p95_latency > frame_interval_ms else 'within budget'
+			cv2.putText(overlay, f'Bottleneck: {bottleneck} | {budget_status}', (box_x + 10, cur_y), font, font_scale, (80, 120, 255) if budget_status == 'OVER BUDGET' else (120, 220, 140), 1, cv2.LINE_AA)
+			cur_y += line_spacing
 			from facefusion.streamer import get_content_analysis_metrics
 			analysis_metrics = get_content_analysis_metrics()
 			if analysis_metrics.get('runs'):

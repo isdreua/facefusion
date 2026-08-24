@@ -1,7 +1,7 @@
 {
     "settings": {
         "source_paths": ["C:/path/to/source-face.jpg"],
-        "processors": ["face_swapper", "face_enhancer"],
+        "processors": ["face_swapper"],
         "execution_device_ids": [0],
         "execution_providers": ["cuda"],
         "execution_thread_count": 8,
@@ -75,6 +75,8 @@
     "frame_colorizer_model_options": ["ddcolor", "ddcolor_artistic", "deoldify", "deoldify_artistic", "deoldify_stable"],
     "frame_enhancer_model_options": ["clear_reality_x4", "face_dat_x4", "nomos8k_sc_x4", "real_esrgan_x2", "real_esrgan_x2_fp16", "real_esrgan_x4", "real_esrgan_x4_fp16", "real_esrgan_x8", "real_esrgan_x8_fp16", "real_hatgan_x4", "real_web_photo_x4", "realistic_rescaler_x4", "remacri_x4", "siax_x4", "span_kendata_x4", "swin2_sr_x4", "tghq_face_x8", "ultra_sharp_x4", "ultra_sharp_2_x4"],
     "lip_syncer_model_options": ["edtalk_256", "wav2lip_96", "wav2lip_gan_96"],
+    "profile": "low-latency",
+    "profile_options": ["low-latency"],
     "auto_start": true,
     "auto_start_options": [true, false],
     "device_id": 0,
@@ -89,7 +91,7 @@
     "fps_options": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30],
     "frame_skipping": "adaptive",
     "frame_skipping_options": ["adaptive", "disabled", "1-in-2", "1-in-3"],
-    "performance_overlay": "simple",
+    "performance_overlay": "none",
     "performance_overlay_options": ["none", "simple", "advanced"],
     "inline_preview_resolution": "640x480",
     "inline_preview_resolution_options": ["native", "320x240", "640x480", "960x540"],

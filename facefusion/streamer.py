@@ -226,7 +226,7 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 						should_skip = True
 
 					if not should_skip and has_stream_capacity(pending_total, len(futures), max_queue_size):
-						timing = { 'capture_read_start': capture_time, 'capture_read_end': capture_read_end, 'scheduler_admitted': time.perf_counter() }
+						timing = { 'capture_read_start': capture_time, 'capture_read_end': capture_read_end, 'scheduler_admitted': time.perf_counter(), 'frame_interval_ms': 1000.0 / max(1, float(camera_fps)) }
 						future = executor.submit(process_stream_frame, source_vision_frames, capture_vision_frame, capture_time, processor_modules, processor_stream_inputs, stream_vision_mask, source_audio_frame, source_voice_frame, face_analysis_features, timing)
 						futures.append((frame_index, future))
 

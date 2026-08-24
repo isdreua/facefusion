@@ -398,9 +398,10 @@ def has_weight_input() -> bool:
 
 
 def prepare_crop_frame(crop_vision_frame : VisionFrame) -> VisionFrame:
-	crop_vision_frame = crop_vision_frame[:, :, ::-1] / 255.0
-	crop_vision_frame = (crop_vision_frame - 0.5) / 0.5
-	crop_vision_frame = numpy.expand_dims(crop_vision_frame.transpose(2, 0, 1), axis = 0).astype(numpy.float32)
+	crop_vision_frame = crop_vision_frame[:, :, ::-1].astype(numpy.float32)
+	numpy.divide(crop_vision_frame, 127.5, out = crop_vision_frame)
+	numpy.subtract(crop_vision_frame, 1.0, out = crop_vision_frame)
+	crop_vision_frame = numpy.ascontiguousarray(crop_vision_frame.transpose(2, 0, 1))[None]
 	return crop_vision_frame
 
 

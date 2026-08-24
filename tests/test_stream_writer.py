@@ -43,3 +43,13 @@ def test_latest_frame_writer_rejects_bad_shape():
 		pass
 	finally:
 		writer.close()
+
+
+def test_fixed_rate_writer_repeats_at_bounded_cadence():
+	transport = FakeTransport()
+	writer = LatestFrameWriter(lambda: transport, 2, 2, repeat_latest = True, fps = 20)
+	writer.start()
+	writer.submit(numpy.zeros((2, 2, 3), dtype = numpy.uint8))
+	time.sleep(0.13)
+	writer.close()
+	assert 2 <= len(transport.stdin.writes) <= 4

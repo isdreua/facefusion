@@ -113,10 +113,10 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 	camera_capture = get_local_camera_capture(webcam_device_id, webcam_width, webcam_height, webcam_fps, webcam_camera_backend)
 	stream_writer = None
 	if camera_capture and camera_capture.isOpened():
-		if webcam_mode in [ 'udp', 'v4l2' ]:
-			stream_writer = LatestFrameWriter(lambda: open_stream(webcam_mode, webcam_resolution, webcam_fps), webcam_width, webcam_height, webcam_mode == 'v4l2') #type:ignore[arg-type]
-			stream_writer.start()
 		try:
+			if webcam_mode in [ 'udp', 'v4l2' ]:
+				stream_writer = LatestFrameWriter(lambda: open_stream(webcam_mode, webcam_resolution, webcam_fps), webcam_width, webcam_height, webcam_mode == 'v4l2', webcam_fps) #type:ignore[arg-type]
+				stream_writer.start()
 			for capture_vision_frame, capture_time, is_duplicate, timing in multi_process_capture(camera_capture, webcam_fps, webcam_execution_thread_count):
 				capture_vision_frame = cv2.cvtColor(capture_vision_frame, cv2.COLOR_BGR2RGB)
 				capture_vision_frame = fit_cover_frame(capture_vision_frame, (webcam_width, webcam_height))
@@ -135,6 +135,7 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 		finally:
 			if stream_writer:
 				stream_writer.close()
+			clear_camera_pool()
 
 
 def stop() -> gradio.Image:

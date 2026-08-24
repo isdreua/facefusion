@@ -9,11 +9,12 @@ from facefusion.types import VisionFrame
 
 
 class LatestFrameWriter:
-	def __init__(self, transport_factory : Callable[[], Any], width : int, height : int, repeat_latest : bool = False):
+	def __init__(self, transport_factory : Callable[[], Any], width : int, height : int, repeat_latest : bool = False, fps : float = 30.0):
 		self.transport_factory = transport_factory
 		self.width = width
 		self.height = height
 		self.repeat_latest = repeat_latest
+		self.frame_interval = 1.0 / max(1.0, fps)
 		self.frame_queue : queue.Queue = queue.Queue(maxsize = 1)
 		self.stop_event = threading.Event()
 		self.ready_event = threading.Event()
@@ -32,7 +33,9 @@ class LatestFrameWriter:
 			raise RuntimeError('webcam output transport failed to start') from self.error
 
 	def submit(self, frame : VisionFrame, timing : Optional[Dict[str, float]] = None) -> None:
-		if self.error or self.stop_event.is_set():
+		if self.error:
+			raise RuntimeError('webcam output transport failed') from self.error
+		if self.stop_event.is_set():
 			return
 		if frame.dtype != numpy.uint8 or frame.shape != (self.height, self.width, 3):
 			raise ValueError('webcam output frame must be RGB uint8 with configured dimensions')
@@ -64,6 +67,9 @@ class LatestFrameWriter:
 		if self.thread.is_alive() and self.transport and hasattr(self.transport, 'abort'):
 			self.transport.abort()
 			self.thread.join(timeout)
+		if self.thread.is_alive() and self.transport and hasattr(self.transport, 'terminate'):
+			self.transport.terminate()
+			self.thread.join(timeout)
 
 	def _run(self) -> None:
 		latest_frame = None
@@ -76,6 +82,7 @@ class LatestFrameWriter:
 			return
 		self.ready_event.set()
 		try:
+			next_write_time = time.perf_counter()
 			while not self.stop_event.is_set():
 				try:
 					latest_frame, latest_timing = self.frame_queue.get(timeout = 0.01)
@@ -94,6 +101,9 @@ class LatestFrameWriter:
 						self.stats['written'] += 1
 						self.stats['repeated'] += int(is_repeat)
 						self.stats['last_write_ms'] = (write_finished - write_started) * 1000
+					if self.repeat_latest:
+						next_write_time = max(next_write_time + self.frame_interval, write_finished + self.frame_interval)
+						self.stop_event.wait(max(0.0, next_write_time - time.perf_counter()))
 		except BaseException as exception:
 			self.error = exception
 			with self.stats_lock:

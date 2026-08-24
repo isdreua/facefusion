@@ -347,3 +347,11 @@ This document records all the steps, changes, and architectural decisions made a
 - Updated the self-documenting webcam profile to a conservative low-latency preset: adaptive skipping, two webcam workers, 640x480 preview, automatic backend, and face swapper only.
 - Added an advanced-overlay warning when rolling p95 pipeline time exceeds the requested frame interval.
 - Advanced diagnostics identify the largest measured server-side stage instead of guessing from model names.
+
+---
+
+## 26. Webcam Writer Recheck Fixes
+
+- Pacing now occurs in the shared writer at the requested FPS for every fixed-rate virtual-camera transport.
+- Writer failures surface to producers, and FFmpeg termination is available as blocked-write escalation.
+- Camera cleanup now covers writer startup failures in both UI and headless paths.

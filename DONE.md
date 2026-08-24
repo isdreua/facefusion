@@ -307,3 +307,11 @@ This document records all the steps, changes, and architectural decisions made a
 - Moved UDP and virtual-camera writes onto a shared one-frame latest-output worker.
 - Virtual-camera pacing repeats the latest processed frame without blocking inference result draining.
 - Added explicit output lifecycle, frame validation, and unused FFmpeg stdout suppression.
+
+---
+
+## 21. Drop Skipped Webcam Frames Before Delivery
+
+- Adaptive and temporal scheduler skips no longer re-yield the last processed frame.
+- Inline and UDP avoid duplicate conversion, overlay, and transport work.
+- Constant-rate virtual-camera repetition remains owned by the latest-frame writer.

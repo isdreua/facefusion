@@ -111,7 +111,6 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 
 	frame_index = 0
 	nsfw_frame_index = 0
-	last_processed_frame = None
 
 	with tqdm(desc = translator.get('streaming'), unit = 'frame', disable = state_manager.get_item('log_level') in [ 'warn', 'error' ]) as progress:
 		# Add +1 to max_workers to accommodate the background NSFW analysis without stalling frame processing
@@ -145,14 +144,12 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 								discarded_futures.append(stale_future)
 						futures = futures[latest_completed_index + 1:]
 						capture_vision_frame, capture_time = latest_future.result()
-						last_processed_frame = capture_vision_frame
 						progress.update()
 						yield capture_vision_frame, capture_time, False
 				else:
 					while futures and futures[0][1].done():
 						_, oldest_future = futures.pop(0)
 						capture_vision_frame, capture_time = oldest_future.result()
-						last_processed_frame = capture_vision_frame
 						progress.update()
 						yield capture_vision_frame, capture_time, False
 
@@ -205,9 +202,7 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 					elif skipping_mode == 'adaptive' and pending_total >= max_queue_size:
 						should_skip = True
 
-					if should_skip and last_processed_frame is not None:
-						yield last_processed_frame, capture_time, True
-					elif has_stream_capacity(pending_total, len(futures), max_queue_size):
+					if not should_skip and has_stream_capacity(pending_total, len(futures), max_queue_size):
 						future = executor.submit(process_stream_frame, source_vision_frames, capture_vision_frame, capture_time, processor_modules, processor_stream_inputs, stream_vision_mask, source_audio_frame, source_voice_frame, face_analysis_features)
 						futures.append((frame_index, future))
 

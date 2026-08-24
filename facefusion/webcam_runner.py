@@ -16,6 +16,7 @@ def run() -> int:
 	webcam_mode = webcam_config.get('headless_mode')
 	webcam_resolution = webcam_config.get('resolution')
 	webcam_fps = webcam_config.get('fps')
+	webcam_execution_thread_count = webcam_config.get('execution_thread_count')
 	stream : Any = None
 
 	if webcam_mode not in [ 'udp', 'v4l2' ]:
@@ -32,7 +33,7 @@ def run() -> int:
 	stream = open_stream(webcam_mode, webcam_resolution, webcam_fps)
 
 	try:
-		for capture_vision_frame, capture_time, is_duplicate in multi_process_capture(camera_capture, webcam_fps):
+		for capture_vision_frame, capture_time, is_duplicate in multi_process_capture(camera_capture, webcam_fps, webcam_execution_thread_count):
 			capture_vision_frame = cv2.cvtColor(capture_vision_frame, cv2.COLOR_BGR2RGB)
 			capture_vision_frame = fit_cover_frame(capture_vision_frame, (webcam_width, webcam_height))
 			overlay_mode = state_manager.get_item('webcam_performance_overlay')

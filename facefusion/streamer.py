@@ -93,9 +93,10 @@ def has_stream_capacity(pending_total : int, buffered_total : int, max_queue_siz
 	return pending_total < max_queue_size and buffered_total < max_queue_size
 
 
-def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -> Iterator[Tuple[VisionFrame, float, bool]]:
+def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, webcam_execution_thread_count : Optional[int] = None) -> Iterator[Tuple[VisionFrame, float, bool]]:
 	source_vision_frames = read_static_images(state_manager.get_item('source_paths'))
-	max_queue_size = max(1, state_manager.get_item('execution_thread_count'))
+	webcam_execution_thread_count = webcam_execution_thread_count or state_manager.get_item('execution_thread_count')
+	max_queue_size = max(1, webcam_execution_thread_count)
 	processor_names = list(state_manager.get_item('processors') or [])
 	processor_modules, processor_stream_inputs = prepare_stream_processors(processor_names, source_vision_frames)
 	stream_vision_mask = None
@@ -114,7 +115,7 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -
 
 	with tqdm(desc = translator.get('streaming'), unit = 'frame', disable = state_manager.get_item('log_level') in [ 'warn', 'error' ]) as progress:
 		# Add +1 to max_workers to accommodate the background NSFW analysis without stalling frame processing
-		executor = ThreadPoolExecutor(max_workers = state_manager.get_item('execution_thread_count') + 1)
+		executor = ThreadPoolExecutor(max_workers = webcam_execution_thread_count + 1)
 		capture_thread = CameraCaptureThread(camera_capture)
 		capture_thread.start()
 		stop_event = threading.Event()

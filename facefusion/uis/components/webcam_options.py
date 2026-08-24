@@ -16,6 +16,7 @@ WEBCAM_FPS_SLIDER : Optional[gradio.Slider] = None
 WEBCAM_PERFORMANCE_OVERLAY_RADIO : Optional[gradio.Radio] = None
 WEBCAM_FRAME_SKIPPING_RADIO : Optional[gradio.Radio] = None
 WEBCAM_INLINE_PREVIEW_RESOLUTION_DROPDOWN : Optional[gradio.Dropdown] = None
+WEBCAM_EXECUTION_THREAD_COUNT_SLIDER : Optional[gradio.Slider] = None
 
 
 def render() -> None:
@@ -26,6 +27,7 @@ def render() -> None:
 	global WEBCAM_PERFORMANCE_OVERLAY_RADIO
 	global WEBCAM_FRAME_SKIPPING_RADIO
 	global WEBCAM_INLINE_PREVIEW_RESOLUTION_DROPDOWN
+	global WEBCAM_EXECUTION_THREAD_COUNT_SLIDER
 
 	webcam_config = load_webcam_config(state_manager.get_item('webcam_config'))
 	local_camera_ids = detect_local_camera_ids(0, 10) or [ 'none' ] #type:ignore[list-item]
@@ -71,6 +73,13 @@ def render() -> None:
 		choices = WEBCAM_INLINE_PREVIEW_RESOLUTIONS,
 		value = webcam_config.get('inline_preview_resolution')
 	)
+	WEBCAM_EXECUTION_THREAD_COUNT_SLIDER = gradio.Slider(
+		label = translator.get('uis.webcam_execution_thread_count_slider'),
+		value = webcam_config.get('execution_thread_count'),
+		step = 1,
+		minimum = 1,
+		maximum = 8
+	)
 	register_ui_component('webcam_device_id_dropdown', WEBCAM_DEVICE_ID_DROPDOWN)
 	register_ui_component('webcam_mode_radio', WEBCAM_MODE_RADIO)
 	register_ui_component('webcam_resolution_dropdown', WEBCAM_RESOLUTION_DROPDOWN)
@@ -78,6 +87,7 @@ def render() -> None:
 	register_ui_component('webcam_performance_overlay_radio', WEBCAM_PERFORMANCE_OVERLAY_RADIO)
 	register_ui_component('webcam_frame_skipping_radio', WEBCAM_FRAME_SKIPPING_RADIO)
 	register_ui_component('webcam_inline_preview_resolution_dropdown', WEBCAM_INLINE_PREVIEW_RESOLUTION_DROPDOWN)
+	register_ui_component('webcam_execution_thread_count_slider', WEBCAM_EXECUTION_THREAD_COUNT_SLIDER)
 
 
 def listen() -> None:

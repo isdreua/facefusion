@@ -92,5 +92,7 @@
     "performance_overlay": "simple",
     "performance_overlay_options": ["none", "simple", "advanced"],
     "inline_preview_resolution": "640x480",
-    "inline_preview_resolution_options": ["native", "320x240", "640x480", "960x540"]
+    "inline_preview_resolution_options": ["native", "320x240", "640x480", "960x540"],
+    "execution_thread_count": 2,
+    "execution_thread_count_options": [1, 2, 3, 4, 5, 6, 7, 8]
 }

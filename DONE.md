@@ -331,3 +331,11 @@ This document records all the steps, changes, and architectural decisions made a
 - Relabeled Ping as pipeline latency and added capture-read, queue-wait, processing, and post-processing timestamps.
 - Advanced overlay now exposes the principal server-side latency stages with bounded history.
 - Transport writes remain explicitly distinct from browser or physical-display presentation.
+
+---
+
+## 24. Content-Analysis Contention Metrics
+
+- Added bounded timing statistics for sampled content analysis without changing its decision logic.
+- Limited analysis to one outstanding sample so overload cannot create a hidden safety-analysis backlog.
+- Advanced diagnostics expose the latest sampled analysis duration for contention correlation.

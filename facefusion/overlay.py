@@ -1,6 +1,6 @@
 import time
 from collections import deque
-from typing import Deque, List, Tuple
+from typing import Deque, Dict, List, Optional, Tuple
 
 import cv2
 import numpy
@@ -57,7 +57,7 @@ class PerformanceOverlay:
 				return (len(timestamps) - 1) / total_elapsed
 		return fallback_rate
 
-	def render(self, vision_frame : VisionFrame, capture_time : float, mode : str = 'simple', is_duplicate : bool = False) -> VisionFrame:
+	def render(self, vision_frame : VisionFrame, capture_time : float, mode : str = 'simple', is_duplicate : bool = False, timing : Optional[Dict[str, float]] = None) -> VisionFrame:
 		# The caller must pass an exclusively owned frame because overlays are rendered in place.
 
 		# 1. Render Top-Left Performance HUD
@@ -65,7 +65,7 @@ class PerformanceOverlay:
 
 		# 2. Render Top-Right Pipeline Inspector HUD if advanced mode is enabled
 		if mode == 'advanced':
-			vision_frame = self._render_pipeline_inspector(vision_frame)
+			vision_frame = self._render_pipeline_inspector(vision_frame, timing)
 
 		return vision_frame
 
@@ -97,7 +97,8 @@ class PerformanceOverlay:
 
 		# Metrics Readout, reporting the rate at which frames get processed rather than delivered
 		fps_text = f'FPS: {instant_fps:5.1f}  (Avg: {avg_fps:4.1f})'
-		lat_text = f'Ping: {instant_lat:5.1f}ms (Avg: {avg_lat:4.1f}ms)'
+		p95_latency = float(numpy.percentile(self.latencies, 95)) if self.latencies else instant_lat
+		lat_text = f'PIPE: {instant_lat:5.1f}ms (P95: {p95_latency:4.1f}ms)'
 		cv2.putText(overlay, fps_text, (box_x + 10, box_y + 36), font, font_scale, (0, 255, 120), 1, cv2.LINE_AA)
 		cv2.putText(overlay, lat_text, (box_x + 160, box_y + 36), font, font_scale, (255, 170, 0), 1, cv2.LINE_AA)
 
@@ -109,11 +110,12 @@ class PerformanceOverlay:
 		graph2_x = box_x + 165
 
 		self._draw_graph(overlay, graph1_x, graph_y, graph_w, graph_h, list(self.fps_history), max_val = 60.0, color = (0, 255, 120), label = 'FPS History (0-60)')
-		self._draw_graph(overlay, graph2_x, graph_y, graph_w, graph_h, list(self.latency_history), max_val = 100.0, color = (255, 170, 0), label = 'Latency (0-100ms)')
+		latency_scale = max(100.0, max(self.latency_history, default = 0.0) * 1.2)
+		self._draw_graph(overlay, graph2_x, graph_y, graph_w, graph_h, list(self.latency_history), max_val = latency_scale, color = (255, 170, 0), label = f'Latency (0-{latency_scale:.0f}ms)')
 
 		return overlay
 
-	def _render_pipeline_inspector(self, vision_frame : VisionFrame) -> VisionFrame:
+	def _render_pipeline_inspector(self, vision_frame : VisionFrame, timing : Optional[Dict[str, float]] = None) -> VisionFrame:
 		frame_height, frame_width = vision_frame.shape[:2]
 
 		box_w = 310
@@ -148,6 +150,12 @@ class PerformanceOverlay:
 		prov_str = ', '.join([ p.replace('ExecutionProvider', '').lower() for p in providers ])
 		cv2.putText(overlay, f'Res: {frame_width}x{frame_height} | Threads: {threads} ({prov_str})', (box_x + 10, cur_y), font, font_scale, (220, 230, 240), 1, cv2.LINE_AA)
 		cur_y += line_spacing
+		if timing:
+			capture_ms = (timing.get('capture_read_end', 0) - timing.get('capture_read_start', 0)) * 1000
+			queue_ms = (timing.get('processing_started', 0) - timing.get('scheduler_admitted', 0)) * 1000
+			process_ms = (timing.get('processing_finished', 0) - timing.get('processing_started', 0)) * 1000
+			cv2.putText(overlay, f'Capture {capture_ms:.1f} | Queue {queue_ms:.1f} | Process {process_ms:.1f} ms', (box_x + 10, cur_y), font, font_scale, (255, 190, 80), 1, cv2.LINE_AA)
+			cur_y += line_spacing
 
 		# Face Selector & Frame Skipping
 		selector_mode = state_manager.get_item('face_selector_mode') or 'one'

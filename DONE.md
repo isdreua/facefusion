@@ -323,3 +323,11 @@ This document records all the steps, changes, and architectural decisions made a
 - Added top-level JSON/UI selection for auto, MSMF, and DirectShow, with auto as the default.
 - Explicit Windows backend failures warn and fall back once to automatic selection.
 - Capture caching distinguishes backend and format, and discovery probes use the selected backend.
+
+---
+
+## 23. Diagnostic Webcam Latency Stages
+
+- Relabeled Ping as pipeline latency and added capture-read, queue-wait, processing, and post-processing timestamps.
+- Advanced overlay now exposes the principal server-side latency stages with bounded history.
+- Transport writes remain explicitly distinct from browser or physical-display presentation.

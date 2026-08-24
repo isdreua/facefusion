@@ -42,6 +42,7 @@ class CameraCaptureThread(threading.Thread):
 		while self.running and self.camera_capture.isOpened():
 			capture_time = time.perf_counter()
 			ret, frame = self.camera_capture.read()
+			capture_read_end = time.perf_counter()
 			if not ret:
 				consecutive_read_failures += 1
 				if not self.camera_capture.isOpened() or consecutive_read_failures >= self.MAX_CONSECUTIVE_READ_FAILURES:
@@ -51,14 +52,14 @@ class CameraCaptureThread(threading.Thread):
 				continue
 			consecutive_read_failures = 0
 			try:
-				self.frame_queue.put_nowait((capture_time, frame))
+				self.frame_queue.put_nowait((capture_time, capture_read_end, frame))
 			except queue.Full:
 				try:
 					self.frame_queue.get_nowait()
 				except queue.Empty:
 					pass
 				try:
-					self.frame_queue.put_nowait((capture_time, frame))
+					self.frame_queue.put_nowait((capture_time, capture_read_end, frame))
 				except queue.Full:
 					pass
 
@@ -93,7 +94,7 @@ def has_stream_capacity(pending_total : int, buffered_total : int, max_queue_siz
 	return pending_total < max_queue_size and buffered_total < max_queue_size
 
 
-def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, webcam_execution_thread_count : Optional[int] = None) -> Iterator[Tuple[VisionFrame, float, bool]]:
+def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, webcam_execution_thread_count : Optional[int] = None) -> Iterator[Tuple[VisionFrame, float, bool, Dict[str, float]]]:
 	source_vision_frames = read_static_images(state_manager.get_item('source_paths'))
 	webcam_execution_thread_count = webcam_execution_thread_count or state_manager.get_item('execution_thread_count')
 	max_queue_size = max(1, webcam_execution_thread_count)
@@ -143,19 +144,24 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 							if not stale_future.cancel() and not stale_future.done():
 								discarded_futures.append(stale_future)
 						futures = futures[latest_completed_index + 1:]
-						capture_vision_frame, capture_time = latest_future.result()
+						capture_vision_frame, capture_time, timing = latest_future.result()
 						progress.update()
-						yield capture_vision_frame, capture_time, False
+						yield capture_vision_frame, capture_time, False, timing
 				else:
 					while futures and futures[0][1].done():
 						_, oldest_future = futures.pop(0)
-						capture_vision_frame, capture_time = oldest_future.result()
+						capture_vision_frame, capture_time, timing = oldest_future.result()
 						progress.update()
-						yield capture_vision_frame, capture_time, False
+						yield capture_vision_frame, capture_time, False, timing
 
 				# 2. Read the latest frame from the camera thread (non-blocking yield delay)
 				try:
-					capture_time, capture_vision_frame = capture_thread.frame_queue.get(timeout=0.005)
+					queue_item = capture_thread.frame_queue.get(timeout=0.005)
+					if len(queue_item) == 3:
+						capture_time, capture_read_end, capture_vision_frame = queue_item
+					else:
+						capture_time, capture_vision_frame = queue_item
+						capture_read_end = capture_time
 				except queue.Empty:
 					continue
 
@@ -203,7 +209,8 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 						should_skip = True
 
 					if not should_skip and has_stream_capacity(pending_total, len(futures), max_queue_size):
-						future = executor.submit(process_stream_frame, source_vision_frames, capture_vision_frame, capture_time, processor_modules, processor_stream_inputs, stream_vision_mask, source_audio_frame, source_voice_frame, face_analysis_features)
+						timing = { 'capture_read_start': capture_time, 'capture_read_end': capture_read_end, 'scheduler_admitted': time.perf_counter() }
+						future = executor.submit(process_stream_frame, source_vision_frames, capture_vision_frame, capture_time, processor_modules, processor_stream_inputs, stream_vision_mask, source_audio_frame, source_voice_frame, face_analysis_features, timing)
 						futures.append((frame_index, future))
 
 			if stop_event.is_set():
@@ -211,9 +218,9 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 
 			# Yield any remaining frames in order
 			for _, future in futures:
-				capture_vision_frame, capture_time = future.result()
+				capture_vision_frame, capture_time, timing = future.result()
 				progress.update()
-				yield capture_vision_frame, capture_time, False
+				yield capture_vision_frame, capture_time, False, timing
 		finally:
 			set_app_context_override(None)
 			capture_thread.stop()
@@ -223,7 +230,7 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 			executor.shutdown(wait=False)
 
 
-def process_stream_frame(source_vision_frames : List[VisionFrame], target_vision_frame : VisionFrame, capture_time : float, processor_modules : List[ModuleType], processor_stream_inputs : Optional[Dict[str, Dict[str, Any]]] = None, stream_vision_mask : Optional[Mask] = None, source_audio_frame : Optional[AudioFrame] = None, source_voice_frame : Optional[AudioFrame] = None, face_analysis_features : Optional[Set[str]] = None) -> Tuple[VisionFrame, float]:
+def process_stream_frame(source_vision_frames : List[VisionFrame], target_vision_frame : VisionFrame, capture_time : float, processor_modules : List[ModuleType], processor_stream_inputs : Optional[Dict[str, Dict[str, Any]]] = None, stream_vision_mask : Optional[Mask] = None, source_audio_frame : Optional[AudioFrame] = None, source_voice_frame : Optional[AudioFrame] = None, face_analysis_features : Optional[Set[str]] = None, timing : Optional[Dict[str, float]] = None) -> Any:
 	if source_audio_frame is None:
 		source_audio_frame = create_empty_audio_frame()
 	if source_voice_frame is None:
@@ -239,6 +246,8 @@ def process_stream_frame(source_vision_frames : List[VisionFrame], target_vision
 	set_paste_in_place(True)
 	set_face_analysis_features(face_analysis_features)
 	try:
+		if timing is not None:
+			timing['processing_started'] = time.perf_counter()
 		begin_face_selection_context()
 		for processor_module in processor_modules:
 			logger.disable()
@@ -262,6 +271,9 @@ def process_stream_frame(source_vision_frames : List[VisionFrame], target_vision
 		set_paste_in_place(False)
 		set_app_context_override(None)
 
+	if timing is not None:
+		timing['processing_finished'] = time.perf_counter()
+		return temp_vision_frame, capture_time, timing
 	return temp_vision_frame, capture_time
 
 

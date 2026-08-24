@@ -1,6 +1,7 @@
 import queue
 import threading
-from typing import Any, Callable, Optional
+import time
+from typing import Any, Callable, Dict, Optional
 
 import numpy
 
@@ -19,6 +20,8 @@ class LatestFrameWriter:
 		self.thread = threading.Thread(target = self._run, daemon = True)
 		self.transport = None
 		self.error : Optional[BaseException] = None
+		self.stats_lock = threading.Lock()
+		self.stats = { 'submitted': 0, 'replaced': 0, 'written': 0, 'repeated': 0, 'write_failures': 0, 'last_write_ms': 0.0 }
 
 	def start(self, timeout : float = 5.0) -> None:
 		self.thread.start()
@@ -28,21 +31,31 @@ class LatestFrameWriter:
 		if self.error:
 			raise RuntimeError('webcam output transport failed to start') from self.error
 
-	def submit(self, frame : VisionFrame) -> None:
+	def submit(self, frame : VisionFrame, timing : Optional[Dict[str, float]] = None) -> None:
 		if self.error or self.stop_event.is_set():
 			return
 		if frame.dtype != numpy.uint8 or frame.shape != (self.height, self.width, 3):
 			raise ValueError('webcam output frame must be RGB uint8 with configured dimensions')
 		if not frame.flags.c_contiguous:
 			frame = numpy.ascontiguousarray(frame)
+		if timing is not None:
+			timing['output_enqueued'] = time.perf_counter()
+		with self.stats_lock:
+			self.stats['submitted'] += 1
 		try:
-			self.frame_queue.put_nowait(frame)
+			self.frame_queue.put_nowait((frame, timing))
 		except queue.Full:
 			try:
 				self.frame_queue.get_nowait()
 			except queue.Empty:
 				pass
-			self.frame_queue.put_nowait(frame)
+			with self.stats_lock:
+				self.stats['replaced'] += 1
+			self.frame_queue.put_nowait((frame, timing))
+
+	def get_stats(self) -> Dict[str, float]:
+		with self.stats_lock:
+			return dict(self.stats)
 
 	def close(self, timeout : float = 2.0) -> None:
 		self.stop_event.set()
@@ -54,6 +67,7 @@ class LatestFrameWriter:
 
 	def _run(self) -> None:
 		latest_frame = None
+		latest_timing = None
 		try:
 			self.transport = self.transport_factory()
 		except BaseException as exception:
@@ -64,14 +78,26 @@ class LatestFrameWriter:
 		try:
 			while not self.stop_event.is_set():
 				try:
-					latest_frame = self.frame_queue.get(timeout = 0.01)
+					latest_frame, latest_timing = self.frame_queue.get(timeout = 0.01)
+					is_repeat = False
 				except queue.Empty:
 					if not self.repeat_latest:
 						continue
+					is_repeat = True
 				if latest_frame is not None:
+					write_started = time.perf_counter()
 					self.transport.stdin.write(latest_frame.tobytes())
+					write_finished = time.perf_counter()
+					if latest_timing is not None and not is_repeat:
+						latest_timing['output_written'] = write_finished
+					with self.stats_lock:
+						self.stats['written'] += 1
+						self.stats['repeated'] += int(is_repeat)
+						self.stats['last_write_ms'] = (write_finished - write_started) * 1000
 		except BaseException as exception:
 			self.error = exception
+			with self.stats_lock:
+				self.stats['write_failures'] += 1
 		finally:
 			if self.transport and hasattr(self.transport.stdin, 'close'):
 				self.transport.stdin.close()

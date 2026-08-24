@@ -299,3 +299,11 @@ This document records all the steps, changes, and architectural decisions made a
 - Added a dedicated webcam worker limit, defaulting to two, without changing batch concurrency.
 - Wired the value through UI, JSON auto-start, and headless webcam sessions.
 - The scheduler admission window and executor use the same session-scoped worker limit.
+
+---
+
+## 20. Latest-Frame Webcam Output Writer
+
+- Moved UDP and virtual-camera writes onto a shared one-frame latest-output worker.
+- Virtual-camera pacing repeats the latest processed frame without blocking inference result draining.
+- Added explicit output lifecycle, frame validation, and unused FFmpeg stdout suppression.

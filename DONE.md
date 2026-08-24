@@ -339,3 +339,11 @@ This document records all the steps, changes, and architectural decisions made a
 - Added bounded timing statistics for sampled content analysis without changing its decision logic.
 - Limited analysis to one outstanding sample so overload cannot create a hidden safety-analysis backlog.
 - Advanced diagnostics expose the latest sampled analysis duration for contention correlation.
+
+---
+
+## 25. Low-Latency Webcam Preset and Guardrails
+
+- Updated the self-documenting webcam profile to a conservative low-latency preset: adaptive skipping, two webcam workers, 640x480 preview, automatic backend, and face swapper only.
+- Added an advanced-overlay warning when rolling p95 pipeline time exceeds the requested frame interval.
+- Advanced diagnostics identify the largest measured server-side stage instead of guessing from model names.

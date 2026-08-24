@@ -26,6 +26,18 @@ class FakeCameraCapture:
 			return False, None
 
 
+class IntermittentFakeCameraCapture(FakeCameraCapture):
+	def read(self):
+		try:
+			frame = next(self.frames)
+		except StopIteration:
+			self.opened = False
+			return False, None
+		if frame is None:
+			return False, None
+		return True, frame
+
+
 def test_camera_capture_thread_drops_oldest_frame_without_blocking():
 	first_frame = numpy.zeros((2, 2, 3), dtype = numpy.uint8)
 	latest_frame = numpy.ones((2, 2, 3), dtype = numpy.uint8)
@@ -37,6 +49,18 @@ def test_camera_capture_thread_drops_oldest_frame_without_blocking():
 	assert queued_frame is latest_frame
 	with pytest.raises(queue.Empty):
 		capture_thread.frame_queue.get_nowait()
+
+
+def test_camera_capture_thread_recovers_from_transient_read_failure(monkeypatch):
+	frame = numpy.ones((2, 2, 3), dtype = numpy.uint8)
+	camera_capture = IntermittentFakeCameraCapture([ None, frame ])
+	capture_thread = CameraCaptureThread(camera_capture)
+	monkeypatch.setattr(capture_thread, 'READ_FAILURE_RETRY_DELAY', 0)
+
+	capture_thread.run()
+
+	_, queued_frame = capture_thread.frame_queue.get_nowait()
+	assert queued_frame is frame
 
 
 class FakeProgress:

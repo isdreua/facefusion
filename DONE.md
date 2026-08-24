@@ -166,3 +166,18 @@ This document records all the steps, changes, and architectural decisions made a
 - `git diff --check` passes.
 - Python compilation passes under `python3`.
 - The focused pytest suite was not run in this workspace because its current Python environment does not provide `pytest` or `numpy`; run `pytest -q tests/test_paste_context.py tests/test_face_enhancer_blend.py` in the FaceFusion Conda environment.
+
+---
+
+## 11. Transient Windows Webcam Read Recovery
+
+**Goal:** Prevent the webcam stream from freezing or stopping after OpenCV's MSMF backend reports a temporary `can't grab frame` error.
+
+### Changes Made:
+- **Retried transient capture failures:** `CameraCaptureThread` now tolerates up to 30 consecutive failed reads with a 10 ms delay, instead of terminating the stream after the first failure.
+  - *Decision:* A successful read resets the failure count, allowing brief Windows Media Foundation stalls to recover while persistent camera disconnection still stops the capture thread after a bounded interval.
+- **Added a regression test:** `test_camera_capture_thread_recovers_from_transient_read_failure()` verifies that a valid frame following a failed read is delivered normally.
+
+### Verification:
+- Python syntax compilation and `git diff --check` pass.
+- The focused pytest suite remains unavailable in this workspace because its Python environment does not provide `pytest` or `numpy`.

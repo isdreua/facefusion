@@ -27,6 +27,9 @@ from facefusion.vision import extract_vision_mask, is_vision_frame, read_static_
 
 
 class CameraCaptureThread(threading.Thread):
+	MAX_CONSECUTIVE_READ_FAILURES = 30
+	READ_FAILURE_RETRY_DELAY = 0.01
+
 	def __init__(self, camera_capture: cv2.VideoCapture):
 		super().__init__()
 		self.camera_capture = camera_capture
@@ -35,12 +38,18 @@ class CameraCaptureThread(threading.Thread):
 		self.daemon = True
 
 	def run(self):
+		consecutive_read_failures = 0
 		while self.running and self.camera_capture.isOpened():
 			capture_time = time.perf_counter()
 			ret, frame = self.camera_capture.read()
 			if not ret:
-				self.running = False
-				break
+				consecutive_read_failures += 1
+				if not self.camera_capture.isOpened() or consecutive_read_failures >= self.MAX_CONSECUTIVE_READ_FAILURES:
+					self.running = False
+					break
+				time.sleep(self.READ_FAILURE_RETRY_DELAY)
+				continue
+			consecutive_read_failures = 0
 			try:
 				self.frame_queue.put_nowait((capture_time, frame))
 			except queue.Full:

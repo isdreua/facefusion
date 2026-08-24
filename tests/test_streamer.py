@@ -162,6 +162,16 @@ def test_prepare_stream_processors_includes_newly_enabled_processor(monkeypatch)
 	assert prepared_frames == [ source_frame ]
 
 
+@pytest.mark.parametrize(('pending_total', 'buffered_total', 'max_queue_size', 'has_capacity'), [
+	(0, 0, 8, True),
+	(7, 7, 8, True),
+	(8, 7, 8, False),
+	(1, 8, 8, False)
+])
+def test_stream_capacity_caps_ordered_frame_buffer(pending_total, buffered_total, max_queue_size, has_capacity):
+	assert streamer.has_stream_capacity(pending_total, buffered_total, max_queue_size) is has_capacity
+
+
 def test_capture_context_is_cleared_after_normal_completion(monkeypatch):
 	context_calls = []
 	generator = prepare_capture_test(monkeypatch, FakeFrameQueue(), context_calls)

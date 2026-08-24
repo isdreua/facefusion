@@ -96,6 +96,7 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -
 		stop_event = threading.Event()
 		
 		try:
+			set_app_context_override(detect_app_context())
 			futures = []
 			discarded_futures = []
 
@@ -183,6 +184,7 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -
 				progress.update()
 				yield capture_vision_frame, capture_time, False
 		finally:
+			set_app_context_override(None)
 			capture_thread.stop()
 			capture_thread.join(timeout = 1.0)
 			if capture_thread.is_alive():

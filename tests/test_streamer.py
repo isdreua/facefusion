@@ -6,6 +6,7 @@ import numpy
 import pytest
 
 from facefusion import streamer
+from facefusion.face_helper import get_paste_in_place
 from facefusion.streamer import CameraCaptureThread
 
 
@@ -180,3 +181,13 @@ def test_weight_change_refreshes_features_without_rebuilding_inputs(monkeypatch)
 	assert len(prepared_weights) == 1
 	assert feature_weights[-1] == 0.75
 	assert len(feature_weights) == 2
+
+
+def test_stream_paste_mode_is_cleared_after_processor_exception(monkeypatch):
+	processor_module = ModuleType('failing_processor')
+	processor_module.process_frame = lambda inputs: (_ for _ in ()).throw(RuntimeError('processor failed'))
+	frame = numpy.zeros((2, 2, 3), dtype = numpy.uint8)
+
+	with pytest.raises(RuntimeError, match = 'processor failed'):
+		streamer.process_stream_frame([], frame, 1.0, [ processor_module ])
+	assert get_paste_in_place() is False

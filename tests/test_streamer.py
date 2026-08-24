@@ -47,6 +47,7 @@ def test_camera_capture_thread_drops_oldest_frame_without_blocking():
 
 	_, _, queued_frame = capture_thread.frame_queue.get_nowait()
 	assert queued_frame is latest_frame
+	assert capture_thread.running is False
 	with pytest.raises(queue.Empty):
 		capture_thread.frame_queue.get_nowait()
 

@@ -138,7 +138,7 @@ This document records all the steps, changes, and architectural decisions made a
   - *Decision:* channel order was deliberately **not** folded into the mean/std application. `simswap` uses non-uniform per-channel values (`mean: [0.485, 0.456, 0.406]`), so reversing channels relative to them would be a silent correctness bug on that model. The cost is one extra contiguous copy, still far below the previous float64 churn.
   - *Note:* `normalize_crop_frame()` now returns float32 where the ghost/hififace/hyperswap/uniface branch previously returned float64. Downstream is `explode_pixel_boost()` → `cv2.warpAffine` → `astype(uint8)`, all fine with float32 (and better supported by OpenCV than float64). The other branch already returned float32, so this makes the two consistent.
 - **Gated stream submission on unfinished work** (`daa3a44`): submission was capped by `len(futures) + len(discarded_futures) < max_queue_size`, which counted completed-but-not-yet-yielded futures against the worker budget. With ordered output and `max_queue_size == execution_thread_count`, one slow head frame filled the window and stopped submission entirely, leaving the executor idle behind it.
-  - *Fix:* count only futures that are not `done()`. Added `len(futures) < max_queue_size * 2` as a hard cap so a permanently stalled head cannot grow the list without bound.
+  - *Original fix:* counted only futures that are not `done()` and added `len(futures) < max_queue_size * 2` as a hard cap. The doubled hard cap was later found to permit roughly 500 ms of buffered video at 30 FPS and was reduced back to one queue window in §13.
   - *Correction to the review that prompted this:* the same review also claimed stream output was "gated on camera arrival." That was **wrong** — `continue` on an empty capture queue returns to the top of the loop, which re-drains, so finished frames are yielded within the 5 ms poll regardless. The submission window was the real defect; the latency claim was not.
 - **Reported processed frame rate instead of delivered** (`ed05bb9`): on a skip, the capture loop re-yielded `last_processed_frame` paired with the *new* frame's `capture_time`. `PerformanceOverlay` counted that as a delivered frame, so the HUD overstated FPS **and** understated latency — precisely the two numbers someone reads while tuning skipping modes.
   - *Fix:* `multi_process_capture()` now yields `(frame, capture_time, is_duplicate)`; the overlay tracks processed and delivered timestamps separately, records latency only for real frames, and drives the history graphs from processed frames. The headline `FPS` is the processing rate; delivered rate appears as `OUT` in the HUD header.
@@ -193,6 +193,22 @@ This document records all the steps, changes, and architectural decisions made a
   - *Cause:* The webcam previously captured the processor list only once at startup. Enabling Face Enhancer changed the UI state, but the running stream continued submitting frames only to the previously active Face Swapper.
 - **Centralized stream processor preparation:** Initial startup and live refresh now share `prepare_stream_processors()`, including `pre_process('stream')` validation and optional per-stream input preparation.
 - **Added a regression test:** The new test verifies that a newly selected Face Enhancer module is validated, included, and has its stream inputs prepared.
+
+### Verification:
+- Python syntax compilation and `git diff --check` pass.
+- The focused pytest suite remains unavailable in this workspace because its Python environment does not provide `pytest` or `numpy`.
+
+---
+
+## 13. Webcam Ordered-Buffer Latency Cap
+
+**Goal:** Restore low webcam latency after the stream grew to roughly 500 ms behind live capture.
+
+### Changes Made:
+- **Reduced the ordered frame-buffer cap:** Stream submission now stops when the buffered future list reaches `execution_thread_count`, rather than allowing `2 × execution_thread_count` entries.
+  - *Cause:* With the default eight threads, the previous 16-frame cap represented about 533 ms at 30 FPS. A slow oldest future could therefore retain half a second of already captured video even while newer work completed.
+  - *Decision:* Unfinished-work counting is retained so completed futures do not falsely occupy executor workers, but completed frames waiting behind an ordered head now count against the latency window.
+- **Added capacity-policy regression coverage:** Parameterized tests verify that submission is rejected when either active work or the ordered frame buffer reaches its configured limit.
 
 ### Verification:
 - Python syntax compilation and `git diff --check` pass.

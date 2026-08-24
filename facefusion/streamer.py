@@ -89,6 +89,10 @@ def prepare_stream_processors(processor_names : List[str], source_vision_frames 
 	return validated_processor_modules, processor_stream_inputs
 
 
+def has_stream_capacity(pending_total : int, buffered_total : int, max_queue_size : int) -> bool:
+	return pending_total < max_queue_size and buffered_total < max_queue_size
+
+
 def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -> Iterator[Tuple[VisionFrame, float, bool]]:
 	source_vision_frames = read_static_images(state_manager.get_item('source_paths'))
 	max_queue_size = max(1, state_manager.get_item('execution_thread_count'))
@@ -202,7 +206,7 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -
 
 					if should_skip and last_processed_frame is not None:
 						yield last_processed_frame, capture_time, True
-					elif pending_total < max_queue_size and len(futures) < max_queue_size * 2:
+					elif has_stream_capacity(pending_total, len(futures), max_queue_size):
 						future = executor.submit(process_stream_frame, source_vision_frames, capture_vision_frame, capture_time, processor_modules, processor_stream_inputs, stream_vision_mask, source_audio_frame, source_voice_frame, face_analysis_features)
 						futures.append((frame_index, future))
 

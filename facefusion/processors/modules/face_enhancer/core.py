@@ -21,7 +21,7 @@ from facefusion.processors.types import ProcessorOutputs
 from facefusion.program_helper import find_argument_group
 from facefusion.thread_helper import conditional_thread_semaphore
 from facefusion.types import ApplyStateItem, Args, DownloadScope, Face, InferencePool, ModelOptions, ModelSet, ProcessMode, VisionFrame
-from facefusion.vision import blend_frame, read_static_image, read_static_video_frame
+from facefusion.vision import read_static_image, read_static_video_frame
 
 
 @lru_cache()
@@ -366,9 +366,10 @@ def enhance_face(target_face : Face, temp_vision_frame : VisionFrame) -> VisionF
 	crop_vision_frame = forward(crop_vision_frame, face_enhancer_weight)
 	crop_vision_frame = normalize_crop_frame(crop_vision_frame)
 	crop_mask = numpy.minimum.reduce(crop_masks).clip(0, 1)
+	face_enhancer_blend = state_manager.get_item('face_enhancer_blend') / 100
+	crop_mask = crop_mask * face_enhancer_blend
 	paste_vision_frame = paste_back(temp_vision_frame, crop_vision_frame, crop_mask, affine_matrix)
-	temp_vision_frame = blend_paste_frame(temp_vision_frame, paste_vision_frame)
-	return temp_vision_frame
+	return paste_vision_frame
 
 
 def forward(crop_vision_frame : VisionFrame, face_enhancer_weight : FaceEnhancerWeight) -> VisionFrame:
@@ -412,12 +413,6 @@ def normalize_crop_frame(crop_vision_frame : VisionFrame) -> VisionFrame:
 	crop_vision_frame = (crop_vision_frame * 255.0).round()
 	crop_vision_frame = crop_vision_frame.astype(numpy.uint8)[:, :, ::-1]
 	return crop_vision_frame
-
-
-def blend_paste_frame(temp_vision_frame : VisionFrame, paste_vision_frame : VisionFrame) -> VisionFrame:
-	face_enhancer_blend = 1 - (state_manager.get_item('face_enhancer_blend') / 100)
-	temp_vision_frame = blend_frame(temp_vision_frame, paste_vision_frame, 1 - face_enhancer_blend)
-	return temp_vision_frame
 
 
 def process_frame(inputs : FaceEnhancerInputs) -> ProcessorOutputs:

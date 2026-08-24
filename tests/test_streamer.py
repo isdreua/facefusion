@@ -1,5 +1,6 @@
 import queue
 from concurrent.futures import Future
+from types import ModuleType
 
 import numpy
 import pytest
@@ -95,26 +96,29 @@ class FakeFrameQueue:
 		return 1.0, self.frame
 
 
-def prepare_capture_test(monkeypatch, capture, context_calls):
+def prepare_capture_test(monkeypatch, capture, context_calls, processor_modules = None, get_state_item = None):
+	processor_modules = processor_modules or []
 	monkeypatch.setattr(streamer, 'read_static_images', lambda paths: [])
-	monkeypatch.setattr(streamer, 'get_processors_modules', lambda processors: [])
+	monkeypatch.setattr(streamer, 'get_processors_modules', lambda processors: processor_modules)
 	monkeypatch.setattr(streamer, 'create_empty_audio_frame', lambda: numpy.zeros(1))
 	monkeypatch.setattr(streamer, 'tqdm', lambda **kwargs: FakeProgress())
 	monkeypatch.setattr(streamer, 'ThreadPoolExecutor', FakeExecutor)
 	monkeypatch.setattr(streamer, 'CameraCaptureThread', FakeCaptureThread)
 	monkeypatch.setattr(streamer, 'detect_app_context', lambda: 'ui')
 	monkeypatch.setattr(streamer, 'set_app_context_override', context_calls.append)
-	monkeypatch.setattr(streamer.state_manager, 'get_item', lambda key: {
+	default_state = {
 		'source_paths': [],
 		'execution_thread_count': 1,
 		'processors': [],
 		'face_swapper_model': 'model',
+		'face_swapper_weight': 0.5,
 		'log_level': 'info',
 		'webcam_frame_skipping': 'disabled',
 		'face_selector_mode': 'one',
 		'face_selector_age_start': 0,
 		'face_selector_age_end': 100
-	}.get(key))
+	}
+	monkeypatch.setattr(streamer.state_manager, 'get_item', get_state_item or default_state.get)
 	return streamer.multi_process_capture(capture, 30)
 
 
@@ -143,3 +147,36 @@ def test_capture_context_is_cleared_after_exception(monkeypatch):
 	with pytest.raises(RuntimeError, match = 'capture failed'):
 		next(generator)
 	assert context_calls == [ 'ui', None ]
+
+
+def test_weight_change_refreshes_features_without_rebuilding_inputs(monkeypatch):
+	context_calls = []
+	prepared_weights = []
+	feature_weights = []
+	weight_reads = 0
+	default_state = {
+		'source_paths': [], 'execution_thread_count': 1, 'processors': [ 'face_swapper' ],
+		'face_swapper_model': 'model', 'log_level': 'info', 'webcam_frame_skipping': 'disabled',
+		'face_selector_mode': 'one', 'face_selector_age_start': 0, 'face_selector_age_end': 100
+	}
+
+	def get_state_item(key):
+		nonlocal weight_reads
+		if key == 'face_swapper_weight':
+			weight_reads += 1
+			return 0.5 if weight_reads <= 3 else 0.75
+		return default_state.get(key)
+
+	processor_module = ModuleType('face_swapper_test')
+	processor_module.pre_process = lambda mode: True
+	processor_module.prepare_stream_inputs = lambda frames: prepared_weights.append(get_state_item('face_swapper_weight')) or {}
+	processor_module.get_stream_face_analysis_features = lambda: feature_weights.append(get_state_item('face_swapper_weight')) or []
+	processor_module.process_frame = lambda inputs: (inputs['temp_vision_frame'], inputs['temp_vision_mask'])
+	frame = numpy.zeros((2, 2, 3), dtype = numpy.uint8)
+	generator = prepare_capture_test(monkeypatch, FakeFrameQueue(frame), context_calls, [ processor_module ], get_state_item)
+
+	next(generator)
+	generator.close()
+	assert len(prepared_weights) == 1
+	assert feature_weights[-1] == 0.75
+	assert len(feature_weights) == 2

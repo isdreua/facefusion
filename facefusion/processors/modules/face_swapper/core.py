@@ -724,6 +724,8 @@ def balance_source_embedding(source_embedding : Embedding, target_embedding : Em
 	model_type = get_model_options().get('type')
 	face_swapper_weight = state_manager.get_item('face_swapper_weight')
 	face_swapper_weight = numpy.interp(face_swapper_weight, [ 0, 1 ], [ 0.35, -0.35 ]).astype(numpy.float32)
+	if face_swapper_weight == 0.0:
+		return source_embedding.reshape(1, -1)
 
 	if model_type in [ 'hififace', 'hyperswap', 'inswapper', 'simswap' ]:
 		target_embedding = target_embedding / numpy.linalg.norm(target_embedding)
@@ -812,7 +814,7 @@ def prepare_stream_inputs(source_vision_frames : List[VisionFrame]) -> Dict[str,
 
 
 def get_stream_face_analysis_features() -> List[str]:
-	if get_model_options().get('type') in [ 'hififace', 'hyperswap', 'inswapper', 'simswap' ]:
+	if state_manager.get_item('face_swapper_weight') != 0.5 and get_model_options().get('type') in [ 'hififace', 'hyperswap', 'inswapper', 'simswap' ]:
 		return [ 'embedding' ]
 	return []
 

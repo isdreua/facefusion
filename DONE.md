@@ -283,3 +283,11 @@ This document records all the steps, changes, and architectural decisions made a
 
 ### Verification:
 - Focused tests and syntax checks are run as part of this commit.
+
+---
+
+## 18. Bounded Inline Webcam Preview
+
+- Added an independently configurable inline preview cap, defaulting to 640x480.
+- The cap is applied only before Gradio delivery; UDP and virtual-camera dimensions are unchanged.
+- Added UI, JSON example, validation, and auto-start plumbing.

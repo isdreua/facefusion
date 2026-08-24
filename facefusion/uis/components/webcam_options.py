@@ -7,7 +7,7 @@ from facefusion.camera_manager import detect_local_camera_ids
 from facefusion.common_helper import get_first
 from facefusion.uis import choices as uis_choices
 from facefusion.uis.core import register_ui_component
-from facefusion.webcam_config import WEBCAM_FRAME_SKIPPING_MODES, WEBCAM_PERFORMANCE_OVERLAYS, load_webcam_config
+from facefusion.webcam_config import WEBCAM_FRAME_SKIPPING_MODES, WEBCAM_INLINE_PREVIEW_RESOLUTIONS, WEBCAM_PERFORMANCE_OVERLAYS, load_webcam_config
 
 WEBCAM_DEVICE_ID_DROPDOWN : Optional[gradio.Dropdown] = None
 WEBCAM_MODE_RADIO : Optional[gradio.Radio] = None
@@ -15,6 +15,7 @@ WEBCAM_RESOLUTION_DROPDOWN : Optional[gradio.Dropdown] = None
 WEBCAM_FPS_SLIDER : Optional[gradio.Slider] = None
 WEBCAM_PERFORMANCE_OVERLAY_RADIO : Optional[gradio.Radio] = None
 WEBCAM_FRAME_SKIPPING_RADIO : Optional[gradio.Radio] = None
+WEBCAM_INLINE_PREVIEW_RESOLUTION_DROPDOWN : Optional[gradio.Dropdown] = None
 
 
 def render() -> None:
@@ -24,6 +25,7 @@ def render() -> None:
 	global WEBCAM_FPS_SLIDER
 	global WEBCAM_PERFORMANCE_OVERLAY_RADIO
 	global WEBCAM_FRAME_SKIPPING_RADIO
+	global WEBCAM_INLINE_PREVIEW_RESOLUTION_DROPDOWN
 
 	webcam_config = load_webcam_config(state_manager.get_item('webcam_config'))
 	local_camera_ids = detect_local_camera_ids(0, 10) or [ 'none' ] #type:ignore[list-item]
@@ -64,12 +66,18 @@ def render() -> None:
 		choices = WEBCAM_FRAME_SKIPPING_MODES,
 		value = webcam_config.get('frame_skipping')
 	)
+	WEBCAM_INLINE_PREVIEW_RESOLUTION_DROPDOWN = gradio.Dropdown(
+		label = translator.get('uis.webcam_inline_preview_resolution_dropdown'),
+		choices = WEBCAM_INLINE_PREVIEW_RESOLUTIONS,
+		value = webcam_config.get('inline_preview_resolution')
+	)
 	register_ui_component('webcam_device_id_dropdown', WEBCAM_DEVICE_ID_DROPDOWN)
 	register_ui_component('webcam_mode_radio', WEBCAM_MODE_RADIO)
 	register_ui_component('webcam_resolution_dropdown', WEBCAM_RESOLUTION_DROPDOWN)
 	register_ui_component('webcam_fps_slider', WEBCAM_FPS_SLIDER)
 	register_ui_component('webcam_performance_overlay_radio', WEBCAM_PERFORMANCE_OVERLAY_RADIO)
 	register_ui_component('webcam_frame_skipping_radio', WEBCAM_FRAME_SKIPPING_RADIO)
+	register_ui_component('webcam_inline_preview_resolution_dropdown', WEBCAM_INLINE_PREVIEW_RESOLUTION_DROPDOWN)
 
 
 def listen() -> None:

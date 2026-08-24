@@ -270,7 +270,8 @@ LOCALES : Locales =\
 			'webcam_mode_radio': 'WEBCAM MODE',
 			'webcam_resolution_dropdown': 'WEBCAM RESOLUTION',
 			'webcam_performance_overlay_radio': 'PERFORMANCE OVERLAY',
-			'webcam_frame_skipping_radio': 'FRAME SKIPPING'
+			'webcam_frame_skipping_radio': 'FRAME SKIPPING',
+			'webcam_inline_preview_resolution_dropdown': 'INLINE PREVIEW RESOLUTION'
 		}
 	}
 }

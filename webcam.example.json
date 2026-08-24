@@ -90,5 +90,7 @@
     "frame_skipping": "adaptive",
     "frame_skipping_options": ["adaptive", "disabled", "1-in-2", "1-in-3"],
     "performance_overlay": "simple",
-    "performance_overlay_options": ["none", "simple", "advanced"]
+    "performance_overlay_options": ["none", "simple", "advanced"],
+    "inline_preview_resolution": "640x480",
+    "inline_preview_resolution_options": ["native", "320x240", "640x480", "960x540"]
 }

@@ -13,12 +13,14 @@ DEFAULT_WEBCAM_CONFIG : Dict[str, Any] =\
 	'resolution': '320x240',
 	'fps': 30,
 	'frame_skipping': 'adaptive',
-	'performance_overlay': 'none'
+	'performance_overlay': 'none',
+	'inline_preview_resolution': '640x480'
 }
 WEBCAM_MODES = [ 'inline', 'udp', 'v4l2' ]
 WEBCAM_RESOLUTIONS = [ '320x240', '640x480', '800x600', '1024x768', '1280x720', '1280x960', '1920x1080' ]
 WEBCAM_FRAME_SKIPPING_MODES = [ 'adaptive', 'disabled', '1-in-2', '1-in-3' ]
 WEBCAM_PERFORMANCE_OVERLAYS = [ 'none', 'simple', 'advanced' ]
+WEBCAM_INLINE_PREVIEW_RESOLUTIONS = [ 'native', '320x240', '640x480', '960x540' ]
 WEBCAM_STATE_KEYS =\
 [
 	'source_paths', 'processors', 'execution_device_ids', 'execution_providers', 'execution_thread_count', 'video_memory_strategy',
@@ -59,6 +61,8 @@ def load_webcam_config(config_path : str) -> Dict[str, Any]:
 		webcam_config['frame_skipping'] = content.get('frame_skipping')
 	if content.get('performance_overlay') in WEBCAM_PERFORMANCE_OVERLAYS:
 		webcam_config['performance_overlay'] = content.get('performance_overlay')
+	if content.get('inline_preview_resolution') in WEBCAM_INLINE_PREVIEW_RESOLUTIONS:
+		webcam_config['inline_preview_resolution'] = content.get('inline_preview_resolution')
 
 	return webcam_config
 

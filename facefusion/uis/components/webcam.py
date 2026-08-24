@@ -11,7 +11,7 @@ from facefusion.streamer import multi_process_capture, open_stream
 from facefusion.types import Fps, VisionFrame, WebcamMode
 from facefusion.uis.core import get_ui_component
 from facefusion.uis.types import File
-from facefusion.vision import fit_cover_frame, unpack_resolution
+from facefusion.vision import fit_cover_frame, restrict_frame, unpack_resolution
 from facefusion.webcam_config import load_webcam_config
 
 SOURCE_FILE : Optional[gradio.File] = None
@@ -55,10 +55,11 @@ def listen() -> None:
 	webcam_mode_radio = get_ui_component('webcam_mode_radio')
 	webcam_resolution_dropdown = get_ui_component('webcam_resolution_dropdown')
 	webcam_fps_slider = get_ui_component('webcam_fps_slider')
+	webcam_inline_preview_resolution_dropdown = get_ui_component('webcam_inline_preview_resolution_dropdown')
 
-	if webcam_device_id_dropdown and webcam_mode_radio and webcam_resolution_dropdown and webcam_fps_slider:
+	if webcam_device_id_dropdown and webcam_mode_radio and webcam_resolution_dropdown and webcam_fps_slider and webcam_inline_preview_resolution_dropdown:
 		WEBCAM_START_BUTTON.click(pre_start, outputs = [ SOURCE_FILE, WEBCAM_IMAGE, WEBCAM_START_BUTTON, WEBCAM_STOP_BUTTON ])
-		start_event = WEBCAM_START_BUTTON.click(start, inputs = [ webcam_device_id_dropdown, webcam_mode_radio, webcam_resolution_dropdown, webcam_fps_slider ], outputs = WEBCAM_IMAGE)
+		start_event = WEBCAM_START_BUTTON.click(start, inputs = [ webcam_device_id_dropdown, webcam_mode_radio, webcam_resolution_dropdown, webcam_fps_slider, webcam_inline_preview_resolution_dropdown ], outputs = WEBCAM_IMAGE)
 		start_event.then(pre_stop)
 		WEBCAM_STOP_BUTTON.click(stop, cancels = start_event, outputs = WEBCAM_IMAGE)
 		WEBCAM_STOP_BUTTON.click(pre_stop, outputs = [ SOURCE_FILE, WEBCAM_IMAGE, WEBCAM_START_BUTTON, WEBCAM_STOP_BUTTON ])
@@ -70,10 +71,11 @@ def listen_auto_start(ui : gradio.Blocks) -> None:
 	webcam_mode_radio = get_ui_component('webcam_mode_radio')
 	webcam_resolution_dropdown = get_ui_component('webcam_resolution_dropdown')
 	webcam_fps_slider = get_ui_component('webcam_fps_slider')
+	webcam_inline_preview_resolution_dropdown = get_ui_component('webcam_inline_preview_resolution_dropdown')
 
-	if webcam_config.get('auto_start') and webcam_device_id_dropdown and webcam_mode_radio and webcam_resolution_dropdown and webcam_fps_slider:
+	if webcam_config.get('auto_start') and webcam_device_id_dropdown and webcam_mode_radio and webcam_resolution_dropdown and webcam_fps_slider and webcam_inline_preview_resolution_dropdown:
 		load_event = ui.load(pre_start, outputs = [ SOURCE_FILE, WEBCAM_IMAGE, WEBCAM_START_BUTTON, WEBCAM_STOP_BUTTON ])
-		start_event = load_event.then(start, inputs = [ webcam_device_id_dropdown, webcam_mode_radio, webcam_resolution_dropdown, webcam_fps_slider ], outputs = WEBCAM_IMAGE)
+		start_event = load_event.then(start, inputs = [ webcam_device_id_dropdown, webcam_mode_radio, webcam_resolution_dropdown, webcam_fps_slider, webcam_inline_preview_resolution_dropdown ], outputs = WEBCAM_IMAGE)
 		start_event.then(pre_stop)
 
 
@@ -97,7 +99,7 @@ def pre_stop() -> Tuple[gradio.File, gradio.Image, gradio.Button, gradio.Button]
 	return gradio.File(visible = True), gradio.Image(visible = False), gradio.Button(visible = True), gradio.Button(visible = False)
 
 
-def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : str, webcam_fps : Fps) -> Iterator[VisionFrame]:
+def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : str, webcam_fps : Fps, inline_preview_resolution : str = '640x480') -> Iterator[VisionFrame]:
 	state_manager.init_item('face_selector_mode', 'one')
 	state_manager.sync_state()
 
@@ -117,6 +119,8 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 				capture_vision_frame = PERFORMANCE_OVERLAY.render(capture_vision_frame, capture_time, overlay_mode, is_duplicate)
 
 			if webcam_mode == 'inline':
+				if inline_preview_resolution != 'native':
+					capture_vision_frame = restrict_frame(capture_vision_frame, unpack_resolution(inline_preview_resolution))
 				yield capture_vision_frame
 			if webcam_mode in [ 'udp', 'v4l2' ]:
 				try:

@@ -151,7 +151,7 @@ class PerformanceOverlay:
 
 		# Face Selector & Frame Skipping
 		selector_mode = state_manager.get_item('face_selector_mode') or 'one'
-		skipping_mode = state_manager.get_item('webcam_frame_skipping') or 'disabled'
+		skipping_mode = state_manager.get_item('webcam_frame_skipping') or 'adaptive'
 		cv2.putText(overlay, f'Selector: {selector_mode} | Skipping: {skipping_mode}', (box_x + 10, cur_y), font, font_scale, (220, 230, 240), 1, cv2.LINE_AA)
 		cur_y += line_spacing
 

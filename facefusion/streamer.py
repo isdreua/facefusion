@@ -126,7 +126,7 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps) -
 
 			while capture_thread.running and not stop_event.is_set():
 				discarded_futures = [ future for future in discarded_futures if not future.done() ]
-				skipping_mode = state_manager.get_item('webcam_frame_skipping') or 'disabled'
+				skipping_mode = state_manager.get_item('webcam_frame_skipping') or 'adaptive'
 				current_processor_names = list(state_manager.get_item('processors') or [])
 				if current_processor_names != processor_names:
 					processor_names = current_processor_names

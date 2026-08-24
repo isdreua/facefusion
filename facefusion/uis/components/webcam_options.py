@@ -54,8 +54,8 @@ def render() -> None:
 	)
 	WEBCAM_FRAME_SKIPPING_RADIO = gradio.Radio(
 		label = translator.get('uis.webcam_frame_skipping_radio'),
-		choices = [ 'disabled', 'adaptive', '1-in-2', '1-in-3' ],
-		value = 'disabled'
+		choices = [ 'adaptive', 'disabled', '1-in-2', '1-in-3' ],
+		value = 'adaptive'
 	)
 	register_ui_component('webcam_device_id_dropdown', WEBCAM_DEVICE_ID_DROPDOWN)
 	register_ui_component('webcam_mode_radio', WEBCAM_MODE_RADIO)

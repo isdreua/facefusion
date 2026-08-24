@@ -198,8 +198,6 @@ This document records all the steps, changes, and architectural decisions made a
 - Python syntax compilation and `git diff --check` pass.
 - The focused pytest suite remains unavailable in this workspace because its Python environment does not provide `pytest` or `numpy`.
 
----
-
 ## 13. Webcam Ordered-Buffer Latency Cap
 
 **Goal:** Restore low webcam latency after the stream grew to roughly 500 ms behind live capture.
@@ -213,3 +211,18 @@ This document records all the steps, changes, and architectural decisions made a
 ### Verification:
 - Python syntax compilation and `git diff --check` pass.
 - The focused pytest suite remains unavailable in this workspace because its Python environment does not provide `pytest` or `numpy`.
+
+---
+
+## 14. Stable Low-Latency Webcam Default
+
+**Goal:** Prevent the webcam delay from spending most of its time near 300 ms and oscillating between approximately 150 and 300 ms under variable processing load.
+
+### Changes Made:
+- **Made adaptive scheduling the default:** The webcam UI now starts in `adaptive` frame-skipping mode, and both the capture scheduler and performance overlay use `adaptive` when no explicit state value exists.
+  - *Cause:* Even after reducing the hard buffer cap, strict ordered mode can hold eight frames with the default thread count. At 30 FPS that is roughly 267 ms before display overhead, and the queue repeatedly fills and drains as inference time varies.
+  - *Decision:* Adaptive mode preserves the newest completed result and stops admitting stale work when all workers are occupied. This trades delivery of every captured frame for stable, bounded live latency. Explicit `disabled`, `1-in-2`, and `1-in-3` modes remain available.
+
+### Verification:
+- Python syntax compilation and `git diff --check` pass.
+- Runtime latency must be measured in the Windows FaceFusion environment because this workspace does not provide the project runtime dependencies or webcam hardware.

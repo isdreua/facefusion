@@ -226,3 +226,25 @@ This document records all the steps, changes, and architectural decisions made a
 ### Verification:
 - Python syntax compilation and `git diff --check` pass.
 - Runtime latency must be measured in the Windows FaceFusion environment because this workspace does not provide the project runtime dependencies or webcam hardware.
+
+---
+
+## 15. JSON Webcam Profiles and Auto-Start
+
+**Goal:** Launch the webcam UI with reproducible low-latency settings and optionally begin capture automatically from a JSON file.
+
+### Changes Made:
+- **Added `--webcam-config`:** The `run` command accepts a JSON webcam profile containing camera/auto-start controls plus a `settings` object for source paths, selected processors, execution configuration, face analysis/masking, and every webcam processor option.
+- **Applied pipeline settings before startup checks:** JSON state overrides are installed after normal CLI/INI argument handling and before processor model pre-checks, allowing the profile to select Face Swapper, Face Enhancer, other processors, their models, blends, weights, and related options.
+- **Applied profile values to the UI and runtime state:** Camera controls render with the configured values, while frame-skipping and overlay settings are initialized for the capture scheduler.
+- **Added page-load auto-start:** When `auto_start` is true, the webcam layout triggers the same pre-start, streaming, and post-stop Gradio event chain used by the Start button.
+- **Added a self-documenting example:** `webcam.example.json` contains the complete webcam pipeline settings object plus ignored `*_options` arrays listing processor, provider, strategy, model, camera, and scheduling choices or ranges.
+  - *Decision:* Runtime parsing uses only scalar setting names. Documentation arrays are deliberately ignored, so users can retain them in deployed profiles without affecting behavior.
+- **Added profile validation tests:** Tests cover valid settings, safe defaults for invalid settings, and ignored documentation arrays.
+
+### Usage:
+- Run `python facefusion.py run --ui-layouts webcam --webcam-config webcam.example.json`.
+
+### Verification:
+- Python syntax compilation, JSON syntax validation, and `git diff --check` pass.
+- Full pytest and Gradio webcam launch testing remain unavailable in this workspace because its Python environment lacks the project dependencies and webcam hardware.

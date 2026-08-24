@@ -5,6 +5,7 @@ from facefusion.normalizer import normalize_fps, normalize_space
 from facefusion.processors.core import get_processors_modules
 from facefusion.types import ApplyStateItem, Args
 from facefusion.vision import detect_video_fps
+from facefusion.webcam_config import apply_webcam_state
 
 
 def apply_args(args : Args, apply_state_item : ApplyStateItem) -> None:
@@ -72,6 +73,7 @@ def apply_args(args : Args, apply_state_item : ApplyStateItem) -> None:
 	apply_state_item('open_browser', args.get('open_browser'))
 	apply_state_item('ui_layouts', args.get('ui_layouts'))
 	apply_state_item('ui_workflow', args.get('ui_workflow'))
+	apply_state_item('webcam_config', args.get('webcam_config'))
 	apply_state_item('execution_device_ids', args.get('execution_device_ids'))
 	apply_state_item('execution_providers', args.get('execution_providers'))
 	apply_state_item('execution_thread_count', args.get('execution_thread_count'))
@@ -86,6 +88,7 @@ def apply_args(args : Args, apply_state_item : ApplyStateItem) -> None:
 	apply_state_item('job_id', args.get('job_id'))
 	apply_state_item('job_status', args.get('job_status'))
 	apply_state_item('step_index', args.get('step_index'))
+	apply_webcam_state(args.get('webcam_config'), apply_state_item)
 
 
 def reduce_step_args(args : Args) -> Args:

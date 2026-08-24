@@ -7,6 +7,7 @@ from facefusion.camera_manager import detect_local_camera_ids
 from facefusion.common_helper import get_first
 from facefusion.uis import choices as uis_choices
 from facefusion.uis.core import register_ui_component
+from facefusion.webcam_config import WEBCAM_FRAME_SKIPPING_MODES, WEBCAM_PERFORMANCE_OVERLAYS, load_webcam_config
 
 WEBCAM_DEVICE_ID_DROPDOWN : Optional[gradio.Dropdown] = None
 WEBCAM_MODE_RADIO : Optional[gradio.Radio] = None
@@ -24,38 +25,44 @@ def render() -> None:
 	global WEBCAM_PERFORMANCE_OVERLAY_RADIO
 	global WEBCAM_FRAME_SKIPPING_RADIO
 
+	webcam_config = load_webcam_config(state_manager.get_item('webcam_config'))
 	local_camera_ids = detect_local_camera_ids(0, 10) or [ 'none' ] #type:ignore[list-item]
+	webcam_device_id = webcam_config.get('device_id')
+	if webcam_device_id not in local_camera_ids:
+		webcam_device_id = get_first(local_camera_ids)
+	state_manager.init_item('webcam_frame_skipping', webcam_config.get('frame_skipping'))
+	state_manager.init_item('webcam_performance_overlay', webcam_config.get('performance_overlay'))
 	WEBCAM_DEVICE_ID_DROPDOWN = gradio.Dropdown(
-		value = get_first(local_camera_ids),
+		value = webcam_device_id,
 		label = translator.get('uis.webcam_device_id_dropdown'),
 		choices = local_camera_ids
 	)
 	WEBCAM_MODE_RADIO = gradio.Radio(
 		label = translator.get('uis.webcam_mode_radio'),
 		choices = uis_choices.webcam_modes,
-		value = uis_choices.webcam_modes[0]
+		value = webcam_config.get('mode')
 	)
 	WEBCAM_RESOLUTION_DROPDOWN = gradio.Dropdown(
 		label = translator.get('uis.webcam_resolution_dropdown'),
 		choices = uis_choices.webcam_resolutions,
-		value = uis_choices.webcam_resolutions[0]
+		value = webcam_config.get('resolution')
 	)
 	WEBCAM_FPS_SLIDER = gradio.Slider(
 		label = translator.get('uis.webcam_fps_slider'),
-		value = 30,
+		value = webcam_config.get('fps'),
 		step = 1,
 		minimum = 1,
 		maximum = 30
 	)
 	WEBCAM_PERFORMANCE_OVERLAY_RADIO = gradio.Radio(
 		label = translator.get('uis.webcam_performance_overlay_radio'),
-		choices = [ 'none', 'simple', 'advanced' ],
-		value = 'none'
+		choices = WEBCAM_PERFORMANCE_OVERLAYS,
+		value = webcam_config.get('performance_overlay')
 	)
 	WEBCAM_FRAME_SKIPPING_RADIO = gradio.Radio(
 		label = translator.get('uis.webcam_frame_skipping_radio'),
-		choices = [ 'adaptive', 'disabled', '1-in-2', '1-in-3' ],
-		value = 'adaptive'
+		choices = WEBCAM_FRAME_SKIPPING_MODES,
+		value = webcam_config.get('frame_skipping')
 	)
 	register_ui_component('webcam_device_id_dropdown', WEBCAM_DEVICE_ID_DROPDOWN)
 	register_ui_component('webcam_mode_radio', WEBCAM_MODE_RADIO)

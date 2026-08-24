@@ -382,6 +382,9 @@ StateKey = Literal\
 	'open_browser',
 	'ui_layouts',
 	'ui_workflow',
+	'webcam_config',
+	'webcam_frame_skipping',
+	'webcam_performance_overlay',
 	'execution_device_ids',
 	'execution_providers',
 	'execution_thread_count',
@@ -455,6 +458,9 @@ State = TypedDict('State',
 	'open_browser' : bool,
 	'ui_layouts' : List[str],
 	'ui_workflow' : UiWorkflow,
+	'webcam_config' : str,
+	'webcam_frame_skipping' : str,
+	'webcam_performance_overlay' : str,
 	'execution_device_ids' : List[int],
 	'execution_providers' : List[ExecutionProvider],
 	'execution_thread_count' : int,
@@ -467,4 +473,3 @@ State = TypedDict('State',
 })
 ApplyStateItem : TypeAlias = Callable[[Any, Any], None]
 StateSet : TypeAlias = Dict[AppContext, State]
-

@@ -72,9 +72,10 @@ def calculate_face_embedding(temp_vision_frame : VisionFrame, face_landmark_5 : 
 	model_template = get_model_options().get('template')
 	model_size = get_model_options().get('size')
 	crop_vision_frame, matrix = warp_face_by_face_landmark_5(temp_vision_frame, face_landmark_5, model_template, model_size)
-	crop_vision_frame = crop_vision_frame / 127.5 - 1
-	crop_vision_frame = crop_vision_frame[:, :, ::-1].transpose(2, 0, 1).astype(numpy.float32)
-	crop_vision_frame = numpy.expand_dims(crop_vision_frame, axis = 0)
+	crop_vision_frame = crop_vision_frame[:, :, ::-1].astype(numpy.float32)
+	numpy.divide(crop_vision_frame, 127.5, out = crop_vision_frame)
+	numpy.subtract(crop_vision_frame, 1.0, out = crop_vision_frame)
+	crop_vision_frame = numpy.ascontiguousarray(crop_vision_frame.transpose(2, 0, 1))[None]
 	face_embedding = forward(crop_vision_frame)
 	face_embedding = face_embedding.ravel()
 	face_embedding_norm = face_embedding / numpy.linalg.norm(face_embedding)

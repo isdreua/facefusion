@@ -8,7 +8,7 @@ from facefusion import inference_manager, state_manager
 from facefusion.download import conditional_download_hashes, conditional_download_sources, resolve_download_url
 from facefusion.face_helper import create_rotation_matrix_and_size, create_static_anchors, distance_to_bounding_box, distance_to_face_landmark_5, normalize_bounding_box, transform_bounding_box, transform_points
 from facefusion.filesystem import resolve_relative_path
-from facefusion.thread_helper import thread_semaphore
+from facefusion.thread_helper import conditional_thread_semaphore
 from facefusion.types import Angle, BoundingBox, Detection, DownloadScope, DownloadSet, FaceLandmark5, InferencePool, Margin, ModelSet, Score, VisionFrame
 from facefusion.vision import restrict_frame, unpack_resolution
 
@@ -402,7 +402,7 @@ def detect_with_yunet(vision_frame : VisionFrame, face_detector_size : str) -> T
 def forward_with_retinaface(detect_vision_frame : VisionFrame) -> Detection:
 	face_detector = get_inference_pool().get('retinaface')
 
-	with thread_semaphore():
+	with conditional_thread_semaphore():
 		detection = face_detector.run(None,
 		{
 			'input': detect_vision_frame
@@ -414,7 +414,7 @@ def forward_with_retinaface(detect_vision_frame : VisionFrame) -> Detection:
 def forward_with_scrfd(detect_vision_frame : VisionFrame) -> Detection:
 	face_detector = get_inference_pool().get('scrfd')
 
-	with thread_semaphore():
+	with conditional_thread_semaphore():
 		detection = face_detector.run(None,
 		{
 			'input': detect_vision_frame
@@ -426,7 +426,7 @@ def forward_with_scrfd(detect_vision_frame : VisionFrame) -> Detection:
 def forward_with_yolo_face(detect_vision_frame : VisionFrame) -> Detection:
 	face_detector = get_inference_pool().get('yolo_face')
 
-	with thread_semaphore():
+	with conditional_thread_semaphore():
 		detection = face_detector.run(None,
 		{
 			'input': detect_vision_frame
@@ -438,7 +438,7 @@ def forward_with_yolo_face(detect_vision_frame : VisionFrame) -> Detection:
 def forward_with_yunet(detect_vision_frame : VisionFrame) -> Detection:
 	face_detector = get_inference_pool().get('yunet')
 
-	with thread_semaphore():
+	with conditional_thread_semaphore():
 		detection = face_detector.run(None,
 		{
 			'input': detect_vision_frame

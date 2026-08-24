@@ -66,6 +66,14 @@ def route(args : Args) -> None:
 		ui.init()
 		ui.launch()
 
+	if state_manager.get_item('command') == 'webcam-run':
+		from facefusion import webcam_runner
+
+		if not common_pre_check() or not processors_pre_check():
+			hard_exit(2)
+		error_code = webcam_runner.run()
+		hard_exit(error_code)
+
 	if state_manager.get_item('command') == 'headless-run':
 		if not job_manager.init_jobs(state_manager.get_item('jobs_path')):
 			hard_exit(1)
@@ -335,5 +343,4 @@ def detect_workflow_mode() -> WorkflowMode:
 		return 'image-to-video'
 
 	return 'image-to-image'
-
 

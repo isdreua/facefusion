@@ -248,3 +248,24 @@ This document records all the steps, changes, and architectural decisions made a
 ### Verification:
 - Python syntax compilation, JSON syntax validation, and `git diff --check` pass.
 - Full pytest and Gradio webcam launch testing remain unavailable in this workspace because its Python environment lacks the project dependencies and webcam hardware.
+
+---
+
+## 16. Headless JSON Webcam Boot Mode
+
+**Goal:** Start the configured webcam processing pipeline at operating-system boot without launching Gradio or requiring a browser page load.
+
+### Changes Made:
+- **Added the `webcam-run` command:** `python facefusion.py webcam-run --webcam-config <absolute-json-path>` loads the same complete JSON profile and runs capture directly without initializing the UI.
+- **Kept both startup variants:** The existing `run --ui-layouts webcam --webcam-config ...` flow remains available, including browser-driven auto-start.
+- **Separated UI and headless outputs:** `mode` remains available for UI operation, while `headless_mode` selects `udp` or `v4l2`; on Windows the existing `v4l2` stream path uses the virtual-camera backend.
+- **Supported absolute source-image paths:** Values in `settings.source_paths` are passed directly into FaceFusion state, including Windows paths such as `C:/Faces/source.jpg`.
+- **Added cleanup and validation:** Headless mode rejects non-streaming output modes, releases the camera, and closes the output stream on exit.
+
+### Usage:
+- Headless boot command: `python facefusion.py webcam-run --webcam-config C:/FaceFusion/webcam.json`
+- UI command retained: `python facefusion.py run --ui-layouts webcam --webcam-config C:/FaceFusion/webcam.json`
+
+### Verification:
+- Python syntax compilation, JSON syntax validation, and `git diff --check` pass.
+- End-to-end virtual-camera testing remains unavailable in this workspace because it lacks the Windows camera environment and runtime dependencies.

@@ -17,6 +17,7 @@ from facefusion.audio import create_empty_audio_frame
 from facefusion.common_helper import is_windows
 from facefusion.content_analyser import analyse_frame
 from facefusion.face_creator import set_face_analysis_features
+from facefusion.face_helper import set_paste_in_place
 from facefusion.face_selector import begin_face_selection_context, end_face_selection_context
 from facefusion.ffmpeg import open_ffmpeg
 from facefusion.filesystem import is_directory
@@ -212,9 +213,10 @@ def process_stream_frame(source_vision_frames : List[VisionFrame], target_vision
 
 	# Resolve the app context once instead of walking the stack on every state lookup of this frame
 	set_app_context_override(detect_app_context())
+	set_paste_in_place(True)
 	set_face_analysis_features(face_analysis_features)
-	begin_face_selection_context()
 	try:
+		begin_face_selection_context()
 		for processor_module in processor_modules:
 			logger.disable()
 			processor_inputs =\
@@ -234,6 +236,7 @@ def process_stream_frame(source_vision_frames : List[VisionFrame], target_vision
 		logger.enable()
 		end_face_selection_context()
 		set_face_analysis_features(None)
+		set_paste_in_place(False)
 		set_app_context_override(None)
 
 	return temp_vision_frame, capture_time

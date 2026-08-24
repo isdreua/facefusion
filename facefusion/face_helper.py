@@ -1,4 +1,5 @@
 from functools import lru_cache
+import threading
 from typing import List, Sequence, Tuple
 
 import cv2
@@ -6,6 +7,21 @@ import numpy
 from cv2.typing import Size
 
 from facefusion.types import Anchors, Angle, BoundingBox, Distance, FaceDetectorModel, FaceLandmark5, FaceLandmark68, Mask, Matrix, Points, Scale, Score, Translation, VisionFrame, WarpTemplate, WarpTemplateSet
+
+
+class PasteContext(threading.local):
+	in_place = False
+
+
+PASTE_CONTEXT = PasteContext()
+
+
+def set_paste_in_place(in_place : bool) -> None:
+	PASTE_CONTEXT.in_place = in_place
+
+
+def get_paste_in_place() -> bool:
+	return getattr(PASTE_CONTEXT, 'in_place', False)
 
 WARP_TEMPLATE_SET : WarpTemplateSet =\
 {
@@ -106,7 +122,8 @@ def paste_back(temp_vision_frame : VisionFrame, crop_vision_frame : VisionFrame,
 	inverse_vision_mask = cv2.warpAffine(crop_vision_mask, paste_matrix, (paste_width, paste_height)).clip(0, 1)
 	inverse_vision_mask = numpy.expand_dims(inverse_vision_mask, axis = -1)
 	inverse_vision_frame = cv2.warpAffine(crop_vision_frame, paste_matrix, (paste_width, paste_height), borderMode = cv2.BORDER_REPLICATE)
-	temp_vision_frame = temp_vision_frame.copy()
+	if not get_paste_in_place():
+		temp_vision_frame = temp_vision_frame.copy()
 	paste_vision_frame = temp_vision_frame[y1:y2, x1:x2]
 	paste_vision_frame = paste_vision_frame * (1 - inverse_vision_mask) + inverse_vision_frame * inverse_vision_mask
 	temp_vision_frame[y1:y2, x1:x2] = paste_vision_frame.astype(temp_vision_frame.dtype)

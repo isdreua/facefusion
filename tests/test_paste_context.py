@@ -36,6 +36,18 @@ def test_paste_back_can_mutate_owned_frame_in_place():
 	assert numpy.any(temp_frame)
 
 
+def test_paste_back_ignores_crop_outside_frame():
+	temp_frame, crop_frame, crop_mask, _ = create_paste_inputs()
+	original_frame = temp_frame.copy()
+	affine_matrix = numpy.array([ [ 1, 0, -10 ], [ 0, 1, -10 ] ], dtype = numpy.float32)
+
+	paste_frame = paste_back(temp_frame, crop_frame, crop_mask, affine_matrix)
+
+	assert paste_frame is not temp_frame
+	numpy.testing.assert_array_equal(paste_frame, original_frame)
+	numpy.testing.assert_array_equal(temp_frame, original_frame)
+
+
 def test_paste_mode_is_thread_local():
 	set_paste_in_place(True)
 	try:

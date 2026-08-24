@@ -63,6 +63,16 @@ def test_camera_capture_thread_recovers_from_transient_read_failure(monkeypatch)
 	assert queued_frame is frame
 
 
+def test_content_analysis_metrics_are_recorded(monkeypatch):
+	monkeypatch.setattr(streamer, 'analyse_frame', lambda frame: False)
+	with streamer.CONTENT_ANALYSIS_METRICS_LOCK:
+		streamer.CONTENT_ANALYSIS_METRICS.update({ 'runs': 0, 'last_ms': 0.0, 'max_ms': 0.0 })
+	streamer.analyse_frame_background(numpy.zeros((2, 2, 3), dtype = numpy.uint8), streamer.threading.Event())
+	metrics = streamer.get_content_analysis_metrics()
+	assert metrics['runs'] == 1
+	assert metrics['last_ms'] >= 0
+
+
 class FakeProgress:
 	def __enter__(self):
 		return self

@@ -25,6 +25,9 @@ from facefusion.processors.core import get_processors_modules
 from facefusion.types import AudioFrame, Fps, Mask, StreamMode, VisionFrame
 from facefusion.vision import extract_vision_mask, is_vision_frame, read_static_images
 
+CONTENT_ANALYSIS_METRICS_LOCK = threading.Lock()
+CONTENT_ANALYSIS_METRICS = { 'runs': 0, 'last_ms': 0.0, 'max_ms': 0.0 }
+
 
 class CameraCaptureThread(threading.Thread):
 	MAX_CONSECUTIVE_READ_FAILURES = 30
@@ -67,8 +70,21 @@ class CameraCaptureThread(threading.Thread):
 		self.running = False
 
 def analyse_frame_background(vision_frame: VisionFrame, stop_event: threading.Event):
-	if analyse_frame(vision_frame):
-		stop_event.set()
+	started = time.perf_counter()
+	try:
+		if analyse_frame(vision_frame):
+			stop_event.set()
+	finally:
+		elapsed_ms = (time.perf_counter() - started) * 1000
+		with CONTENT_ANALYSIS_METRICS_LOCK:
+			CONTENT_ANALYSIS_METRICS['runs'] += 1
+			CONTENT_ANALYSIS_METRICS['last_ms'] = elapsed_ms
+			CONTENT_ANALYSIS_METRICS['max_ms'] = max(CONTENT_ANALYSIS_METRICS['max_ms'], elapsed_ms)
+
+
+def get_content_analysis_metrics() -> Dict[str, float]:
+	with CONTENT_ANALYSIS_METRICS_LOCK:
+		return dict(CONTENT_ANALYSIS_METRICS)
 
 
 def prepare_stream_processors(processor_names : List[str], source_vision_frames : List[VisionFrame]) -> Tuple[List[ModuleType], Dict[str, Dict[str, Any]]]:
@@ -124,6 +140,7 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 			set_app_context_override(detect_app_context())
 			futures = []
 			discarded_futures = []
+			analysis_future = None
 
 			while capture_thread.running and not stop_event.is_set():
 				discarded_futures = [ future for future in discarded_futures if not future.done() ]
@@ -167,8 +184,8 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 
 				# 3. Sample NSFW analysis to ~once per second, only copying/submitting the sampled frame
 				nsfw_frame_index += 1
-				if nsfw_frame_index % max(1, int(camera_fps)) == 0:
-					executor.submit(analyse_frame_background, capture_vision_frame.copy(), stop_event)
+				if nsfw_frame_index % max(1, int(camera_fps)) == 0 and (analysis_future is None or analysis_future.done()):
+					analysis_future = executor.submit(analyse_frame_background, capture_vision_frame.copy(), stop_event)
 
 				# 4. Process frame or apply temporal skipping to sustain target FPS
 				if is_vision_frame(capture_vision_frame):

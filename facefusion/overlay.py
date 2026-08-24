@@ -156,6 +156,11 @@ class PerformanceOverlay:
 			process_ms = (timing.get('processing_finished', 0) - timing.get('processing_started', 0)) * 1000
 			cv2.putText(overlay, f'Capture {capture_ms:.1f} | Queue {queue_ms:.1f} | Process {process_ms:.1f} ms', (box_x + 10, cur_y), font, font_scale, (255, 190, 80), 1, cv2.LINE_AA)
 			cur_y += line_spacing
+			from facefusion.streamer import get_content_analysis_metrics
+			analysis_metrics = get_content_analysis_metrics()
+			if analysis_metrics.get('runs'):
+				cv2.putText(overlay, f'Safety sample {analysis_metrics.get("last_ms", 0):.1f} ms', (box_x + 10, cur_y), font, font_scale, (180, 160, 255), 1, cv2.LINE_AA)
+				cur_y += line_spacing
 
 		# Face Selector & Frame Skipping
 		selector_mode = state_manager.get_item('face_selector_mode') or 'one'

@@ -1,7 +1,7 @@
 import gradio
 
 from facefusion import state_manager
-from facefusion.uis.components import about, age_modifier_options, background_remover_options, deep_swapper_options, download, execution, execution_thread_count, expression_restorer_options, face_debugger_options, face_detector, face_editor_options, face_enhancer_options, face_landmarker, face_masker, face_selector, face_swapper_options, face_tracker, frame_colorizer_options, frame_enhancer_options, instant_runner, job_manager, job_runner, lip_syncer_options, memory, output, output_options, preview, preview_options, processors, source, target, temp_frame, terminal, trim_frame, ui_workflow, voice_extractor, workflow
+from facefusion.uis.components import about, age_modifier_options, background_remover_options, deep_swapper_options, download, execution, execution_thread_count, expression_restorer_options, face_debugger_options, face_detector, face_editor_options, face_enhancer_options, face_landmarker, face_masker, face_selector, face_swapper_options, face_tracker, frame_colorizer_options, frame_enhancer_options, instant_runner, job_manager, job_runner, lip_syncer_options, memory, nvidia_super_res_options, output, output_options, preview, preview_options, processors, source, target, temp_frame, terminal, trim_frame, ui_workflow, voice_extractor, workflow
 
 
 def pre_check() -> bool:
@@ -36,6 +36,7 @@ def render() -> gradio.Blocks:
 					frame_colorizer_options.render()
 				with gradio.Blocks():
 					frame_enhancer_options.render()
+					nvidia_super_res_options.render()
 				with gradio.Blocks():
 					lip_syncer_options.render()
 				with gradio.Blocks():
@@ -98,6 +99,7 @@ def listen() -> None:
 	face_swapper_options.listen()
 	frame_colorizer_options.listen()
 	frame_enhancer_options.listen()
+	nvidia_super_res_options.listen()
 	lip_syncer_options.listen()
 	execution.listen()
 	execution_thread_count.listen()

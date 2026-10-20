@@ -1,3 +1,4 @@
+import glob
 from typing import List, Optional
 
 import cv2
@@ -75,19 +76,60 @@ def clear_camera_pool() -> None:
 	CAMERA_POOL_SET['capture'].clear()
 
 
+# Probing absent camera indices makes opencv log an error per index, so discovery silences it. The
+# cv2.utils.logging submodule is not present in every opencv build, so this is best effort and
+# never a reason to fail discovery
+def suppress_camera_log_level() -> Optional[int]:
+	try:
+		previous_log_level = cv2.utils.logging.getLogLevel()
+		cv2.utils.logging.setLogLevel(0)
+		return previous_log_level
+	except Exception:
+		return None
+
+
+def restore_camera_log_level(previous_log_level : Optional[int]) -> None:
+	if previous_log_level is None:
+		return
+
+	try:
+		cv2.utils.logging.setLogLevel(previous_log_level)
+	except Exception:
+		pass
+
+
+# Opening an absent index makes the v4l2 backend log a warning and an error, and this build has no
+# cv2.utils.logging to silence them. On linux the real devices are enumerable, so probe only those
+# instead of brute forcing the whole range
+def resolve_camera_id_range(id_start : int, id_end : int) -> List[int]:
+	candidate_camera_ids = list(range(id_start, id_end))
+	device_camera_ids = []
+
+	for device_path in glob.glob('/dev/video*'):
+		device_suffix = device_path.rsplit('video', 1)[-1]
+		if device_suffix.isdigit():
+			device_camera_ids.append(int(device_suffix))
+
+	if not device_camera_ids:
+		return candidate_camera_ids
+	return sorted(set(device_camera_ids).intersection(candidate_camera_ids))
+
+
 def detect_local_camera_ids(id_start : int, id_end : int, backend : str = 'auto') -> List[int]:
 	local_camera_ids = []
+	previous_log_level = suppress_camera_log_level()
 
-	for camera_id in range(id_start, id_end):
-		cv2.utils.logging.setLogLevel(0)
-		camera_capture = cv2.VideoCapture(camera_id, get_camera_backend_flag(backend))
-		cv2.utils.logging.setLogLevel(3)
-		if not camera_capture.isOpened() and backend != 'auto':
+	try:
+		for camera_id in resolve_camera_id_range(id_start, id_end):
+			camera_capture = cv2.VideoCapture(camera_id, get_camera_backend_flag(backend))
+			if not camera_capture.isOpened() and backend != 'auto':
+				camera_capture.release()
+				camera_capture = cv2.VideoCapture(camera_id, cv2.CAP_ANY)
+
+			if camera_capture.isOpened():
+				local_camera_ids.append(camera_id)
 			camera_capture.release()
-			camera_capture = cv2.VideoCapture(camera_id, cv2.CAP_ANY)
-
-		if camera_capture.isOpened():
-			local_camera_ids.append(camera_id)
-		camera_capture.release()
+	finally:
+		restore_camera_log_level(previous_log_level)
 
 	return local_camera_ids

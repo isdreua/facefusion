@@ -7,7 +7,7 @@ from facefusion.camera_manager import detect_local_camera_ids
 from facefusion.common_helper import get_first
 from facefusion.uis import choices as uis_choices
 from facefusion.uis.core import register_ui_component
-from facefusion.webcam_config import WEBCAM_CAMERA_BACKENDS, WEBCAM_FRAME_SKIPPING_MODES, WEBCAM_INLINE_PREVIEW_RESOLUTIONS, WEBCAM_PERFORMANCE_OVERLAYS, load_webcam_config
+from facefusion.webcam_config import WEBCAM_CAMERA_BACKENDS, WEBCAM_FRAME_SKIPPING_MODES, WEBCAM_INLINE_PREVIEW_RESOLUTIONS, WEBCAM_OUTPUT_RESOLUTIONS, WEBCAM_PERFORMANCE_OVERLAYS, load_webcam_config
 
 WEBCAM_DEVICE_ID_DROPDOWN : Optional[gradio.Dropdown] = None
 WEBCAM_MODE_RADIO : Optional[gradio.Radio] = None
@@ -18,6 +18,7 @@ WEBCAM_FRAME_SKIPPING_RADIO : Optional[gradio.Radio] = None
 WEBCAM_INLINE_PREVIEW_RESOLUTION_DROPDOWN : Optional[gradio.Dropdown] = None
 WEBCAM_EXECUTION_THREAD_COUNT_SLIDER : Optional[gradio.Slider] = None
 WEBCAM_CAMERA_BACKEND_DROPDOWN : Optional[gradio.Dropdown] = None
+WEBCAM_OUTPUT_RESOLUTION_DROPDOWN : Optional[gradio.Dropdown] = None
 
 
 def render() -> None:
@@ -30,6 +31,7 @@ def render() -> None:
 	global WEBCAM_INLINE_PREVIEW_RESOLUTION_DROPDOWN
 	global WEBCAM_EXECUTION_THREAD_COUNT_SLIDER
 	global WEBCAM_CAMERA_BACKEND_DROPDOWN
+	global WEBCAM_OUTPUT_RESOLUTION_DROPDOWN
 
 	webcam_config = load_webcam_config(state_manager.get_item('webcam_config'))
 	local_camera_ids = detect_local_camera_ids(0, 10, webcam_config.get('webcam_camera_backend')) or [ 'none' ] #type:ignore[list-item]
@@ -87,6 +89,11 @@ def render() -> None:
 		choices = WEBCAM_CAMERA_BACKENDS,
 		value = webcam_config.get('webcam_camera_backend')
 	)
+	WEBCAM_OUTPUT_RESOLUTION_DROPDOWN = gradio.Dropdown(
+		label = translator.get('uis.webcam_output_resolution_dropdown'),
+		choices = WEBCAM_OUTPUT_RESOLUTIONS,
+		value = webcam_config.get('webcam_output_resolution')
+	)
 	register_ui_component('webcam_device_id_dropdown', WEBCAM_DEVICE_ID_DROPDOWN)
 	register_ui_component('webcam_mode_radio', WEBCAM_MODE_RADIO)
 	register_ui_component('webcam_resolution_dropdown', WEBCAM_RESOLUTION_DROPDOWN)
@@ -96,6 +103,7 @@ def render() -> None:
 	register_ui_component('webcam_inline_preview_resolution_dropdown', WEBCAM_INLINE_PREVIEW_RESOLUTION_DROPDOWN)
 	register_ui_component('webcam_execution_thread_count_slider', WEBCAM_EXECUTION_THREAD_COUNT_SLIDER)
 	register_ui_component('webcam_camera_backend_dropdown', WEBCAM_CAMERA_BACKEND_DROPDOWN)
+	register_ui_component('webcam_output_resolution_dropdown', WEBCAM_OUTPUT_RESOLUTION_DROPDOWN)
 
 
 def listen() -> None:

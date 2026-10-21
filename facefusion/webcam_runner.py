@@ -8,7 +8,7 @@ from facefusion.camera_manager import clear_camera_pool, get_local_camera_captur
 from facefusion.overlay import PERFORMANCE_OVERLAY
 from facefusion.streamer import multi_process_capture, open_stream
 from facefusion.stream_writer import LatestFrameWriter
-from facefusion.vision import fit_cover_frame, unpack_resolution
+from facefusion.vision import fit_cover_frame, pack_resolution, unpack_resolution
 from facefusion.webcam_config import load_webcam_config
 
 
@@ -20,6 +20,7 @@ def run() -> int:
 	webcam_fps = webcam_config.get('fps')
 	webcam_execution_thread_count = webcam_config.get('webcam_execution_thread_count')
 	webcam_camera_backend = webcam_config.get('webcam_camera_backend')
+	webcam_output_resolution = webcam_config.get('webcam_output_resolution')
 	stream_writer : Any = None
 
 	if webcam_mode not in [ 'udp', 'v4l2' ]:
@@ -28,17 +29,29 @@ def run() -> int:
 
 	state_manager.sync_state()
 	webcam_width, webcam_height = unpack_resolution(webcam_resolution)
+	if webcam_output_resolution == 'copy':
+		output_resolution = webcam_resolution
+		output_width, output_height = webcam_width, webcam_height
+	elif webcam_output_resolution.startswith('x'):
+		output_scale = int(webcam_output_resolution[1:])
+		output_resolution = pack_resolution((webcam_width * output_scale, webcam_height * output_scale))
+		output_width, output_height = unpack_resolution(output_resolution)
+	else:
+		output_resolution = webcam_output_resolution
+		output_width, output_height = unpack_resolution(webcam_output_resolution)
+	if webcam_width * output_height != output_width * webcam_height:
+		logger.warn('webcam output resolution ' + output_resolution + ' does not match the aspect ratio of capture resolution ' + webcam_resolution + ', edges will be cropped', __name__)
 	camera_capture = get_local_camera_capture(webcam_device_id, webcam_width, webcam_height, webcam_fps, webcam_camera_backend)
 	if not camera_capture or not camera_capture.isOpened():
 		logger.error('webcam device could not be opened', __name__)
 		return 1
 
 	try:
-		stream_writer = LatestFrameWriter(lambda: open_stream(webcam_mode, webcam_resolution, webcam_fps), webcam_width, webcam_height, webcam_mode == 'v4l2', webcam_fps)
+		stream_writer = LatestFrameWriter(lambda: open_stream(webcam_mode, output_resolution, webcam_fps), output_width, output_height, webcam_mode == 'v4l2', webcam_fps)
 		stream_writer.start()
-		for capture_vision_frame, capture_time, is_duplicate, timing in multi_process_capture(camera_capture, webcam_fps, webcam_execution_thread_count):
+		for capture_vision_frame, capture_time, is_duplicate, timing in multi_process_capture(camera_capture, webcam_fps, webcam_execution_thread_count, (webcam_width, webcam_height)):
 			capture_vision_frame = cv2.cvtColor(capture_vision_frame, cv2.COLOR_BGR2RGB)
-			capture_vision_frame = fit_cover_frame(capture_vision_frame, (webcam_width, webcam_height))
+			capture_vision_frame = fit_cover_frame(capture_vision_frame, (output_width, output_height))
 			timing['post_processing_finished'] = time.perf_counter()
 			overlay_mode = state_manager.get_item('webcam_performance_overlay')
 			if overlay_mode in [ 'simple', 'advanced' ]:

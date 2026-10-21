@@ -4,7 +4,7 @@ from typing import Iterator, List, Optional, Tuple
 import cv2
 import gradio
 
-from facefusion import state_manager, translator
+from facefusion import logger, state_manager, translator
 from facefusion.camera_manager import clear_camera_pool, get_local_camera_capture
 from facefusion.filesystem import has_image
 from facefusion.overlay import PERFORMANCE_OVERLAY
@@ -13,7 +13,7 @@ from facefusion.stream_writer import LatestFrameWriter
 from facefusion.types import Fps, VisionFrame, WebcamMode
 from facefusion.uis.core import get_ui_component
 from facefusion.uis.types import File
-from facefusion.vision import fit_cover_frame, restrict_frame, unpack_resolution
+from facefusion.vision import fit_cover_frame, pack_resolution, restrict_frame, unpack_resolution
 from facefusion.webcam_config import load_webcam_config
 
 SOURCE_FILE : Optional[gradio.File] = None
@@ -60,10 +60,11 @@ def listen() -> None:
 	webcam_inline_preview_resolution_dropdown = get_ui_component('webcam_inline_preview_resolution_dropdown')
 	webcam_execution_thread_count_slider = get_ui_component('webcam_execution_thread_count_slider')
 	webcam_camera_backend_dropdown = get_ui_component('webcam_camera_backend_dropdown')
+	webcam_output_resolution_dropdown = get_ui_component('webcam_output_resolution_dropdown')
 
-	if webcam_device_id_dropdown and webcam_mode_radio and webcam_resolution_dropdown and webcam_fps_slider and webcam_inline_preview_resolution_dropdown and webcam_execution_thread_count_slider and webcam_camera_backend_dropdown:
+	if webcam_device_id_dropdown and webcam_mode_radio and webcam_resolution_dropdown and webcam_fps_slider and webcam_inline_preview_resolution_dropdown and webcam_execution_thread_count_slider and webcam_camera_backend_dropdown and webcam_output_resolution_dropdown:
 		WEBCAM_START_BUTTON.click(pre_start, outputs = [ SOURCE_FILE, WEBCAM_IMAGE, WEBCAM_START_BUTTON, WEBCAM_STOP_BUTTON ])
-		start_event = WEBCAM_START_BUTTON.click(start, inputs = [ webcam_device_id_dropdown, webcam_mode_radio, webcam_resolution_dropdown, webcam_fps_slider, webcam_inline_preview_resolution_dropdown, webcam_execution_thread_count_slider, webcam_camera_backend_dropdown ], outputs = WEBCAM_IMAGE)
+		start_event = WEBCAM_START_BUTTON.click(start, inputs = [ webcam_device_id_dropdown, webcam_mode_radio, webcam_resolution_dropdown, webcam_fps_slider, webcam_inline_preview_resolution_dropdown, webcam_execution_thread_count_slider, webcam_camera_backend_dropdown, webcam_output_resolution_dropdown ], outputs = WEBCAM_IMAGE)
 		start_event.then(pre_stop)
 		WEBCAM_STOP_BUTTON.click(stop, cancels = start_event, outputs = WEBCAM_IMAGE)
 		WEBCAM_STOP_BUTTON.click(pre_stop, outputs = [ SOURCE_FILE, WEBCAM_IMAGE, WEBCAM_START_BUTTON, WEBCAM_STOP_BUTTON ])
@@ -78,10 +79,11 @@ def listen_auto_start(ui : gradio.Blocks) -> None:
 	webcam_inline_preview_resolution_dropdown = get_ui_component('webcam_inline_preview_resolution_dropdown')
 	webcam_execution_thread_count_slider = get_ui_component('webcam_execution_thread_count_slider')
 	webcam_camera_backend_dropdown = get_ui_component('webcam_camera_backend_dropdown')
+	webcam_output_resolution_dropdown = get_ui_component('webcam_output_resolution_dropdown')
 
-	if webcam_config.get('auto_start') and webcam_device_id_dropdown and webcam_mode_radio and webcam_resolution_dropdown and webcam_fps_slider and webcam_inline_preview_resolution_dropdown and webcam_execution_thread_count_slider and webcam_camera_backend_dropdown:
+	if webcam_config.get('auto_start') and webcam_device_id_dropdown and webcam_mode_radio and webcam_resolution_dropdown and webcam_fps_slider and webcam_inline_preview_resolution_dropdown and webcam_execution_thread_count_slider and webcam_camera_backend_dropdown and webcam_output_resolution_dropdown:
 		load_event = ui.load(pre_start, outputs = [ SOURCE_FILE, WEBCAM_IMAGE, WEBCAM_START_BUTTON, WEBCAM_STOP_BUTTON ])
-		start_event = load_event.then(start, inputs = [ webcam_device_id_dropdown, webcam_mode_radio, webcam_resolution_dropdown, webcam_fps_slider, webcam_inline_preview_resolution_dropdown, webcam_execution_thread_count_slider, webcam_camera_backend_dropdown ], outputs = WEBCAM_IMAGE)
+		start_event = load_event.then(start, inputs = [ webcam_device_id_dropdown, webcam_mode_radio, webcam_resolution_dropdown, webcam_fps_slider, webcam_inline_preview_resolution_dropdown, webcam_execution_thread_count_slider, webcam_camera_backend_dropdown, webcam_output_resolution_dropdown ], outputs = WEBCAM_IMAGE)
 		start_event.then(pre_stop)
 
 
@@ -105,21 +107,33 @@ def pre_stop() -> Tuple[gradio.File, gradio.Image, gradio.Button, gradio.Button]
 	return gradio.File(visible = True), gradio.Image(visible = False), gradio.Button(visible = True), gradio.Button(visible = False)
 
 
-def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : str, webcam_fps : Fps, inline_preview_resolution : str = '640x480', webcam_execution_thread_count : int = 2, webcam_camera_backend : str = 'auto') -> Iterator[VisionFrame]:
+def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : str, webcam_fps : Fps, inline_preview_resolution : str = '640x480', webcam_execution_thread_count : int = 2, webcam_camera_backend : str = 'auto', webcam_output_resolution : str = 'copy') -> Iterator[VisionFrame]:
 	state_manager.init_item('face_selector_mode', 'one')
 	state_manager.sync_state()
 
 	webcam_width, webcam_height = unpack_resolution(webcam_resolution)
+	if webcam_output_resolution == 'copy':
+		output_resolution = webcam_resolution
+		output_width, output_height = webcam_width, webcam_height
+	elif webcam_output_resolution.startswith('x'):
+		output_scale = int(webcam_output_resolution[1:])
+		output_resolution = pack_resolution((webcam_width * output_scale, webcam_height * output_scale))
+		output_width, output_height = unpack_resolution(output_resolution)
+	else:
+		output_resolution = webcam_output_resolution
+		output_width, output_height = unpack_resolution(webcam_output_resolution)
+	if webcam_width * output_height != output_width * webcam_height:
+		logger.warn('webcam output resolution ' + output_resolution + ' does not match the aspect ratio of capture resolution ' + webcam_resolution + ', edges will be cropped', __name__)
 	camera_capture = get_local_camera_capture(webcam_device_id, webcam_width, webcam_height, webcam_fps, webcam_camera_backend)
 	stream_writer = None
 	if camera_capture and camera_capture.isOpened():
 		try:
 			if webcam_mode in [ 'udp', 'v4l2' ]:
-				stream_writer = LatestFrameWriter(lambda: open_stream(webcam_mode, webcam_resolution, webcam_fps), webcam_width, webcam_height, webcam_mode == 'v4l2', webcam_fps) #type:ignore[arg-type]
+				stream_writer = LatestFrameWriter(lambda: open_stream(webcam_mode, output_resolution, webcam_fps), output_width, output_height, webcam_mode == 'v4l2', webcam_fps) #type:ignore[arg-type]
 				stream_writer.start()
-			for capture_vision_frame, capture_time, is_duplicate, timing in multi_process_capture(camera_capture, webcam_fps, webcam_execution_thread_count):
+			for capture_vision_frame, capture_time, is_duplicate, timing in multi_process_capture(camera_capture, webcam_fps, webcam_execution_thread_count, (webcam_width, webcam_height)):
 				capture_vision_frame = cv2.cvtColor(capture_vision_frame, cv2.COLOR_BGR2RGB)
-				capture_vision_frame = fit_cover_frame(capture_vision_frame, (webcam_width, webcam_height))
+				capture_vision_frame = fit_cover_frame(capture_vision_frame, (output_width, output_height))
 				timing['post_processing_finished'] = time.perf_counter()
 
 				overlay_mode = state_manager.get_item('webcam_performance_overlay')

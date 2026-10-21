@@ -273,7 +273,8 @@ LOCALES : Locales =\
 			'webcam_frame_skipping_radio': 'FRAME SKIPPING',
 			'webcam_inline_preview_resolution_dropdown': 'INLINE PREVIEW RESOLUTION',
 			'webcam_execution_thread_count_slider': 'WEBCAM WORKERS',
-			'webcam_camera_backend_dropdown': 'CAMERA BACKEND'
+			'webcam_camera_backend_dropdown': 'CAMERA BACKEND',
+			'webcam_output_resolution_dropdown': 'OUTPUT RESOLUTION'
 		}
 	}
 }

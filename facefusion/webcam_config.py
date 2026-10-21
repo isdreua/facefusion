@@ -17,14 +17,17 @@ DEFAULT_WEBCAM_CONFIG : Dict[str, Any] =\
 	'performance_overlay': 'none',
 	'webcam_inline_preview_resolution': '640x480',
 	'webcam_execution_thread_count': 2,
-	'webcam_camera_backend': 'auto'
+	'webcam_camera_backend': 'auto',
+	'webcam_output_resolution': 'copy'
 }
 WEBCAM_MODES = [ 'inline', 'udp', 'v4l2' ]
-WEBCAM_RESOLUTIONS = [ '320x240', '640x480', '800x600', '1024x768', '1280x720', '1280x960', '1920x1080' ]
+WEBCAM_RESOLUTIONS = [ '320x240', '640x480', '800x600', '1024x768', '1280x720', '1280x960', '1920x1080', '240x320', '480x640', '600x800', '768x1024', '720x1280', '960x1280', '1080x1920' ]
 WEBCAM_FRAME_SKIPPING_MODES = [ 'adaptive', 'disabled', '1-in-2', '1-in-3' ]
 WEBCAM_PERFORMANCE_OVERLAYS = [ 'none', 'simple', 'advanced' ]
-WEBCAM_INLINE_PREVIEW_RESOLUTIONS = [ 'native', '320x240', '640x480', '960x540' ]
+WEBCAM_INLINE_PREVIEW_RESOLUTIONS = [ 'native', '320x240', '640x480', '960x540', '240x320', '480x640', '540x960' ]
 WEBCAM_CAMERA_BACKENDS = [ 'auto', 'msmf', 'dshow' ] if is_windows() else [ 'auto' ]
+WEBCAM_OUTPUT_SCALES = [ 'x2', 'x3', 'x4' ]
+WEBCAM_OUTPUT_RESOLUTIONS = [ 'copy' ] + WEBCAM_OUTPUT_SCALES + WEBCAM_RESOLUTIONS
 WEBCAM_STATE_KEYS =\
 [
 	'source_paths', 'processors', 'execution_device_ids', 'execution_providers', 'execution_thread_count', 'video_memory_strategy',
@@ -71,6 +74,8 @@ def load_webcam_config(config_path : str) -> Dict[str, Any]:
 		webcam_config['webcam_execution_thread_count'] = content.get('webcam_execution_thread_count')
 	if content.get('webcam_camera_backend') in WEBCAM_CAMERA_BACKENDS:
 		webcam_config['webcam_camera_backend'] = content.get('webcam_camera_backend')
+	if content.get('webcam_output_resolution') in WEBCAM_OUTPUT_RESOLUTIONS:
+		webcam_config['webcam_output_resolution'] = content.get('webcam_output_resolution')
 
 	return webcam_config
 

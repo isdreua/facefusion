@@ -22,8 +22,8 @@ from facefusion.face_selector import begin_face_selection_context, end_face_sele
 from facefusion.ffmpeg import open_ffmpeg
 from facefusion.filesystem import is_directory
 from facefusion.processors.core import get_processors_modules
-from facefusion.types import AudioFrame, Fps, Mask, StreamMode, VisionFrame
-from facefusion.vision import extract_vision_mask, is_vision_frame, read_static_images
+from facefusion.types import AudioFrame, Fps, Mask, Resolution, StreamMode, VisionFrame
+from facefusion.vision import extract_vision_mask, is_vision_frame, read_static_images, restrict_frame
 
 CONTENT_ANALYSIS_METRICS_LOCK = threading.Lock()
 CONTENT_ANALYSIS_METRICS = { 'runs': 0, 'last_ms': 0.0, 'max_ms': 0.0 }
@@ -112,7 +112,7 @@ def has_stream_capacity(pending_total : int, buffered_total : int, max_queue_siz
 	return pending_total < max_queue_size and buffered_total < max_queue_size
 
 
-def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, webcam_execution_thread_count : Optional[int] = None) -> Iterator[Tuple[VisionFrame, float, bool, Dict[str, Any]]]:
+def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, webcam_execution_thread_count : Optional[int] = None, capture_resolution : Optional[Resolution] = None) -> Iterator[Tuple[VisionFrame, float, bool, Dict[str, Any]]]:
 	source_vision_frames = read_static_images(state_manager.get_item('source_paths'))
 	webcam_execution_thread_count = webcam_execution_thread_count or state_manager.get_item('execution_thread_count')
 	max_queue_size = max(1, webcam_execution_thread_count)
@@ -130,6 +130,7 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 
 	frame_index = 0
 	nsfw_frame_index = 0
+	has_logged_capture_downscale = False
 
 	with tqdm(desc = translator.get('streaming'), unit = 'frame', disable = state_manager.get_item('log_level') in [ 'warn', 'error' ]) as progress:
 		# Add +1 to max_workers to accommodate the background NSFW analysis without stalling frame processing
@@ -183,6 +184,16 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 						capture_read_end = capture_time
 				except queue.Empty:
 					continue
+
+				# The camera may negotiate a mode larger than the one requested, so bring the frame down
+				# to the working resolution before anything processes it
+				if capture_resolution and is_vision_frame(capture_vision_frame):
+					capture_height, capture_width = capture_vision_frame.shape[:2]
+					if capture_width > capture_resolution[0] or capture_height > capture_resolution[1]:
+						if not has_logged_capture_downscale:
+							has_logged_capture_downscale = True
+							logger.debug('camera delivered ' + str(capture_width) + 'x' + str(capture_height) + ' for requested ' + str(capture_resolution[0]) + 'x' + str(capture_resolution[1]) + ', downscaling to the working resolution', __name__)
+						capture_vision_frame = restrict_frame(capture_vision_frame, capture_resolution)
 
 				# 3. Sample NSFW analysis to ~once per second, only copying/submitting the sampled frame
 				nsfw_frame_index += 1

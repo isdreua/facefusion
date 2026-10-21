@@ -10,6 +10,10 @@ from facefusion.types import Fps
 from facefusion.webcam_config import NO_SOURCE_FACE_NAME, WEBCAM_PERFORMANCE_OVERLAYS
 from facefusion.window_process import FRAME_SLOT_COUNT, run_window
 
+# How many faces the window can reach. The digit keys stop at 9, so the arrows walk the same nine
+# rather than reaching faces no other key can name
+WINDOW_FACE_KEY_COUNT = 9
+
 
 # The pip distribution is pygame-ce but it imports as pygame, which it shares with classic pygame;
 # either one satisfies the window, so the import name is what gets probed
@@ -150,9 +154,10 @@ def apply_window_intents(window_stream : WindowStream) -> bool:
 	for intent_name, intent_value in window_stream.poll_events():
 		if intent_name == 'closed':
 			is_running = False
-		# The three key groups are one exclusive choice, not a toggle and a selection: 1-9 pick a
-		# face, 0 picks none, '-' picks the raw camera. Pressing one twice changes nothing, and
-		# picking a face is what leaves the raw camera again
+		# The face key groups are one exclusive choice, not a toggle and a selection: 1-9 pick a
+		# face, left and right step through those same nine, 0 picks none, '-' picks the raw
+		# camera. Pressing one twice changes nothing, and picking a face is what leaves the raw
+		# camera again
 		elif intent_name == 'face_index':
 			source_face_names = resolve_window_face_names()
 			if 0 <= intent_value < len(source_face_names):
@@ -163,6 +168,22 @@ def apply_window_intents(window_stream : WindowStream) -> bool:
 		elif intent_name == 'face_none':
 			state_manager.set_item('source_face_name', NO_SOURCE_FACE_NAME)
 			state_manager.set_item('webcam_stream_bypass', False)
+		# Wrapping at both ends. The direction is all the window reports; the step is resolved here
+		# because the parent owns the index to name mapping
+		elif intent_name == 'face_step':
+			source_face_names = resolve_window_face_names()[:WINDOW_FACE_KEY_COUNT]
+			if source_face_names:
+				source_face_name = state_manager.get_item('source_face_name')
+				if source_face_name in source_face_names:
+					face_index = (source_face_names.index(source_face_name) + intent_value) % len(source_face_names)
+				else:
+					# Coming from no face at all, so the list is entered at the end it is being
+					# walked towards rather than at whatever was selected before
+					face_index = 0 if intent_value > 0 else len(source_face_names) - 1
+				state_manager.set_item('source_face_name', source_face_names[face_index])
+				state_manager.set_item('webcam_stream_bypass', False)
+			else:
+				logger.debug('no source faces are bound to the arrow keys', __name__)
 		elif intent_name == 'bypass_on':
 			state_manager.set_item('webcam_stream_bypass', True)
 		# A, S and D switch the overlay in place. The window is the one output with no browser

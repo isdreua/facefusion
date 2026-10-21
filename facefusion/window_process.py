@@ -102,6 +102,10 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 						intent_queue.put(('bypass_on', None))
 					elif overlay_mode is not None:
 						intent_queue.put(('overlay_mode', overlay_mode))
+					elif event.key == pygame.K_LEFT:
+						intent_queue.put(('face_step', -1))
+					elif event.key == pygame.K_RIGHT:
+						intent_queue.put(('face_step', 1))
 
 			while True:
 				try:

@@ -7,7 +7,7 @@ from facefusion import logger, state_manager
 from facefusion.common_helper import get_first
 from facefusion.filesystem import is_image
 from facefusion.types import Fps
-from facefusion.webcam_config import NO_SOURCE_FACE_NAME
+from facefusion.webcam_config import NO_SOURCE_FACE_NAME, WEBCAM_PERFORMANCE_OVERLAYS
 from facefusion.window_process import FRAME_SLOT_COUNT, run_window
 
 
@@ -165,6 +165,15 @@ def apply_window_intents(window_stream : WindowStream) -> bool:
 			state_manager.set_item('webcam_stream_bypass', False)
 		elif intent_name == 'bypass_on':
 			state_manager.set_item('webcam_stream_bypass', True)
+		# A, S and D switch the overlay in place. The window is the one output with no browser
+		# beside it, so without these a headless run cannot be inspected and then cleaned up again.
+		# Checked against the list even though the child is ours, because the value crossed a
+		# process boundary to get here
+		elif intent_name == 'overlay_mode':
+			if intent_value in WEBCAM_PERFORMANCE_OVERLAYS:
+				state_manager.set_item('webcam_performance_overlay', intent_value)
+			else:
+				logger.debug('unknown overlay mode ' + str(intent_value) + ' was ignored', __name__)
 
 	# The on screen display is part of the overlay, so a run with the overlay off keeps a clean frame
 	# and never names the face it switched to

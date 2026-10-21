@@ -23,6 +23,20 @@ def resolve_face_index(pygame : Any, key : int) -> Optional[int]:
 	return None
 
 
+# The overlay modes the parent accepts, keyed the way they sit under the left hand: A is the fullest
+# one, S steps down to the summary, D turns it off. The value is a plain constant per key rather
+# than anything the child resolves against state, so the parent stays the only owner of the mode
+def resolve_overlay_mode(pygame : Any, key : int) -> Optional[str]:
+	overlay_mode_keys =\
+	{
+		pygame.K_a: 'advanced',
+		pygame.K_s: 'simple',
+		pygame.K_d: 'none'
+	}
+
+	return overlay_mode_keys.get(key)
+
+
 def resolve_osd_text(status : Dict[str, Any]) -> str:
 	if status.get('is_bypassed'):
 		return 'RAW CAMERA'
@@ -69,6 +83,7 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 					is_closing = True
 				elif event.type == pygame.KEYDOWN:
 					face_index = resolve_face_index(pygame, event.key)
+					overlay_mode = resolve_overlay_mode(pygame, event.key)
 					if event.key == pygame.K_F11:
 						pygame.display.toggle_fullscreen()
 					elif event.key == pygame.K_q and event.mod & pygame.KMOD_CTRL:
@@ -85,6 +100,8 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 						intent_queue.put(('face_none', None))
 					elif event.key in [ pygame.K_MINUS, pygame.K_KP_MINUS ]:
 						intent_queue.put(('bypass_on', None))
+					elif overlay_mode is not None:
+						intent_queue.put(('overlay_mode', overlay_mode))
 
 			while True:
 				try:

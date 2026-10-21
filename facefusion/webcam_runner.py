@@ -5,11 +5,12 @@ import cv2
 
 from facefusion import logger, state_manager
 from facefusion.camera_manager import clear_camera_pool, get_local_camera_capture
+from facefusion.common_helper import get_first
 from facefusion.overlay import PERFORMANCE_OVERLAY
 from facefusion.streamer import multi_process_capture, open_stream
 from facefusion.stream_writer import LatestFrameWriter
 from facefusion.vision import fit_cover_frame, pack_resolution, unpack_resolution
-from facefusion.webcam_config import load_webcam_config
+from facefusion.webcam_config import DEFAULT_SOURCE_FACE_NAME, get_source_faces, load_webcam_config
 
 
 def run() -> int:
@@ -21,12 +22,15 @@ def run() -> int:
 	webcam_execution_thread_count = webcam_config.get('webcam_execution_thread_count')
 	webcam_camera_backend = webcam_config.get('webcam_camera_backend')
 	webcam_output_resolution = webcam_config.get('webcam_output_resolution')
+	source_face_groups = get_source_faces(webcam_config)
 	stream_writer : Any = None
 
 	if webcam_mode not in [ 'udp', 'v4l2' ]:
 		logger.error('headless webcam mode requires "udp" or "v4l2" output', __name__)
 		return 2
 
+	state_manager.init_item('source_face_groups', source_face_groups)
+	state_manager.init_item('source_face_name', webcam_config.get('webcam_source_face') or get_first(list(source_face_groups)) or DEFAULT_SOURCE_FACE_NAME)
 	state_manager.sync_state()
 	webcam_width, webcam_height = unpack_resolution(webcam_resolution)
 	if webcam_output_resolution == 'copy':

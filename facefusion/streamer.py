@@ -14,7 +14,7 @@ from tqdm import tqdm
 from facefusion import ffmpeg_builder, logger, state_manager, translator
 from facefusion.app_context import detect_app_context, set_app_context_override
 from facefusion.audio import create_empty_audio_frame
-from facefusion.common_helper import is_windows
+from facefusion.common_helper import get_first, is_windows
 from facefusion.content_analyser import analyse_frame
 from facefusion.face_creator import set_face_analysis_features
 from facefusion.face_helper import set_paste_in_place
@@ -24,6 +24,7 @@ from facefusion.filesystem import is_directory
 from facefusion.processors.core import get_processors_modules
 from facefusion.types import AudioFrame, Fps, Mask, Resolution, StreamMode, VisionFrame
 from facefusion.vision import extract_vision_mask, is_vision_frame, read_static_images, restrict_frame
+from facefusion.webcam_config import DEFAULT_SOURCE_FACE_NAME
 
 CONTENT_ANALYSIS_METRICS_LOCK = threading.Lock()
 CONTENT_ANALYSIS_METRICS = { 'runs': 0, 'last_ms': 0.0, 'max_ms': 0.0 }
@@ -89,10 +90,9 @@ def get_content_analysis_metrics() -> Dict[str, float]:
 		return dict(CONTENT_ANALYSIS_METRICS)
 
 
-def prepare_stream_processors(processor_names : List[str], source_vision_frames : List[VisionFrame]) -> Tuple[List[ModuleType], Dict[str, Dict[str, Any]]]:
+def validate_stream_processors(processor_names : List[str]) -> List[ModuleType]:
 	processor_modules = get_processors_modules(processor_names)
 	validated_processor_modules = []
-	processor_stream_inputs = {}
 
 	for processor_module in processor_modules:
 		logger.disable()
@@ -102,10 +102,82 @@ def prepare_stream_processors(processor_names : List[str], source_vision_frames 
 			logger.enable()
 		if is_processor_ready:
 			validated_processor_modules.append(processor_module)
-			if hasattr(processor_module, 'prepare_stream_inputs'):
-				processor_stream_inputs[processor_module.__name__] = processor_module.prepare_stream_inputs(source_vision_frames)
 
-	return validated_processor_modules, processor_stream_inputs
+	return validated_processor_modules
+
+
+def prepare_stream_inputs(processor_modules : List[ModuleType], source_vision_frames : List[VisionFrame]) -> Dict[str, Dict[str, Any]]:
+	processor_stream_inputs = {}
+
+	for processor_module in processor_modules:
+		if hasattr(processor_module, 'prepare_stream_inputs'):
+			processor_stream_inputs[processor_module.__name__] = processor_module.prepare_stream_inputs(source_vision_frames)
+
+	return processor_stream_inputs
+
+
+def prepare_stream_processors(processor_names : List[str], source_vision_frames : List[VisionFrame]) -> Tuple[List[ModuleType], Dict[str, Dict[str, Any]]]:
+	validated_processor_modules = validate_stream_processors(processor_names)
+	return validated_processor_modules, prepare_stream_inputs(validated_processor_modules, source_vision_frames)
+
+
+# One face group is detected, recognized and embedded here, so switching to it later is a dictionary
+# lookup rather than any inference work
+def prepare_stream_face_set(processor_modules : List[ModuleType], face_name : str, source_paths : List[str]) -> Dict[str, Any]:
+	source_vision_frames = read_static_images(source_paths)
+
+	if source_paths and not source_vision_frames:
+		logger.warn('source face ' + face_name + ' has no readable image', __name__)
+
+	return\
+	{
+		'source_paths': list(source_paths),
+		'source_vision_frames': source_vision_frames,
+		'processor_stream_inputs': prepare_stream_inputs(processor_modules, source_vision_frames)
+	}
+
+
+def prepare_stream_face_sets(processor_modules : List[ModuleType], source_face_groups : Dict[str, List[str]]) -> Dict[str, Dict[str, Any]]:
+	return { face_name: prepare_stream_face_set(processor_modules, face_name, source_paths) for face_name, source_paths in source_face_groups.items() }
+
+
+# Faces added while the stream runs must not cost the ones already prepared their embeddings again,
+# so a group is only re-prepared when its own paths changed
+def update_stream_face_sets(stream_face_sets : Dict[str, Dict[str, Any]], processor_modules : List[ModuleType], source_face_groups : Dict[str, List[str]]) -> Dict[str, Dict[str, Any]]:
+	updated_stream_face_sets = {}
+
+	for face_name, source_paths in source_face_groups.items():
+		stream_face_set = stream_face_sets.get(face_name)
+		if stream_face_set and stream_face_set.get('source_paths') == source_paths:
+			updated_stream_face_sets[face_name] = stream_face_set
+		else:
+			updated_stream_face_sets[face_name] = prepare_stream_face_set(processor_modules, face_name, source_paths)
+
+	return updated_stream_face_sets
+
+
+# Groups loaded from the config and groups uploaded in the browser are kept apart in state so that
+# provenance survives, and are merged only here
+def resolve_source_face_groups() -> Dict[str, List[str]]:
+	resolved_source_face_groups = {}
+
+	for state_key in [ 'source_face_groups', 'source_face_uploads' ]:
+		source_face_groups = state_manager.get_item(state_key)
+		if isinstance(source_face_groups, dict):
+			for face_name, source_paths in source_face_groups.items():
+				resolved_source_face_groups[face_name] = list(source_paths)
+
+	if not resolved_source_face_groups:
+		resolved_source_face_groups[DEFAULT_SOURCE_FACE_NAME] = list(state_manager.get_item('source_paths') or [])
+
+	return resolved_source_face_groups
+
+
+def resolve_stream_face_set(stream_face_sets : Dict[str, Dict[str, Any]], source_face_name : Optional[str]) -> Tuple[Optional[str], List[VisionFrame], Dict[str, Dict[str, Any]]]:
+	if source_face_name not in stream_face_sets:
+		source_face_name = get_first(list(stream_face_sets))
+	stream_face_set = stream_face_sets.get(source_face_name) or {}
+	return source_face_name, stream_face_set.get('source_vision_frames') or [], stream_face_set.get('processor_stream_inputs') or {}
 
 
 def has_stream_capacity(pending_total : int, buffered_total : int, max_queue_size : int) -> bool:
@@ -113,11 +185,14 @@ def has_stream_capacity(pending_total : int, buffered_total : int, max_queue_siz
 
 
 def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, webcam_execution_thread_count : Optional[int] = None, capture_resolution : Optional[Resolution] = None) -> Iterator[Tuple[VisionFrame, float, bool, Dict[str, Any]]]:
-	source_vision_frames = read_static_images(state_manager.get_item('source_paths'))
 	webcam_execution_thread_count = webcam_execution_thread_count or state_manager.get_item('execution_thread_count')
 	max_queue_size = max(1, webcam_execution_thread_count)
 	processor_names = list(state_manager.get_item('processors') or [])
-	processor_modules, processor_stream_inputs = prepare_stream_processors(processor_names, source_vision_frames)
+	source_face_groups_version = state_manager.get_item('source_face_groups_version')
+	source_face_groups = resolve_source_face_groups()
+	processor_modules = validate_stream_processors(processor_names)
+	stream_face_sets = prepare_stream_face_sets(processor_modules, source_face_groups)
+	source_face_name, source_vision_frames, processor_stream_inputs = resolve_stream_face_set(stream_face_sets, state_manager.get_item('source_face_name'))
 	stream_vision_mask = None
 	face_swapper_model = state_manager.get_item('face_swapper_model')
 	face_swapper_weight = state_manager.get_item('face_swapper_weight')
@@ -151,7 +226,9 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 				current_processor_names = list(state_manager.get_item('processors') or [])
 				if current_processor_names != processor_names:
 					processor_names = current_processor_names
-					processor_modules, processor_stream_inputs = prepare_stream_processors(processor_names, source_vision_frames)
+					processor_modules = validate_stream_processors(processor_names)
+					stream_face_sets = prepare_stream_face_sets(processor_modules, source_face_groups)
+					source_face_name, source_vision_frames, processor_stream_inputs = resolve_stream_face_set(stream_face_sets, source_face_name)
 					face_analysis_features = collect_stream_face_analysis_features(processor_modules)
 
 				# 1. Preserve ordered output normally; adaptive mode drops stale work when a newer result is ready
@@ -206,6 +283,21 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 						stream_vision_mask = numpy.full(capture_vision_frame.shape[:2], 255, dtype = numpy.uint8)
 						stream_vision_mask.setflags(write = False)
 
+					# A bumped version means faces were uploaded or cleared, so the set is reconciled
+					# before the selection below is resolved against it
+					current_source_face_groups_version = state_manager.get_item('source_face_groups_version')
+					if current_source_face_groups_version != source_face_groups_version:
+						source_face_groups_version = current_source_face_groups_version
+						source_face_groups = resolve_source_face_groups()
+						stream_face_sets = update_stream_face_sets(stream_face_sets, processor_modules, source_face_groups)
+						source_face_name, source_vision_frames, processor_stream_inputs = resolve_stream_face_set(stream_face_sets, source_face_name)
+
+					# Switching the selected face only rebinds the inputs prepared at startup, so it costs
+					# nothing beyond this lookup and takes effect on the next frame
+					current_source_face_name = state_manager.get_item('source_face_name')
+					if current_source_face_name != source_face_name and current_source_face_name in stream_face_sets:
+						source_face_name, source_vision_frames, processor_stream_inputs = resolve_stream_face_set(stream_face_sets, current_source_face_name)
+
 					# Refresh the cached source inputs if the face swapper model changed mid-stream,
 					# since the cached embedding/prepared-frame format is tied to the previous model
 					current_face_swapper_model = state_manager.get_item('face_swapper_model')
@@ -214,9 +306,8 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 					face_swapper_weight_changed = current_face_swapper_weight != face_swapper_weight
 					if face_swapper_model_changed:
 						face_swapper_model = current_face_swapper_model
-						for processor_module in processor_modules:
-							if hasattr(processor_module, 'prepare_stream_inputs'):
-								processor_stream_inputs[processor_module.__name__] = processor_module.prepare_stream_inputs(source_vision_frames)
+						stream_face_sets = prepare_stream_face_sets(processor_modules, source_face_groups)
+						source_face_name, source_vision_frames, processor_stream_inputs = resolve_stream_face_set(stream_face_sets, source_face_name)
 					if face_swapper_weight_changed:
 						face_swapper_weight = current_face_swapper_weight
 					if face_swapper_model_changed or face_swapper_weight_changed:

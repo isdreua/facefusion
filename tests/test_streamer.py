@@ -144,6 +144,9 @@ def prepare_capture_test(monkeypatch, capture, context_calls, processor_modules 
 	monkeypatch.setattr(streamer, 'set_app_context_override', context_calls.append)
 	default_state = {
 		'source_paths': [],
+		'source_face_groups': {},
+		'source_face_uploads': {},
+		'source_face_groups_version': 0,
 		'execution_thread_count': 1,
 		'processors': [],
 		'face_swapper_model': 'model',
@@ -171,6 +174,110 @@ def test_prepare_stream_processors_includes_newly_enabled_processor(monkeypatch)
 	assert processor_modules == [ processor_module ]
 	assert processor_stream_inputs == { 'face_enhancer_test': { 'ready': True } }
 	assert prepared_frames == [ source_frame ]
+
+
+def test_prepare_stream_face_sets_prepares_every_group(monkeypatch):
+	prepared_calls = []
+	processor_module = ModuleType('face_swapper_test')
+	processor_module.prepare_stream_inputs = lambda frames: prepared_calls.append(frames) or { 'source_embedding': frames[0] }
+	monkeypatch.setattr(streamer, 'read_static_images', lambda paths: list(paths))
+
+	stream_face_sets = streamer.prepare_stream_face_sets([ processor_module ], { 'alice': [ 'a1', 'a2' ], 'bob': [ 'b1' ] })
+
+	assert list(stream_face_sets) == [ 'alice', 'bob' ]
+	assert stream_face_sets['alice'].get('source_paths') == [ 'a1', 'a2' ]
+	assert stream_face_sets['alice'].get('source_vision_frames') == [ 'a1', 'a2' ]
+	assert stream_face_sets['alice'].get('processor_stream_inputs') == { 'face_swapper_test': { 'source_embedding': 'a1' } }
+	assert stream_face_sets['bob'].get('processor_stream_inputs') == { 'face_swapper_test': { 'source_embedding': 'b1' } }
+	assert prepared_calls == [ [ 'a1', 'a2' ], [ 'b1' ] ]
+
+
+def test_prepare_stream_face_sets_warns_about_group_without_image(monkeypatch):
+	warnings = []
+	monkeypatch.setattr(streamer, 'read_static_images', lambda paths: [])
+	monkeypatch.setattr(streamer.logger, 'warn', lambda message, module_name: warnings.append(message))
+
+	stream_face_sets = streamer.prepare_stream_face_sets([], { 'alice': [ 'missing.jpg' ] })
+
+	assert list(stream_face_sets) == [ 'alice' ]
+	assert len(warnings) == 1
+
+
+@pytest.mark.parametrize(('source_face_groups', 'source_face_uploads', 'source_paths', 'resolved'), [
+	({ 'alice': [ 'a1' ] }, {}, [], { 'alice': [ 'a1' ] }),
+	({ 'alice': [ 'a1' ] }, { 'bob': [ 'b1' ] }, [], { 'alice': [ 'a1' ], 'bob': [ 'b1' ] }),
+	({}, { 'bob': [ 'b1' ] }, [], { 'bob': [ 'b1' ] }),
+	(None, None, [ 'u1' ], { 'default': [ 'u1' ] }),
+	(None, None, [], { 'default': [] })
+])
+def test_resolve_source_face_groups_merges_config_and_uploads(monkeypatch, source_face_groups, source_face_uploads, source_paths, resolved):
+	state = { 'source_face_groups': source_face_groups, 'source_face_uploads': source_face_uploads, 'source_paths': source_paths }
+	monkeypatch.setattr(streamer.state_manager, 'get_item', state.get)
+
+	assert streamer.resolve_source_face_groups() == resolved
+
+
+def test_resolve_source_face_groups_copies_lists_out_of_state(monkeypatch):
+	state = { 'source_face_groups': { 'alice': [ 'a1' ] }, 'source_face_uploads': {}, 'source_paths': [] }
+	monkeypatch.setattr(streamer.state_manager, 'get_item', state.get)
+
+	streamer.resolve_source_face_groups()['alice'].append('mutated')
+
+	assert state['source_face_groups'] == { 'alice': [ 'a1' ] }
+
+
+def test_update_stream_face_sets_only_prepares_what_changed(monkeypatch):
+	prepared_calls = []
+	processor_module = ModuleType('face_swapper_test')
+	processor_module.prepare_stream_inputs = lambda frames: prepared_calls.append(list(frames)) or { 'source_embedding': frames[0] }
+	monkeypatch.setattr(streamer, 'read_static_images', lambda paths: list(paths))
+	stream_face_sets = streamer.prepare_stream_face_sets([ processor_module ], { 'alice': [ 'a1' ] })
+	prepared_calls.clear()
+
+	updated_stream_face_sets = streamer.update_stream_face_sets(stream_face_sets, [ processor_module ], { 'alice': [ 'a1' ], 'bob': [ 'b1' ] })
+
+	assert list(updated_stream_face_sets) == [ 'alice', 'bob' ]
+	assert updated_stream_face_sets['alice'] is stream_face_sets['alice']
+	assert prepared_calls == [ [ 'b1' ] ]
+
+
+def test_update_stream_face_sets_reprepares_a_changed_group(monkeypatch):
+	prepared_calls = []
+	processor_module = ModuleType('face_swapper_test')
+	processor_module.prepare_stream_inputs = lambda frames: prepared_calls.append(list(frames)) or { 'source_embedding': frames[0] }
+	monkeypatch.setattr(streamer, 'read_static_images', lambda paths: list(paths))
+	stream_face_sets = streamer.prepare_stream_face_sets([ processor_module ], { 'alice': [ 'a1' ] })
+	prepared_calls.clear()
+
+	updated_stream_face_sets = streamer.update_stream_face_sets(stream_face_sets, [ processor_module ], { 'alice': [ 'a1', 'a2' ] })
+
+	assert prepared_calls == [ [ 'a1', 'a2' ] ]
+	assert updated_stream_face_sets['alice'] is not stream_face_sets['alice']
+
+
+def test_update_stream_face_sets_drops_removed_groups(monkeypatch):
+	processor_module = ModuleType('face_swapper_test')
+	processor_module.prepare_stream_inputs = lambda frames: { 'source_embedding': frames[0] if frames else None }
+	monkeypatch.setattr(streamer, 'read_static_images', lambda paths: list(paths))
+	stream_face_sets = streamer.prepare_stream_face_sets([ processor_module ], { 'alice': [ 'a1' ], 'bob': [ 'b1' ] })
+
+	updated_stream_face_sets = streamer.update_stream_face_sets(stream_face_sets, [ processor_module ], { 'bob': [ 'b1' ] })
+
+	assert list(updated_stream_face_sets) == [ 'bob' ]
+
+
+def test_resolve_stream_face_set_selects_by_name_and_falls_back(monkeypatch):
+	stream_face_sets =\
+	{
+		'alice': { 'source_vision_frames': [ 'a1' ], 'processor_stream_inputs': { 'face_swapper_test': { 'source_embedding': 'a1' } } },
+		'bob': { 'source_vision_frames': [ 'b1' ], 'processor_stream_inputs': { 'face_swapper_test': { 'source_embedding': 'b1' } } }
+	}
+
+	assert streamer.resolve_stream_face_set(stream_face_sets, 'bob')[0] == 'bob'
+	assert streamer.resolve_stream_face_set(stream_face_sets, 'bob')[1] == [ 'b1' ]
+	assert streamer.resolve_stream_face_set(stream_face_sets, 'carol')[0] == 'alice'
+	assert streamer.resolve_stream_face_set(stream_face_sets, None)[0] == 'alice'
+	assert streamer.resolve_stream_face_set({}, 'alice') == (None, [], {})
 
 
 @pytest.mark.parametrize(('pending_total', 'buffered_total', 'max_queue_size', 'has_capacity'), [

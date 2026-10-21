@@ -274,7 +274,12 @@ LOCALES : Locales =\
 			'webcam_inline_preview_resolution_dropdown': 'INLINE PREVIEW RESOLUTION',
 			'webcam_execution_thread_count_slider': 'WEBCAM WORKERS',
 			'webcam_camera_backend_dropdown': 'CAMERA BACKEND',
-			'webcam_output_resolution_dropdown': 'OUTPUT RESOLUTION'
+			'webcam_output_resolution_dropdown': 'OUTPUT RESOLUTION',
+			'webcam_source_face_gallery': 'SOURCE FACE',
+			'webcam_source_face_clear_button': 'CLEAR FACES',
+			'webcam_generate_config_button': 'GENERATE CONFIG',
+			'webcam_generate_config_textbox': 'CONFIG JSON',
+			'webcam_generate_config_failed': 'config could not be generated'
 		}
 	}
 }

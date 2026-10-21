@@ -16,6 +16,10 @@ def read_json(json_path : str) -> Optional[Content]:
 	return None
 
 
+def format_json(content : Content) -> str:
+	return json.dumps(content, indent = 4)
+
+
 def write_json(json_path : str, content : Content) -> bool:
 	with open(json_path, 'w') as json_file:
 		json.dump(content, json_file, indent = 4)

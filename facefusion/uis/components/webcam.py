@@ -8,13 +8,14 @@ from facefusion import logger, state_manager, translator
 from facefusion.camera_manager import clear_camera_pool, get_local_camera_capture
 from facefusion.filesystem import has_image
 from facefusion.overlay import PERFORMANCE_OVERLAY
-from facefusion.streamer import multi_process_capture, open_stream
+from facefusion.streamer import multi_process_capture, open_stream, resolve_source_face_groups
 from facefusion.stream_writer import LatestFrameWriter
 from facefusion.types import Fps, VisionFrame, WebcamMode
+from facefusion.uis.components.webcam_options import update_source_face_gallery
 from facefusion.uis.core import get_ui_component
 from facefusion.uis.types import File
 from facefusion.vision import fit_cover_frame, pack_resolution, restrict_frame, unpack_resolution
-from facefusion.webcam_config import load_webcam_config
+from facefusion.webcam_config import append_source_face_uploads, load_webcam_config
 
 SOURCE_FILE : Optional[gradio.File] = None
 WEBCAM_IMAGE : Optional[gradio.Image] = None
@@ -28,11 +29,12 @@ def render() -> None:
 	global WEBCAM_START_BUTTON
 	global WEBCAM_STOP_BUTTON
 
-	has_source_image = has_image(state_manager.get_item('source_paths'))
+	# Starts and stays empty: it is an intake for adding faces, and configured source paths already
+	# show up in the gallery as a selectable face
 	SOURCE_FILE = gradio.File(
 		label = translator.get('uis.source_file'),
 		file_count = 'multiple',
-		value = state_manager.get_item('source_paths') if has_source_image else None
+		value = None
 	)
 	WEBCAM_IMAGE = gradio.Image(
 		label = translator.get('uis.webcam_image'),
@@ -52,7 +54,13 @@ def render() -> None:
 
 
 def listen() -> None:
-	SOURCE_FILE.change(update_source, inputs = SOURCE_FILE, outputs = SOURCE_FILE)
+	webcam_source_face_gallery = get_ui_component('webcam_source_face_gallery')
+	webcam_source_face_clear_button = get_ui_component('webcam_source_face_clear_button')
+
+	if webcam_source_face_gallery:
+		SOURCE_FILE.upload(update_source, inputs = SOURCE_FILE, outputs = [ SOURCE_FILE, webcam_source_face_gallery ])
+		if webcam_source_face_clear_button:
+			webcam_source_face_clear_button.click(clear_source, outputs = [ SOURCE_FILE, webcam_source_face_gallery ])
 	webcam_device_id_dropdown = get_ui_component('webcam_device_id_dropdown')
 	webcam_mode_radio = get_ui_component('webcam_mode_radio')
 	webcam_resolution_dropdown = get_ui_component('webcam_resolution_dropdown')
@@ -87,16 +95,42 @@ def listen_auto_start(ui : gradio.Blocks) -> None:
 		start_event.then(pre_stop)
 
 
-def update_source(files : List[File]) -> gradio.File:
-	file_names = [ file.name for file in files ] if files else None
-	has_source_image = has_image(file_names)
+# Each uploaded image becomes its own selectable face instead of being averaged with the others, and
+# uploads add to what is already there rather than replacing it
+def update_source(files : List[File]) -> Tuple[gradio.File, gradio.Gallery]:
+	file_names = [ file.name for file in files ] if files else []
+	current_source_face_uploads = state_manager.get_item('source_face_uploads')
+	source_face_uploads = append_source_face_uploads(current_source_face_uploads, file_names)
 
-	if has_source_image:
-		state_manager.set_item('source_paths', file_names)
-		return gradio.File(value = file_names)
+	if source_face_uploads != current_source_face_uploads:
+		state_manager.set_item('source_face_uploads', source_face_uploads)
+		apply_source_paths(bool(source_face_uploads))
 
-	state_manager.clear_item('source_paths')
-	return gradio.File(value = None)
+	# Holding on to the uploaded files leaves the widget full and with no room to drop the next one
+	# in; the gallery is the record of what has been loaded, so the intake is emptied again
+	return gradio.File(value = None), update_source_face_gallery()
+
+
+def clear_source() -> Tuple[gradio.File, gradio.Gallery]:
+	state_manager.set_item('source_face_uploads', {})
+	apply_source_paths(False)
+	return gradio.File(value = None), update_source_face_gallery()
+
+
+# pre_process refuses to run the face swapper unless source_paths holds a detectable face, so it
+# carries every path of every group while the groups themselves drive what is selectable
+def apply_source_paths(has_source_face_uploads : bool) -> None:
+	source_paths = [ source_path for source_paths in resolve_source_face_groups().values() for source_path in source_paths ]
+	state_manager.set_item('source_face_groups_version', (state_manager.get_item('source_face_groups_version') or 0) + 1)
+
+	if has_image(source_paths):
+		state_manager.set_item('source_paths', source_paths)
+	else:
+		state_manager.clear_item('source_paths')
+	if has_source_face_uploads:
+		state_manager.set_item('source_paths_from_ui', True)
+	else:
+		state_manager.clear_item('source_paths_from_ui')
 
 
 def pre_start() -> Tuple[gradio.File, gradio.Image, gradio.Button, gradio.Button]:

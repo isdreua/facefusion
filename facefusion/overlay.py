@@ -74,7 +74,7 @@ class PerformanceOverlay:
 		frame_height, frame_width = vision_frame.shape[:2]
 
 		box_x, box_y = 12, 12
-		box_w, box_h = 320, 140
+		box_w, box_h = 320, 158
 
 		if frame_width < box_w + 24 or frame_height < box_h + 24:
 			return vision_frame
@@ -113,7 +113,18 @@ class PerformanceOverlay:
 		latency_scale = max(100.0, max(self.latency_history, default = 0.0) * 1.2)
 		self._draw_graph(overlay, graph2_x, graph_y, graph_w, graph_h, list(self.latency_history), max_val = latency_scale, color = (255, 170, 0), label = f'Latency (0-{latency_scale:.0f}ms)')
 
+		# Which identity is being swapped in, so a face switched mid-stream is confirmable without
+		# looking away from the stream
+		cv2.putText(overlay, self._resolve_source_face_text(), (box_x + 10, box_y + box_h - 9), font, font_scale, (120, 220, 255), 1, cv2.LINE_AA)
+
 		return overlay
+
+	def _resolve_source_face_text(self) -> str:
+		source_face_name = state_manager.get_item('source_face_name') or '-'
+
+		if len(source_face_name) > 36:
+			source_face_name = source_face_name[:33] + '...'
+		return 'FACE: ' + source_face_name
 
 	def _render_pipeline_inspector(self, vision_frame : VisionFrame, timing : Optional[Dict[str, Any]] = None) -> VisionFrame:
 		frame_height, frame_width = vision_frame.shape[:2]

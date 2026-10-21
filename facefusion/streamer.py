@@ -23,6 +23,7 @@ from facefusion.ffmpeg import open_ffmpeg
 from facefusion.filesystem import has_image, is_directory
 from facefusion.inference_timer import get_inference_timer, reset_inference_timer
 from facefusion.processors.core import get_processors_modules
+from facefusion.stream_abort import StreamAborted, abort_stale_stream_frame, set_stream_abort
 from facefusion.types import AppContext, AudioFrame, Fps, Mask, Resolution, StreamMode, VisionFrame
 from facefusion.vision import extract_vision_mask, is_vision_frame, read_static_images, restrict_frame
 from facefusion.webcam_config import DEFAULT_SOURCE_FACE_NAME, NO_SOURCE_FACE_NAME
@@ -30,6 +31,19 @@ from facefusion.webcam_config import DEFAULT_SOURCE_FACE_NAME, NO_SOURCE_FACE_NA
 CONTENT_ANALYSIS_METRICS_LOCK = threading.Lock()
 CONTENT_ANALYSIS_METRICS = { 'runs': 0, 'last_ms': 0.0, 'max_ms': 0.0 }
 WARM_BARRIER_TIMEOUT = 10.0
+
+
+# A frame older than the one the output has already shown is certain to be dropped: the scheduler
+# trims everything before the latest completed future without yielding it. That makes the index of
+# the last yielded frame the one fact a worker can act on, so it is published here for the workers
+# to read between processors. An int assignment is atomic under the gil, and a worker reading the
+# previous value only costs one more processor before it notices
+class StreamFrameCursor:
+	def __init__(self) -> None:
+		self.yielded_frame_index = 0
+
+	def has_passed(self, frame_index : int) -> bool:
+		return frame_index < self.yielded_frame_index
 
 
 class CameraCaptureThread(threading.Thread):
@@ -289,6 +303,7 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 	has_logged_capture_downscale = False
 	is_stream_bypassed = False
 	is_stream_warmed = False
+	stream_frame_cursor = StreamFrameCursor()
 
 	with tqdm(desc = translator.get('streaming'), unit = 'frame', disable = state_manager.get_item('log_level') in [ 'warn', 'error' ]) as progress:
 		# Add +1 to max_workers to accommodate the background NSFW analysis without stalling frame processing
@@ -320,20 +335,29 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 					completed_indices = [ index for index, (_, future) in enumerate(futures) if future.done() ]
 					if completed_indices:
 						latest_completed_index = completed_indices[-1]
-						_, latest_future = futures[latest_completed_index]
+						latest_frame_index, latest_future = futures[latest_completed_index]
+						# Published before the stale futures are abandoned, so the ones still running
+						# can give up at their next processor instead of finishing a frame that has
+						# already been overtaken
+						stream_frame_cursor.yielded_frame_index = latest_frame_index
 						for _, stale_future in futures[:latest_completed_index]:
 							if not stale_future.cancel() and not stale_future.done():
 								discarded_futures.append(stale_future)
 						futures = futures[latest_completed_index + 1:]
-						capture_vision_frame, capture_time, timing = latest_future.result()
-						progress.update()
-						yield capture_vision_frame, capture_time, False, timing
+						stream_result = latest_future.result()
+						if stream_result:
+							capture_vision_frame, capture_time, timing = stream_result
+							progress.update()
+							yield capture_vision_frame, capture_time, False, timing
 				else:
 					while futures and futures[0][1].done():
-						_, oldest_future = futures.pop(0)
-						capture_vision_frame, capture_time, timing = oldest_future.result()
-						progress.update()
-						yield capture_vision_frame, capture_time, False, timing
+						oldest_frame_index, oldest_future = futures.pop(0)
+						stream_frame_cursor.yielded_frame_index = oldest_frame_index
+						stream_result = oldest_future.result()
+						if stream_result:
+							capture_vision_frame, capture_time, timing = stream_result
+							progress.update()
+							yield capture_vision_frame, capture_time, False, timing
 
 				# 2. Read the latest frame from the camera thread (non-blocking yield delay)
 				try:
@@ -440,7 +464,9 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 
 					if not should_skip and has_stream_capacity(pending_total, len(futures), max_queue_size):
 						timing = { 'capture_read_start': capture_time, 'capture_read_end': capture_read_end, 'scheduler_admitted': time.perf_counter(), 'frame_interval_ms': 1000.0 / max(1, float(camera_fps)), 'processor_times': {} }
-						future = executor.submit(process_stream_frame, source_vision_frames, capture_vision_frame, capture_time, processor_modules, processor_stream_inputs, stream_vision_mask, source_audio_frame, source_voice_frame, face_analysis_features, timing)
+						# Only adaptive mode drops a frame once it is in flight, so only adaptive
+						# mode hands the worker a cursor to give up against
+						future = executor.submit(process_stream_frame, source_vision_frames, capture_vision_frame, capture_time, processor_modules, processor_stream_inputs, stream_vision_mask, source_audio_frame, source_voice_frame, face_analysis_features, timing, frame_index, stream_frame_cursor if skipping_mode == 'adaptive' else None)
 						futures.append((frame_index, future))
 
 			if stop_event.is_set():
@@ -448,9 +474,11 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 
 			# Yield any remaining frames in order
 			for _, future in futures:
-				capture_vision_frame, capture_time, timing = future.result()
-				progress.update()
-				yield capture_vision_frame, capture_time, False, timing
+				stream_result = future.result()
+				if stream_result:
+					capture_vision_frame, capture_time, timing = stream_result
+					progress.update()
+					yield capture_vision_frame, capture_time, False, timing
 		finally:
 			set_app_context_override(None)
 			capture_thread.stop()
@@ -462,7 +490,8 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 			executor.shutdown(wait=False)
 
 
-def process_stream_frame(source_vision_frames : List[VisionFrame], target_vision_frame : VisionFrame, capture_time : float, processor_modules : List[ModuleType], processor_stream_inputs : Optional[Dict[str, Dict[str, Any]]] = None, stream_vision_mask : Optional[Mask] = None, source_audio_frame : Optional[AudioFrame] = None, source_voice_frame : Optional[AudioFrame] = None, face_analysis_features : Optional[Set[str]] = None, timing : Optional[Dict[str, Any]] = None) -> Any:
+# Returns None for a frame it gave up on, which the scheduler was going to drop anyway
+def process_stream_frame(source_vision_frames : List[VisionFrame], target_vision_frame : VisionFrame, capture_time : float, processor_modules : List[ModuleType], processor_stream_inputs : Optional[Dict[str, Dict[str, Any]]] = None, stream_vision_mask : Optional[Mask] = None, source_audio_frame : Optional[AudioFrame] = None, source_voice_frame : Optional[AudioFrame] = None, face_analysis_features : Optional[Set[str]] = None, timing : Optional[Dict[str, Any]] = None, frame_index : int = 0, stream_frame_cursor : Optional[StreamFrameCursor] = None) -> Any:
 	if source_audio_frame is None:
 		source_audio_frame = create_empty_audio_frame()
 	if source_voice_frame is None:
@@ -477,6 +506,10 @@ def process_stream_frame(source_vision_frames : List[VisionFrame], target_vision
 	set_app_context_override(detect_app_context())
 	set_paste_in_place(True)
 	set_face_analysis_features(face_analysis_features)
+	# Published for the whole chain rather than consulted only here, so the processors can give up
+	# between their own expensive steps instead of only between one another
+	if stream_frame_cursor:
+		set_stream_abort(lambda: stream_frame_cursor.has_passed(frame_index))
 	try:
 		if timing is not None:
 			timing['processing_started'] = time.perf_counter()
@@ -484,6 +517,10 @@ def process_stream_frame(source_vision_frames : List[VisionFrame], target_vision
 		reset_inference_timer()
 		begin_face_selection_context()
 		for processor_module in processor_modules:
+			# Checked between processors rather than only up front, because the frame is overtaken
+			# while the chain runs: this is what keeps a stale frame from paying for the swapper and
+			# everything after it
+			abort_stale_stream_frame()
 			logger.disable()
 			processor_started = time.perf_counter()
 			processor_inputs =\
@@ -501,11 +538,14 @@ def process_stream_frame(source_vision_frames : List[VisionFrame], target_vision
 			if timing is not None:
 				timing['processor_times'][processor_module.__name__] = (time.perf_counter() - processor_started) * 1000
 			logger.enable()
+	except StreamAborted:
+		return None
 	finally:
 		logger.enable()
 		end_face_selection_context()
 		set_face_analysis_features(None)
 		set_paste_in_place(False)
+		set_stream_abort(None)
 		set_app_context_override(None)
 
 	if timing is not None:

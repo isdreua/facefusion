@@ -24,6 +24,7 @@ from facefusion.processors.modules.face_swapper.types import FaceSwapperInputs
 from facefusion.processors.pixel_boost import explode_pixel_boost, implode_pixel_boost
 from facefusion.processors.types import ProcessorOutputs
 from facefusion.program_helper import find_argument_group
+from facefusion.stream_abort import abort_stale_stream_frame
 from facefusion.thread_helper import conditional_thread_semaphore
 from facefusion.types import ApplyStateItem, Args, DownloadScope, Embedding, Face, InferencePool, InferenceProvider, ModelOptions, ModelSet, ProcessMode, VisionFrame
 from facefusion.vision import read_static_image, read_static_images, read_static_video_frame, unpack_resolution
@@ -648,6 +649,9 @@ def swap_face(source_face : Face, target_face : Face, source_vision_frame : Visi
 
 	pixel_boost_vision_frames = implode_pixel_boost(crop_vision_frame, pixel_boost_total, model_size)
 	for pixel_boost_vision_frame in pixel_boost_vision_frames:
+		# Pixel boost runs the swapper once per tile, so this is the finest point at which a frame
+		# can still be given up without leaving a half swapped face on screen
+		abort_stale_stream_frame()
 		pixel_boost_vision_frame = prepare_crop_frame(pixel_boost_vision_frame)
 		pixel_boost_vision_frame = forward_swap_face(source_face, target_face, source_vision_frame, pixel_boost_vision_frame, source_embedding, prepared_source_frame)
 		pixel_boost_vision_frame = normalize_crop_frame(pixel_boost_vision_frame)
@@ -871,6 +875,10 @@ def process_frame(inputs : FaceSwapperInputs) -> ProcessorOutputs:
 		source_vision_frame = get_first(source_vision_frames)
 
 		for target_face in target_faces:
+			# Face selection above is the detector, the landmarker and the recognizer; the swap below
+			# is the rest of the frame's budget. A stream frame already overtaken by a newer one gives
+			# up here rather than paying for a face nobody will see
+			abort_stale_stream_frame()
 			target_face = scale_face(target_face, target_vision_frame, temp_vision_frame)
 			temp_vision_frame = swap_face(source_face, target_face, source_vision_frame, temp_vision_frame, source_embedding, prepared_source_frame)
 

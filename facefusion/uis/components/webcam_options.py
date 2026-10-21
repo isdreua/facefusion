@@ -8,8 +8,10 @@ from facefusion.filesystem import is_image
 from facefusion.common_helper import get_first
 from facefusion.uis import choices as uis_choices
 from facefusion.streamer import resolve_source_face_groups
+from facefusion.types import WebcamMode
 from facefusion.uis.core import register_ui_component
-from facefusion.webcam_config import DEFAULT_SOURCE_FACE_NAME, WEBCAM_CAMERA_BACKENDS, WEBCAM_FRAME_SKIPPING_MODES, WEBCAM_INLINE_PREVIEW_RESOLUTIONS, WEBCAM_OUTPUT_RESOLUTIONS, WEBCAM_PERFORMANCE_OVERLAYS, WEBCAM_STATE_KEYS, format_webcam_config, get_source_faces, load_webcam_config, resolve_source_face_directory
+from facefusion.webcam_config import DEFAULT_SOURCE_FACE_NAME, NO_SOURCE_FACE_NAME, WEBCAM_CAMERA_BACKENDS, WEBCAM_FRAME_SKIPPING_MODES, WEBCAM_INLINE_PREVIEW_RESOLUTIONS, WEBCAM_OUTPUT_RESOLUTIONS, WEBCAM_PERFORMANCE_OVERLAYS, WEBCAM_STATE_KEYS, format_webcam_config, get_source_faces, load_webcam_config, resolve_source_face_directory
+from facefusion.window_output import has_window_output, log_window_output_requirement
 
 WEBCAM_DEVICE_ID_DROPDOWN : Optional[gradio.Dropdown] = None
 WEBCAM_MODE_RADIO : Optional[gradio.Radio] = None
@@ -21,6 +23,8 @@ WEBCAM_INLINE_PREVIEW_RESOLUTION_DROPDOWN : Optional[gradio.Dropdown] = None
 WEBCAM_EXECUTION_THREAD_COUNT_SLIDER : Optional[gradio.Slider] = None
 WEBCAM_CAMERA_BACKEND_DROPDOWN : Optional[gradio.Dropdown] = None
 WEBCAM_OUTPUT_RESOLUTION_DROPDOWN : Optional[gradio.Dropdown] = None
+WEBCAM_WINDOW_FULLSCREEN_CHECKBOX : Optional[gradio.Checkbox] = None
+WEBCAM_WINDOW_HINT_MARKDOWN : Optional[gradio.Markdown] = None
 SOURCE_FACE_SELECTED_MARKER = '\u25cf '
 WEBCAM_SOURCE_FACE_GALLERY : Optional[gradio.Gallery] = None
 WEBCAM_SOURCE_FACE_CLEAR_BUTTON : Optional[gradio.Button] = None
@@ -39,6 +43,8 @@ def render() -> None:
 	global WEBCAM_EXECUTION_THREAD_COUNT_SLIDER
 	global WEBCAM_CAMERA_BACKEND_DROPDOWN
 	global WEBCAM_OUTPUT_RESOLUTION_DROPDOWN
+	global WEBCAM_WINDOW_FULLSCREEN_CHECKBOX
+	global WEBCAM_WINDOW_HINT_MARKDOWN
 	global WEBCAM_SOURCE_FACE_GALLERY
 	global WEBCAM_SOURCE_FACE_CLEAR_BUTTON
 	global WEBCAM_GENERATE_CONFIG_BUTTON
@@ -57,15 +63,31 @@ def render() -> None:
 	state_manager.init_item('source_face_name', source_face_name)
 	state_manager.init_item('webcam_frame_skipping', webcam_config.get('frame_skipping'))
 	state_manager.init_item('webcam_performance_overlay', webcam_config.get('performance_overlay'))
+	state_manager.init_item('webcam_stream_bypass', False)
+	state_manager.init_item('webcam_window_fullscreen', webcam_config.get('webcam_window_fullscreen'))
 	WEBCAM_DEVICE_ID_DROPDOWN = gradio.Dropdown(
 		value = webcam_device_id,
 		label = translator.get('uis.webcam_device_id_dropdown'),
 		choices = local_camera_ids
 	)
+	# gradio cannot gray out one choice of a radio, so an unavailable window is removed from the
+	# choices and explained underneath instead of being offered and then refused on start
+	webcam_modes, webcam_mode = resolve_webcam_modes(webcam_config.get('mode'))
 	WEBCAM_MODE_RADIO = gradio.Radio(
 		label = translator.get('uis.webcam_mode_radio'),
-		choices = uis_choices.webcam_modes,
-		value = webcam_config.get('mode')
+		choices = webcam_modes,
+		value = webcam_mode
+	)
+	# Read from state at window creation like frame skipping and the overlay are, which keeps it off
+	# start()'s signature and out of both of its inputs lists
+	WEBCAM_WINDOW_FULLSCREEN_CHECKBOX = gradio.Checkbox(
+		label = translator.get('uis.webcam_window_fullscreen_checkbox'),
+		value = webcam_config.get('webcam_window_fullscreen'),
+		visible = has_window_output()
+	)
+	WEBCAM_WINDOW_HINT_MARKDOWN = gradio.Markdown(
+		value = translator.get('uis.webcam_window_hint_markdown'),
+		visible = not has_window_output()
 	)
 	WEBCAM_RESOLUTION_DROPDOWN = gradio.Dropdown(
 		label = translator.get('uis.webcam_resolution_dropdown'),
@@ -147,6 +169,8 @@ def render() -> None:
 	register_ui_component('webcam_execution_thread_count_slider', WEBCAM_EXECUTION_THREAD_COUNT_SLIDER)
 	register_ui_component('webcam_camera_backend_dropdown', WEBCAM_CAMERA_BACKEND_DROPDOWN)
 	register_ui_component('webcam_output_resolution_dropdown', WEBCAM_OUTPUT_RESOLUTION_DROPDOWN)
+	register_ui_component('webcam_window_fullscreen_checkbox', WEBCAM_WINDOW_FULLSCREEN_CHECKBOX)
+	register_ui_component('webcam_window_hint_markdown', WEBCAM_WINDOW_HINT_MARKDOWN)
 	register_ui_component('webcam_source_face_gallery', WEBCAM_SOURCE_FACE_GALLERY)
 	register_ui_component('webcam_source_face_clear_button', WEBCAM_SOURCE_FACE_CLEAR_BUTTON)
 	register_ui_component('webcam_generate_config_button', WEBCAM_GENERATE_CONFIG_BUTTON)
@@ -157,6 +181,8 @@ def listen() -> None:
 		WEBCAM_PERFORMANCE_OVERLAY_RADIO.change(update_performance_overlay, inputs = WEBCAM_PERFORMANCE_OVERLAY_RADIO)
 	if WEBCAM_FRAME_SKIPPING_RADIO:
 		WEBCAM_FRAME_SKIPPING_RADIO.change(update_frame_skipping, inputs = WEBCAM_FRAME_SKIPPING_RADIO)
+	if WEBCAM_WINDOW_FULLSCREEN_CHECKBOX:
+		WEBCAM_WINDOW_FULLSCREEN_CHECKBOX.change(update_window_fullscreen, inputs = WEBCAM_WINDOW_FULLSCREEN_CHECKBOX)
 	if WEBCAM_GENERATE_CONFIG_BUTTON and WEBCAM_GENERATE_CONFIG_TEXTBOX:
 		WEBCAM_GENERATE_CONFIG_BUTTON.click(generate_config, inputs =\
 		[
@@ -168,6 +194,12 @@ def listen() -> None:
 		WEBCAM_SOURCE_FACE_GALLERY.select(select_source_face, outputs = WEBCAM_SOURCE_FACE_GALLERY)
 	if WEBCAM_CAMERA_BACKEND_DROPDOWN and WEBCAM_DEVICE_ID_DROPDOWN:
 		WEBCAM_CAMERA_BACKEND_DROPDOWN.change(update_camera_backend, inputs = WEBCAM_CAMERA_BACKEND_DROPDOWN, outputs = WEBCAM_DEVICE_ID_DROPDOWN)
+
+
+# Applied when the window opens, so a change while one is already running takes effect on the next
+# start rather than resizing it underneath the viewer
+def update_window_fullscreen(window_fullscreen : bool) -> None:
+	state_manager.set_item('webcam_window_fullscreen', window_fullscreen)
 
 
 def update_performance_overlay(performance_overlay : str) -> None:
@@ -207,6 +239,7 @@ def generate_config(webcam_device_id : str, webcam_mode : str, webcam_resolution
 		'webcam_execution_thread_count': int(webcam_execution_thread_count),
 		'webcam_camera_backend': webcam_camera_backend,
 		'webcam_output_resolution': webcam_output_resolution,
+		'webcam_window_fullscreen': bool(state_manager.get_item('webcam_window_fullscreen')),
 		'webcam_source_faces': { face_name: source_paths for face_name, source_paths in source_face_groups.items() if face_name not in directory_source_faces },
 		'webcam_source_faces_directory': source_face_directory,
 		'webcam_source_face': state_manager.get_item('source_face_name')
@@ -237,13 +270,30 @@ def create_source_face_items(source_face_name : Optional[str]) -> List[Tuple[str
 	return [ (source_path, SOURCE_FACE_SELECTED_MARKER + face_name if face_name == source_face_name else face_name) for face_name, source_path in create_source_face_entries() ]
 
 
+# An unavailable window is dropped from the choices rather than offered and then refused on start.
+# A config that asks for it is warned about once and falls back, so a profile written on a machine
+# that has pygame still opens on one that does not
+def resolve_webcam_modes(webcam_mode : Optional[str]) -> Tuple[List[WebcamMode], Optional[str]]:
+	if has_window_output():
+		return list(uis_choices.webcam_modes), webcam_mode
+	webcam_modes = [ mode for mode in uis_choices.webcam_modes if mode != 'window' ]
+
+	if webcam_mode == 'window':
+		log_window_output_requirement()
+		return webcam_modes, get_first(webcam_modes)
+
+	return webcam_modes, webcam_mode
+
+
 # Repairs the selection before anything renders it: a face that disappeared, or one named by a config
-# that holds no such face, cannot stay selected or the caption would mark a face that is not shown
+# that holds no such face, cannot stay selected or the caption would mark a face that is not shown.
+# No source face is a selection rather than a face, so it is not in the gallery and must survive
+# the repair instead of being treated as a face that disappeared
 def resolve_source_face_selection() -> Tuple[Optional[str], List[str]]:
 	source_face_names = [ face_name for face_name, _ in create_source_face_entries() ]
 	source_face_name = state_manager.get_item('source_face_name')
 
-	if source_face_name not in source_face_names:
+	if source_face_name != NO_SOURCE_FACE_NAME and source_face_name not in source_face_names:
 		source_face_name = get_first(source_face_names) or DEFAULT_SOURCE_FACE_NAME
 		state_manager.set_item('source_face_name', source_face_name)
 
@@ -251,7 +301,7 @@ def resolve_source_face_selection() -> Tuple[Optional[str], List[str]]:
 
 
 def resolve_source_face_label(source_face_name : Optional[str], source_face_names : List[str]) -> str:
-	if source_face_name in source_face_names:
+	if source_face_name == NO_SOURCE_FACE_NAME or source_face_name in source_face_names:
 		return translator.get('uis.webcam_source_face_gallery') + ': ' + source_face_name
 	return translator.get('uis.webcam_source_face_gallery')
 

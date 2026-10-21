@@ -8,6 +8,7 @@ import pytest
 from facefusion import streamer
 from facefusion.face_helper import get_paste_in_place
 from facefusion.streamer import CameraCaptureThread
+from facefusion.webcam_config import NO_SOURCE_FACE_NAME
 
 
 class FakeCameraCapture:
@@ -184,7 +185,7 @@ def test_prepare_stream_face_sets_prepares_every_group(monkeypatch):
 
 	stream_face_sets = streamer.prepare_stream_face_sets([ processor_module ], { 'alice': [ 'a1', 'a2' ], 'bob': [ 'b1' ] })
 
-	assert list(stream_face_sets) == [ 'alice', 'bob' ]
+	assert list(stream_face_sets) == [ 'alice', 'bob', NO_SOURCE_FACE_NAME ]
 	assert stream_face_sets['alice'].get('source_paths') == [ 'a1', 'a2' ]
 	assert stream_face_sets['alice'].get('source_vision_frames') == [ 'a1', 'a2' ]
 	assert stream_face_sets['alice'].get('processor_stream_inputs') == { 'face_swapper_test': { 'source_embedding': 'a1' } }
@@ -199,7 +200,7 @@ def test_prepare_stream_face_sets_warns_about_group_without_image(monkeypatch):
 
 	stream_face_sets = streamer.prepare_stream_face_sets([], { 'alice': [ 'missing.jpg' ] })
 
-	assert list(stream_face_sets) == [ 'alice' ]
+	assert list(stream_face_sets) == [ 'alice', NO_SOURCE_FACE_NAME ]
 	assert len(warnings) == 1
 
 
@@ -236,7 +237,7 @@ def test_update_stream_face_sets_only_prepares_what_changed(monkeypatch):
 
 	updated_stream_face_sets = streamer.update_stream_face_sets(stream_face_sets, [ processor_module ], { 'alice': [ 'a1' ], 'bob': [ 'b1' ] })
 
-	assert list(updated_stream_face_sets) == [ 'alice', 'bob' ]
+	assert list(updated_stream_face_sets) == [ 'alice', 'bob', NO_SOURCE_FACE_NAME ]
 	assert updated_stream_face_sets['alice'] is stream_face_sets['alice']
 	assert prepared_calls == [ [ 'b1' ] ]
 
@@ -263,7 +264,7 @@ def test_update_stream_face_sets_drops_removed_groups(monkeypatch):
 
 	updated_stream_face_sets = streamer.update_stream_face_sets(stream_face_sets, [ processor_module ], { 'bob': [ 'b1' ] })
 
-	assert list(updated_stream_face_sets) == [ 'bob' ]
+	assert list(updated_stream_face_sets) == [ 'bob', NO_SOURCE_FACE_NAME ]
 
 
 def test_resolve_stream_face_set_selects_by_name_and_falls_back(monkeypatch):

@@ -222,7 +222,7 @@ BenchmarkCycleSet = TypedDict('BenchmarkCycleSet',
 	'relative_fps' : float
 })
 
-WebcamMode = Literal['inline', 'udp', 'v4l2']
+WebcamMode = Literal['inline', 'udp', 'v4l2', 'window']
 StreamMode = Literal['udp', 'v4l2']
 
 ModelOptions : TypeAlias = Dict[str, Any]
@@ -385,6 +385,8 @@ StateKey = Literal\
 	'webcam_config',
 	'webcam_frame_skipping',
 	'webcam_performance_overlay',
+	'webcam_stream_bypass',
+	'webcam_window_fullscreen',
 	'source_face_groups',
 	'source_face_uploads',
 	'source_face_groups_version',
@@ -466,6 +468,8 @@ State = TypedDict('State',
 	'webcam_config' : str,
 	'webcam_frame_skipping' : str,
 	'webcam_performance_overlay' : str,
+	'webcam_stream_bypass' : bool,
+	'webcam_window_fullscreen' : bool,
 	'source_face_groups' : Dict[str, List[str]],
 	'source_face_uploads' : Dict[str, List[str]],
 	'source_face_groups_version' : int,

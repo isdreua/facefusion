@@ -91,7 +91,9 @@ ComponentName = Literal\
 	'webcam_device_id_dropdown',
 	'webcam_fps_slider',
 	'webcam_mode_radio',
-	'webcam_resolution_dropdown'
+	'webcam_resolution_dropdown',
+	'webcam_window_fullscreen_checkbox',
+	'webcam_window_hint_markdown'
 ]
 Component : TypeAlias = Any
 ComponentOptions : TypeAlias = Dict[str, Any]

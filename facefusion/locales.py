@@ -275,6 +275,8 @@ LOCALES : Locales =\
 			'webcam_execution_thread_count_slider': 'WEBCAM WORKERS',
 			'webcam_camera_backend_dropdown': 'CAMERA BACKEND',
 			'webcam_output_resolution_dropdown': 'OUTPUT RESOLUTION',
+			'webcam_window_fullscreen_checkbox': 'START WINDOW IN FULLSCREEN',
+			'webcam_window_hint_markdown': 'The **window** output mode needs pygame, which is not installed. Run `pip install pygame-ce` and restart to render frames in a native window instead of re-encoding them.',
 			'webcam_source_face_gallery': 'SOURCE FACE',
 			'webcam_source_face_clear_button': 'CLEAR FACES',
 			'webcam_generate_config_button': 'GENERATE CONFIG',

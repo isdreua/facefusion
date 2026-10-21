@@ -24,7 +24,7 @@ from facefusion.filesystem import is_directory
 from facefusion.processors.core import get_processors_modules
 from facefusion.types import AudioFrame, Fps, Mask, Resolution, StreamMode, VisionFrame
 from facefusion.vision import extract_vision_mask, is_vision_frame, read_static_images, restrict_frame
-from facefusion.webcam_config import DEFAULT_SOURCE_FACE_NAME
+from facefusion.webcam_config import DEFAULT_SOURCE_FACE_NAME, NO_SOURCE_FACE_NAME
 
 CONTENT_ANALYSIS_METRICS_LOCK = threading.Lock()
 CONTENT_ANALYSIS_METRICS = { 'runs': 0, 'last_ms': 0.0, 'max_ms': 0.0 }
@@ -137,8 +137,23 @@ def prepare_stream_face_set(processor_modules : List[ModuleType], face_name : st
 	}
 
 
+# The no source face entry is written out rather than prepared, because prepare_stream_inputs
+# would run every processor's own against an empty list and only face_swapper is known to
+# tolerate that. Keeping it a real member of the set is what lets every lookup below stay
+# unchanged: it is found instead of falling back to the first group
+def create_no_source_face_set() -> Dict[str, Any]:
+	return\
+	{
+		'source_paths': [],
+		'source_vision_frames': [],
+		'processor_stream_inputs': {}
+	}
+
+
 def prepare_stream_face_sets(processor_modules : List[ModuleType], source_face_groups : Dict[str, List[str]]) -> Dict[str, Dict[str, Any]]:
-	return { face_name: prepare_stream_face_set(processor_modules, face_name, source_paths) for face_name, source_paths in source_face_groups.items() }
+	stream_face_sets = { face_name: prepare_stream_face_set(processor_modules, face_name, source_paths) for face_name, source_paths in source_face_groups.items() }
+	stream_face_sets[NO_SOURCE_FACE_NAME] = create_no_source_face_set()
+	return stream_face_sets
 
 
 # Faces added while the stream runs must not cost the ones already prepared their embeddings again,
@@ -152,6 +167,7 @@ def update_stream_face_sets(stream_face_sets : Dict[str, Dict[str, Any]], proces
 			updated_stream_face_sets[face_name] = stream_face_set
 		else:
 			updated_stream_face_sets[face_name] = prepare_stream_face_set(processor_modules, face_name, source_paths)
+	updated_stream_face_sets[NO_SOURCE_FACE_NAME] = create_no_source_face_set()
 
 	return updated_stream_face_sets
 
@@ -206,6 +222,7 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 	frame_index = 0
 	nsfw_frame_index = 0
 	has_logged_capture_downscale = False
+	is_stream_bypassed = False
 
 	with tqdm(desc = translator.get('streaming'), unit = 'frame', disable = state_manager.get_item('log_level') in [ 'warn', 'error' ]) as progress:
 		# Add +1 to max_workers to accommodate the background NSFW analysis without stalling frame processing
@@ -277,7 +294,26 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 				if nsfw_frame_index % max(1, int(camera_fps)) == 0 and (analysis_future is None or analysis_future.done()):
 					analysis_future = executor.submit(analyse_frame_background, capture_vision_frame.copy(), stop_event)
 
-				# 4. Process frame or apply temporal skipping to sustain target FPS
+				# 4. Raw passthrough skips the pipeline entirely, which is the whole point of it: the
+				# lowest latency the camera can deliver, and the reference the processed output is judged against
+				if state_manager.get_item('webcam_stream_bypass'):
+					# Work admitted before the switch would otherwise land as a processed frame after
+					# it, so it is dropped rather than shown
+					if not is_stream_bypassed:
+						is_stream_bypassed = True
+						for _, stale_future in futures:
+							if not stale_future.cancel() and not stale_future.done():
+								discarded_futures.append(stale_future)
+						futures = []
+					if is_vision_frame(capture_vision_frame):
+						bypass_time = time.perf_counter()
+						timing = { 'capture_read_start': capture_time, 'capture_read_end': capture_read_end, 'scheduler_admitted': bypass_time, 'frame_interval_ms': 1000.0 / max(1, float(camera_fps)), 'processor_times': {}, 'processing_started': bypass_time, 'processing_finished': bypass_time }
+						progress.update()
+						yield capture_vision_frame, capture_time, False, timing
+					continue
+				is_stream_bypassed = False
+
+				# 5. Process frame or apply temporal skipping to sustain target FPS
 				if is_vision_frame(capture_vision_frame):
 					if capture_vision_frame.ndim == 3 and capture_vision_frame.shape[2] == 3 and (stream_vision_mask is None or stream_vision_mask.shape != capture_vision_frame.shape[:2]):
 						stream_vision_mask = numpy.full(capture_vision_frame.shape[:2], 255, dtype = numpy.uint8)

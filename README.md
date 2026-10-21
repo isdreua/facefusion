@@ -19,6 +19,14 @@ Installation
 
 Be aware, the [installation](https://docs.facefusion.io/installation) needs technical skills and is not recommended for beginners. In case you are not comfortable using a terminal, our [Windows Installer](http://windows-installer.facefusion.io) and [macOS Installer](http://macos-installer.facefusion.io) get you started.
 
+The webcam `window` output mode renders frames into a native OS window instead of re-encoding them, which removes both the encode latency and the quality loss of the `inline`, `udp` and `v4l2` modes. It needs one optional package that is deliberately not in `requirements.txt`:
+
+```
+pip install pygame-ce
+```
+
+Without it the mode is hidden in the UI and refused on the command line; everything else works unchanged.
+
 
 Usage
 -----

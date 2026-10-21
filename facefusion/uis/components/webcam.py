@@ -16,6 +16,7 @@ from facefusion.uis.core import get_ui_component
 from facefusion.uis.types import File
 from facefusion.vision import fit_cover_frame, pack_resolution, restrict_frame, unpack_resolution
 from facefusion.webcam_config import append_source_face_uploads, load_webcam_config
+from facefusion.window_output import WindowStream, apply_window_intents, has_window_output, log_window_output_requirement
 
 SOURCE_FILE : Optional[gradio.File] = None
 WEBCAM_IMAGE : Optional[gradio.Image] = None
@@ -158,12 +159,25 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 		output_width, output_height = unpack_resolution(webcam_output_resolution)
 	if webcam_width * output_height != output_width * webcam_height:
 		logger.warn('webcam output resolution ' + output_resolution + ' does not match the aspect ratio of capture resolution ' + webcam_resolution + ', edges will be cropped', __name__)
+	# Refused rather than downgraded: falling back to inline would hand back the very encoder the
+	# window exists to remove
+	if webcam_mode == 'window' and not has_window_output():
+		log_window_output_requirement()
+		return
 	camera_capture = get_local_camera_capture(webcam_device_id, webcam_width, webcam_height, webcam_fps, webcam_camera_backend)
 	stream_writer = None
+	window_stream = None
 	if camera_capture and camera_capture.isOpened():
 		try:
 			if webcam_mode in [ 'udp', 'v4l2' ]:
 				stream_writer = LatestFrameWriter(lambda: open_stream(webcam_mode, output_resolution, webcam_fps), output_width, output_height, webcam_mode == 'v4l2', webcam_fps) #type:ignore[arg-type]
+				stream_writer.start()
+			# Created here rather than inside the factory so that poll_events stays reachable from
+			# this loop and a broken pygame fails before the camera is opened. repeat_latest is off
+			# because the window goes on showing the last frame by itself
+			if webcam_mode == 'window':
+				window_stream = WindowStream(output_width, output_height, webcam_fps, 'FaceFusion', state_manager.get_item('webcam_window_fullscreen'))
+				stream_writer = LatestFrameWriter(lambda: window_stream, output_width, output_height, False, webcam_fps)
 				stream_writer.start()
 			for capture_vision_frame, capture_time, is_duplicate, timing in multi_process_capture(camera_capture, webcam_fps, webcam_execution_thread_count, (webcam_width, webcam_height)):
 				capture_vision_frame = cv2.cvtColor(capture_vision_frame, cv2.COLOR_BGR2RGB)
@@ -180,9 +194,13 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 					yield capture_vision_frame
 				if stream_writer:
 					stream_writer.submit(capture_vision_frame, timing)
+				if window_stream and not apply_window_intents(window_stream):
+					break
 		finally:
 			if stream_writer:
 				stream_writer.close()
+			if window_stream:
+				window_stream.close()
 			clear_camera_pool()
 
 

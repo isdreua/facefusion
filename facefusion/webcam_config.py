@@ -24,12 +24,16 @@ DEFAULT_WEBCAM_CONFIG : Dict[str, Any] =\
 	'webcam_execution_thread_count': 2,
 	'webcam_camera_backend': 'auto',
 	'webcam_output_resolution': 'copy',
+	'webcam_window_fullscreen': False,
 	'webcam_source_faces': {},
 	'webcam_source_faces_directory': None,
 	'webcam_source_face': None
 }
 DEFAULT_SOURCE_FACE_NAME = 'default'
-WEBCAM_MODES = [ 'inline', 'udp', 'v4l2' ]
+# The sentinel that selects no source face at all. sanitize_source_face_name keeps only
+# alphanumerics, '-' and '_', so no face file can ever sanitize into this name and claim it
+NO_SOURCE_FACE_NAME = '(none)'
+WEBCAM_MODES = [ 'inline', 'udp', 'v4l2', 'window' ]
 WEBCAM_RESOLUTIONS = [ '320x240', '640x480', '800x600', '1024x768', '1280x720', '1280x960', '1920x1080', '240x320', '480x640', '600x800', '768x1024', '720x1280', '960x1280', '1080x1920' ]
 WEBCAM_FRAME_SKIPPING_MODES = [ 'adaptive', 'disabled', '1-in-2', '1-in-3' ]
 WEBCAM_PERFORMANCE_OVERLAYS = [ 'none', 'simple', 'advanced' ]
@@ -37,12 +41,14 @@ WEBCAM_INLINE_PREVIEW_RESOLUTIONS = [ 'native', '320x240', '640x480', '960x540',
 WEBCAM_CAMERA_BACKENDS = [ 'auto', 'msmf', 'dshow' ] if is_windows() else [ 'auto' ]
 WEBCAM_OUTPUT_SCALES = [ 'x2', 'x3', 'x4' ]
 WEBCAM_OUTPUT_RESOLUTIONS = [ 'copy' ] + WEBCAM_OUTPUT_SCALES + WEBCAM_RESOLUTIONS
+# Headless has no browser to stream into, so inline is the one mode it cannot serve
+WEBCAM_HEADLESS_MODES = [ webcam_mode for webcam_mode in WEBCAM_MODES if webcam_mode != 'inline' ]
 WEBCAM_CONFIG_OPTIONS =\
 {
 	'auto_start': [ True, False ],
 	'device_id': list(range(0, 10)),
 	'mode': WEBCAM_MODES,
-	'headless_mode': [ 'udp', 'v4l2' ],
+	'headless_mode': WEBCAM_HEADLESS_MODES,
 	'resolution': WEBCAM_RESOLUTIONS,
 	'fps': list(range(1, 31)),
 	'frame_skipping': WEBCAM_FRAME_SKIPPING_MODES,
@@ -50,7 +56,8 @@ WEBCAM_CONFIG_OPTIONS =\
 	'webcam_inline_preview_resolution': WEBCAM_INLINE_PREVIEW_RESOLUTIONS,
 	'webcam_execution_thread_count': list(range(1, 9)),
 	'webcam_camera_backend': WEBCAM_CAMERA_BACKENDS,
-	'webcam_output_resolution': WEBCAM_OUTPUT_RESOLUTIONS
+	'webcam_output_resolution': WEBCAM_OUTPUT_RESOLUTIONS,
+	'webcam_window_fullscreen': [ True, False ]
 }
 # These settings reach code that needs a fixed length tuple, and create_box_mask is lru_cached so a
 # list is not even hashable; args.py normalizes them on the cli path and this path must match
@@ -92,7 +99,7 @@ def load_webcam_config(config_path : str) -> Dict[str, Any]:
 		webcam_config['device_id'] = content.get('device_id')
 	if content.get('mode') in WEBCAM_MODES:
 		webcam_config['mode'] = content.get('mode')
-	if content.get('headless_mode') in [ 'udp', 'v4l2' ]:
+	if content.get('headless_mode') in WEBCAM_HEADLESS_MODES:
 		webcam_config['headless_mode'] = content.get('headless_mode')
 	if content.get('resolution') in WEBCAM_RESOLUTIONS:
 		webcam_config['resolution'] = content.get('resolution')
@@ -110,6 +117,8 @@ def load_webcam_config(config_path : str) -> Dict[str, Any]:
 		webcam_config['webcam_camera_backend'] = content.get('webcam_camera_backend')
 	if content.get('webcam_output_resolution') in WEBCAM_OUTPUT_RESOLUTIONS:
 		webcam_config['webcam_output_resolution'] = content.get('webcam_output_resolution')
+	if isinstance(content.get('webcam_window_fullscreen'), bool):
+		webcam_config['webcam_window_fullscreen'] = content.get('webcam_window_fullscreen')
 	if isinstance(content.get('webcam_source_faces_directory'), str):
 		webcam_config['webcam_source_faces_directory'] = content.get('webcam_source_faces_directory')
 	source_faces = resolve_source_face_directory(webcam_config.get('webcam_source_faces_directory'))

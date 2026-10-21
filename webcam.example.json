@@ -82,9 +82,9 @@
     "device_id": 0,
     "device_id_options": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
     "mode": "inline",
-    "mode_options": ["inline", "udp", "v4l2"],
+    "mode_options": ["inline", "udp", "v4l2", "window"],
     "headless_mode": "v4l2",
-    "headless_mode_options": ["udp", "v4l2"],
+    "headless_mode_options": ["udp", "v4l2", "window"],
     "resolution": "640x480",
     "resolution_options": ["320x240", "640x480", "800x600", "1024x768", "1280x720", "1280x960", "1920x1080", "240x320", "480x640", "600x800", "768x1024", "720x1280", "960x1280", "1080x1920"],
     "fps": 30,
@@ -105,6 +105,8 @@
     },
     "webcam_source_faces_directory": "C:/path/to/faces",
     "webcam_source_face": "alice",
+    "webcam_window_fullscreen": false,
+    "webcam_window_fullscreen_options": [true, false],
     "webcam_output_resolution": "copy",
     "webcam_output_resolution_options": ["copy", "x2", "x3", "x4", "320x240", "640x480", "800x600", "1024x768", "1280x720", "1280x960", "1920x1080", "240x320", "480x640", "600x800", "768x1024", "720x1280", "960x1280", "1080x1920"]
 }

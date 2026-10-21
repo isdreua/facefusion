@@ -6,6 +6,7 @@ import cv2
 import numpy
 
 from facefusion import state_manager
+from facefusion.device_memory import get_device_memory_metrics
 from facefusion.types import VisionFrame
 
 
@@ -186,6 +187,18 @@ class PerformanceOverlay:
 			analysis_metrics = get_content_analysis_metrics()
 			if analysis_metrics.get('runs'):
 				inspector_lines.append((f'Safety sample {analysis_metrics.get("last_ms", 0):.1f} ms', (180, 160, 255)))
+
+		# What the device has left, sampled by the stream once a second. The drift against the
+		# stream's first reading is the one that matters: the onnx arenas grow while it runs, and a
+		# convolution that cannot allocate its workspace takes the cuda context with it
+		device_memory_metrics = get_device_memory_metrics()
+		if device_memory_metrics.get('samples'):
+			free_bytes = device_memory_metrics.get('free_bytes')
+			total_bytes = device_memory_metrics.get('total_bytes')
+			min_free_mb = device_memory_metrics.get('min_free_bytes') / (1024 * 1024)
+			drift_mb = (free_bytes - device_memory_metrics.get('first_free_bytes')) / (1024 * 1024)
+			is_low_memory = free_bytes < max(256 * 1024 * 1024, total_bytes * 0.05)
+			inspector_lines.append((f'VRAM {free_bytes / (1024 * 1024):.0f}/{total_bytes / (1024 * 1024):.0f} MB free | min {min_free_mb:.0f} | {drift_mb:+.0f} MB', (80, 120, 255) if is_low_memory else (120, 220, 255)))
 
 		# Face Selector & Frame Skipping
 		selector_mode = state_manager.get_item('face_selector_mode') or 'one'

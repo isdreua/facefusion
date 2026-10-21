@@ -20,6 +20,11 @@ NVIDIA_VFX_LOCK = threading.RLock()
 # whether what is cached predates an option that is fixed at load() time
 NVIDIA_VFX_GENERATION : int = 0
 NVIDIA_VFX_EFFECTS_GENERATION : int = -1
+# The blank result below is a property of the gpu and the bundled kernels rather than of the frame:
+# it either shows up on the first pass or never. Measuring it costs a reduction over the whole frame
+# and a device to host read of the result, which forces a synchronize on every frame forever, so an
+# effect kind that has once produced a real image is not measured again
+NVIDIA_VFX_BLANK_CHECKED : Set[str] = set()
 
 # QualityLevel exposes BICUBIC, a bare LOW/MEDIUM/HIGH/ULTRA ladder for plain upscaling, and
 # prefixed ladders for the other modes. STREAMING only ships MEDIUM and ULTRA
@@ -249,6 +254,7 @@ def clear_nvidia_vfx_effects() -> None:
 	with NVIDIA_VFX_LOCK:
 		close_effects(NVIDIA_VFX_EFFECTS)
 		NVIDIA_VFX_EFFECTS = {}
+		NVIDIA_VFX_BLANK_CHECKED.clear()
 		invalidate_nvidia_vfx_effects()
 
 
@@ -257,17 +263,24 @@ def clear_nvidia_vfx_effects() -> None:
 # written on a different stream than the sdk's stream_ptr. We build inputs with cupy or torch on
 # their own stream and run with the default stream_ptr, so every boundary needs an explicit
 # synchronize. Skipping any of them corrupts the cuda context, which then surfaces as an illegal
-# memory access inside whatever touches the gpu next, usually an unrelated onnx runtime session
+# memory access inside whatever touches the gpu next, usually an unrelated onnx runtime session.
+#
+# Scoped to the stream the frame was built on rather than the whole device. The requirement the sdk
+# documents is about the producer stream, and that is the one synchronized here; a device wide
+# deviceSynchronize additionally drains the onnx runtime streams of every other worker, so a single
+# super resolution pass used to stall the face swapper running beside it and the cost landed in that
+# other worker's model timings. Onnx runtime creates its cuda streams non blocking, so they are not
+# implicitly joined by this either
 def synchronize_device() -> None:
 	array_module = resolve_array_module()
 
 	try:
 		if array_module.__name__ == 'cupy':
-			array_module.cuda.runtime.deviceSynchronize()
+			array_module.cuda.get_current_stream().synchronize()
 		else:
-			array_module.cuda.synchronize()
+			array_module.cuda.current_stream().synchronize()
 	except Exception as exception:
-		warn_once('synchronize', 'nvidia-vfx device synchronize failed: ' + str(exception))
+		warn_once('synchronize', 'nvidia-vfx stream synchronize failed: ' + str(exception))
 
 
 # The frame is uploaded as-is and every conversion runs on the device, so a frame costs one host to
@@ -293,7 +306,7 @@ def upload_vision_frame(vision_frame : VisionFrame) -> Any:
 # stays referenced while the capsule is imported. The capsule is valid only while the effect and its
 # current output buffer exist, and must not be retained across another run(), so it is copied here
 # and the copy is awaited before the caller lets the effect move on
-def download_vision_frame(effect_output : Any) -> Tuple[VisionFrame, float]:
+def download_vision_frame(effect_output : Any, with_deviation : bool = True) -> Tuple[VisionFrame, Optional[float]]:
 	array_module = resolve_array_module()
 	dlpack_capsule = effect_output.image if hasattr(effect_output, 'image') else effect_output
 
@@ -303,14 +316,14 @@ def download_vision_frame(effect_output : Any) -> Tuple[VisionFrame, float]:
 	if array_module.__name__ == 'cupy':
 		device_vision_frame = array_module.from_dlpack(dlpack_capsule).copy()
 		synchronize_device()
-		deviation = float(device_vision_frame.std())
+		deviation = float(device_vision_frame.std()) if with_deviation else None
 		device_vision_frame = (device_vision_frame * 255.0).clip(0, 255).astype(array_module.uint8)
 		device_vision_frame = array_module.ascontiguousarray(device_vision_frame.transpose(1, 2, 0)[:, :, ::-1])
 		return array_module.asnumpy(device_vision_frame), deviation
 
 	device_vision_frame = array_module.from_dlpack(dlpack_capsule).clone()
 	synchronize_device()
-	deviation = float(device_vision_frame.std())
+	deviation = float(device_vision_frame.std()) if with_deviation else None
 	device_vision_frame = (device_vision_frame * 255.0).clamp(0, 255).to(array_module.uint8)
 	device_vision_frame = device_vision_frame.permute(1, 2, 0).flip(-1).contiguous()
 	return device_vision_frame.cpu().numpy(), deviation
@@ -319,8 +332,19 @@ def download_vision_frame(effect_output : Any) -> Tuple[VisionFrame, float]:
 # The known failure on this sdk is silent rather than loud: on linux the bundled cuda kernels have
 # no image for some architectures, notably blackwell sm_120, and super resolution then returns a
 # constant image without raising. A constant result is therefore treated as a failure
-def is_blank_result(deviation : float) -> bool:
+def is_blank_result(deviation : Optional[float]) -> bool:
+	if deviation is None:
+		return False
 	return deviation < 1e-6
+
+
+# Both callers hold NVIDIA_VFX_LOCK, so the latch needs no lock of its own
+def needs_blank_check(effect_kind : str) -> bool:
+	return effect_kind not in NVIDIA_VFX_BLANK_CHECKED
+
+
+def mark_blank_checked(effect_kind : str) -> None:
+	NVIDIA_VFX_BLANK_CHECKED.add(effect_kind)
 
 
 def apply_super_res(vision_frame : VisionFrame, super_res_mode : str, super_res_level : str, super_res_scale : int, super_res_strength : float) -> Optional[VisionFrame]:
@@ -340,6 +364,7 @@ def apply_super_res(vision_frame : VisionFrame, super_res_mode : str, super_res_
 	# worker entering run() would replace the buffer the first is still downloading
 	try:
 		with NVIDIA_VFX_LOCK:
+			with_deviation = needs_blank_check('super_res')
 			effect = resolve_super_res_effect(quality_level, super_res_strength, width * super_res_scale, height * super_res_scale)
 			device_vision_frame = upload_vision_frame(vision_frame)
 			# The input was written on the array library's stream, so it has to land before run() reads it
@@ -348,7 +373,7 @@ def apply_super_res(vision_frame : VisionFrame, super_res_mode : str, super_res_
 			# on stream 0 while inference runs on the given stream, so non_blocking is unsafe here
 			with measure_inference():
 				effect_output = effect.run(device_vision_frame)
-			result_vision_frame, deviation = download_vision_frame(effect_output)
+			result_vision_frame, deviation = download_vision_frame(effect_output, with_deviation)
 			# Keeps the input and the output wrapper referenced until the copy above has completed
 			del effect_output, device_vision_frame
 	except Exception as exception:
@@ -359,6 +384,9 @@ def apply_super_res(vision_frame : VisionFrame, super_res_mode : str, super_res_
 		warn_once('super_res_blank', 'nvidia-vfx super resolution returned a constant image, which is the known silent failure where the bundled cuda kernels have no build for this gpu architecture; disabling it for this session')
 		disable_nvidia_vfx()
 		return None
+	# Measured once and believed from here on; a real image proves the kernels exist for this gpu
+	if with_deviation:
+		mark_blank_checked('super_res')
 	return result_vision_frame
 
 
@@ -368,13 +396,14 @@ def apply_frame_generation(previous_vision_frame : VisionFrame, vision_frame : V
 
 	try:
 		with NVIDIA_VFX_LOCK:
+			with_deviation = needs_blank_check('frame_generation')
 			effect = resolve_frame_generation_effect(resolve_frame_generation_mode(frame_generation_mode), shot_change_detection)
 			device_previous_vision_frame = upload_vision_frame(previous_vision_frame)
 			device_vision_frame = upload_vision_frame(vision_frame)
 			synchronize_device()
 			with measure_inference():
 				effect_output = effect.run(device_previous_vision_frame, device_vision_frame)
-			result_vision_frame, deviation = download_vision_frame(effect_output)
+			result_vision_frame, deviation = download_vision_frame(effect_output, with_deviation)
 			del effect_output, device_vision_frame, device_previous_vision_frame
 	except Exception as exception:
 		warn_once('frame_generation', 'nvidia-vfx frame generation failed, no frame was interpolated: ' + str(exception) + '. It requires an ada or blackwell gpu')
@@ -384,6 +413,8 @@ def apply_frame_generation(previous_vision_frame : VisionFrame, vision_frame : V
 		warn_once('frame_generation_blank', 'nvidia-vfx frame generation returned a constant image, which is the known silent failure where the bundled cuda kernels have no build for this gpu architecture; disabling it for this session')
 		disable_nvidia_vfx()
 		return None
+	if with_deviation:
+		mark_blank_checked('frame_generation')
 	return result_vision_frame
 
 

@@ -16,6 +16,7 @@ from facefusion.app_context import detect_app_context, set_app_context_override
 from facefusion.audio import create_empty_audio_frame
 from facefusion.common_helper import get_first, is_windows
 from facefusion.content_analyser import analyse_frame
+from facefusion.device_memory import reset_device_memory_metrics, sample_device_memory
 from facefusion.face_creator import set_face_analysis_features
 from facefusion.face_helper import set_paste_in_place
 from facefusion.face_selector import begin_face_selection_context, end_face_selection_context
@@ -314,11 +315,17 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 		
 		try:
 			set_app_context_override(detect_app_context())
+			# Zeroed here so the drift reported for this stream is measured from its own first
+			# reading rather than from a previous one
+			reset_device_memory_metrics()
 			futures = []
 			discarded_futures = []
 			analysis_future = None
 
 			while capture_thread.running and not stop_event.is_set():
+				# Throttled to once a second inside the sampler, because this loop also spins on an
+				# empty camera queue
+				sample_device_memory()
 				discarded_futures = [ future for future in discarded_futures if not future.done() ]
 				skipping_mode = state_manager.get_item('webcam_frame_skipping') or 'adaptive'
 				current_processor_names = list(state_manager.get_item('processors') or [])
@@ -330,25 +337,32 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 					face_analysis_features = collect_stream_face_analysis_features(processor_modules)
 					is_stream_warmed = False
 
-				# 1. Preserve ordered output normally; adaptive mode drops stale work when a newer result is ready
+				# 1. Preserve ordered output normally; adaptive mode abandons stale work still running
+				# once a newer result is ready
 				if skipping_mode == 'adaptive':
 					completed_indices = [ index for index, (_, future) in enumerate(futures) if future.done() ]
 					if completed_indices:
 						latest_completed_index = completed_indices[-1]
-						latest_frame_index, latest_future = futures[latest_completed_index]
+						latest_frame_index, _ = futures[latest_completed_index]
 						# Published before the stale futures are abandoned, so the ones still running
 						# can give up at their next processor instead of finishing a frame that has
 						# already been overtaken
 						stream_frame_cursor.yielded_frame_index = latest_frame_index
-						for _, stale_future in futures[:latest_completed_index]:
-							if not stale_future.cancel() and not stale_future.done():
-								discarded_futures.append(stale_future)
+						drained_futures = futures[:latest_completed_index + 1]
 						futures = futures[latest_completed_index + 1:]
-						stream_result = latest_future.result()
-						if stream_result:
-							capture_vision_frame, capture_time, timing = stream_result
-							progress.update()
-							yield capture_vision_frame, capture_time, False, timing
+						for _, drained_future in drained_futures:
+							# Only work that is still running is abandoned. Dropping a frame that has
+							# already finished buys no latency, because the newest result is delivered
+							# in this same pass either way, and it costs a frame that was fully paid for
+							if not drained_future.done():
+								if not drained_future.cancel():
+									discarded_futures.append(drained_future)
+								continue
+							stream_result = drained_future.result()
+							if stream_result:
+								capture_vision_frame, capture_time, timing = stream_result
+								progress.update()
+								yield capture_vision_frame, capture_time, False, timing
 				else:
 					while futures and futures[0][1].done():
 						oldest_frame_index, oldest_future = futures.pop(0)
@@ -386,10 +400,14 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 					is_stream_warmed = True
 					warm_stream_workers(executor, webcam_execution_thread_count, processor_modules, capture_vision_frame)
 
-				# 3. Sample NSFW analysis to ~once per second, only copying/submitting the sampled frame
-				nsfw_frame_index += 1
-				if nsfw_frame_index % max(1, int(camera_fps)) == 0 and (analysis_future is None or analysis_future.done()):
-					analysis_future = executor.submit(analyse_frame_background, capture_vision_frame.copy(), stop_event)
+				# 3. Sample content analysis on its configured interval, only copying/submitting the
+				# sampled frame. The three detector models cost around 190ms of device time per
+				# sample, which is a large share of a stream that is already saturated, so the
+				# interval sets how often that is paid rather than whether the check runs
+				content_analysis_interval = state_manager.get_item('webcam_content_analysis_interval') or 1
+				#nsfw_frame_index += 1
+				#if nsfw_frame_index % max(1, int(camera_fps * content_analysis_interval)) == 0 and (analysis_future is None or analysis_future.done()):
+				#	analysis_future = executor.submit(analyse_frame_background, capture_vision_frame.copy(), stop_event)
 
 				# 4. Raw passthrough skips the pipeline entirely, which is the whole point of it: the
 				# lowest latency the camera can deliver, and the reference the processed output is judged against

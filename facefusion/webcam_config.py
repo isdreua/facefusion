@@ -19,6 +19,7 @@ DEFAULT_WEBCAM_CONFIG : Dict[str, Any] =\
 	'resolution': '320x240',
 	'fps': 30,
 	'frame_skipping': 'adaptive',
+	'content_analysis_interval': 1,
 	'performance_overlay': 'none',
 	'webcam_inline_preview_resolution': '640x480',
 	'webcam_execution_thread_count': 2,
@@ -36,6 +37,9 @@ NO_SOURCE_FACE_NAME = '(none)'
 WEBCAM_MODES = [ 'inline', 'udp', 'v4l2', 'window' ]
 WEBCAM_RESOLUTIONS = [ '320x240', '640x480', '800x600', '1024x768', '1280x720', '1280x960', '1920x1080', '240x320', '480x640', '600x800', '768x1024', '720x1280', '960x1280', '1080x1920' ]
 WEBCAM_FRAME_SKIPPING_MODES = [ 'adaptive', 'disabled', '1-in-2', '1-in-3' ]
+# How many seconds apart the stream samples a frame for content analysis. The check runs either
+# way; this only sets how much of the device it is allowed to take while it does
+WEBCAM_CONTENT_ANALYSIS_INTERVALS = list(range(1, 31))
 WEBCAM_PERFORMANCE_OVERLAYS = [ 'none', 'simple', 'advanced' ]
 WEBCAM_INLINE_PREVIEW_RESOLUTIONS = [ 'native', '320x240', '640x480', '960x540', '240x320', '480x640', '540x960' ]
 WEBCAM_CAMERA_BACKENDS = [ 'auto', 'msmf', 'dshow' ] if is_windows() else [ 'auto' ]
@@ -52,6 +56,7 @@ WEBCAM_CONFIG_OPTIONS =\
 	'resolution': WEBCAM_RESOLUTIONS,
 	'fps': list(range(1, 31)),
 	'frame_skipping': WEBCAM_FRAME_SKIPPING_MODES,
+	'content_analysis_interval': WEBCAM_CONTENT_ANALYSIS_INTERVALS,
 	'performance_overlay': WEBCAM_PERFORMANCE_OVERLAYS,
 	'webcam_inline_preview_resolution': WEBCAM_INLINE_PREVIEW_RESOLUTIONS,
 	'webcam_execution_thread_count': list(range(1, 9)),
@@ -107,6 +112,8 @@ def load_webcam_config(config_path : str) -> Dict[str, Any]:
 		webcam_config['fps'] = content.get('fps')
 	if content.get('frame_skipping') in WEBCAM_FRAME_SKIPPING_MODES:
 		webcam_config['frame_skipping'] = content.get('frame_skipping')
+	if content.get('content_analysis_interval') in WEBCAM_CONTENT_ANALYSIS_INTERVALS:
+		webcam_config['content_analysis_interval'] = content.get('content_analysis_interval')
 	if content.get('performance_overlay') in WEBCAM_PERFORMANCE_OVERLAYS:
 		webcam_config['performance_overlay'] = content.get('performance_overlay')
 	if content.get('webcam_inline_preview_resolution') in WEBCAM_INLINE_PREVIEW_RESOLUTIONS:

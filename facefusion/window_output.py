@@ -166,5 +166,8 @@ def apply_window_intents(window_stream : WindowStream) -> bool:
 		elif intent_name == 'bypass_on':
 			state_manager.set_item('webcam_stream_bypass', True)
 
-	window_stream.push_status(resolve_window_face_names(), state_manager.get_item('source_face_name'), bool(state_manager.get_item('webcam_stream_bypass')))
+	# The on screen display is part of the overlay, so a run with the overlay off keeps a clean frame
+	# and never names the face it switched to
+	if state_manager.get_item('webcam_performance_overlay') in [ 'simple', 'advanced' ]:
+		window_stream.push_status(resolve_window_face_names(), state_manager.get_item('source_face_name'), bool(state_manager.get_item('webcam_stream_bypass')))
 	return is_running and not window_stream.has_window_closed()

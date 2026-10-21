@@ -7,7 +7,7 @@ from facefusion import logger, state_manager
 from facefusion.camera_manager import clear_camera_pool, get_local_camera_capture
 from facefusion.common_helper import get_first
 from facefusion.overlay import PERFORMANCE_OVERLAY
-from facefusion.streamer import multi_process_capture, open_stream
+from facefusion.streamer import apply_stream_face_selector_mode, apply_stream_source_paths, multi_process_capture, open_stream
 from facefusion.stream_writer import LatestFrameWriter
 from facefusion.vision import fit_cover_frame, pack_resolution, unpack_resolution
 from facefusion.webcam_config import DEFAULT_SOURCE_FACE_NAME, WEBCAM_HEADLESS_MODES, get_source_faces, load_webcam_config
@@ -35,8 +35,16 @@ def run() -> int:
 		return 2
 
 	state_manager.init_item('source_face_groups', source_face_groups)
+	state_manager.init_item('source_face_uploads', {})
+	state_manager.init_item('source_face_groups_version', 0)
 	state_manager.init_item('webcam_stream_bypass', False)
 	state_manager.init_item('source_face_name', webcam_config.get('webcam_source_face') or get_first(list(source_face_groups)) or DEFAULT_SOURCE_FACE_NAME)
+	apply_stream_source_paths()
+	# The browser layout seeds these from the same config through webcam_options.render, which
+	# headless never reaches, so the config's skipping and overlay would be ignored here
+	state_manager.init_item('webcam_frame_skipping', webcam_config.get('frame_skipping'))
+	state_manager.init_item('webcam_performance_overlay', webcam_config.get('performance_overlay'))
+	apply_stream_face_selector_mode()
 	state_manager.sync_state()
 	webcam_width, webcam_height = unpack_resolution(webcam_resolution)
 	if webcam_output_resolution == 'copy':
@@ -76,10 +84,10 @@ def run() -> int:
 			if window_stream and not apply_window_intents(window_stream):
 				break
 	finally:
-		clear_camera_pool()
 		if stream_writer:
 			stream_writer.close()
 		if window_stream:
 			window_stream.close()
+		clear_camera_pool()
 
 	return 0

@@ -20,7 +20,7 @@ from facefusion.face_creator import set_face_analysis_features
 from facefusion.face_helper import set_paste_in_place
 from facefusion.face_selector import begin_face_selection_context, end_face_selection_context
 from facefusion.ffmpeg import open_ffmpeg
-from facefusion.filesystem import is_directory
+from facefusion.filesystem import has_image, is_directory
 from facefusion.inference_timer import get_inference_timer, reset_inference_timer
 from facefusion.processors.core import get_processors_modules
 from facefusion.types import AudioFrame, Fps, Mask, Resolution, StreamMode, VisionFrame
@@ -188,6 +188,24 @@ def resolve_source_face_groups() -> Dict[str, List[str]]:
 		resolved_source_face_groups[DEFAULT_SOURCE_FACE_NAME] = list(state_manager.get_item('source_paths') or [])
 
 	return resolved_source_face_groups
+
+
+# Groups that came from a config or a face directory never pass through the upload path that fills
+# source_paths, and validate_stream_processors drops the face swapper when no detectable face is
+# there, so a stream started from such a group would silently swap nothing
+def apply_stream_source_paths() -> None:
+	source_paths = [ source_path for source_paths in resolve_source_face_groups().values() for source_path in source_paths ]
+
+	if has_image(source_paths):
+		state_manager.init_item('source_paths', source_paths)
+
+
+# A stream has no reference frame, so reference mode resolves no reference face and selects no
+# target face at all: every processor would then run over a frame with nothing to work on. many is
+# left alone because it is a deliberate choice that works frame by frame
+def apply_stream_face_selector_mode() -> None:
+	if state_manager.get_item('face_selector_mode') != 'many':
+		state_manager.init_item('face_selector_mode', 'one')
 
 
 def resolve_stream_face_set(stream_face_sets : Dict[str, Dict[str, Any]], source_face_name : Optional[str]) -> Tuple[Optional[str], List[VisionFrame], Dict[str, Dict[str, Any]]]:

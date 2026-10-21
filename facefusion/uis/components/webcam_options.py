@@ -7,7 +7,7 @@ from facefusion.camera_manager import detect_local_camera_ids
 from facefusion.filesystem import is_image
 from facefusion.common_helper import get_first
 from facefusion.uis import choices as uis_choices
-from facefusion.streamer import resolve_source_face_groups
+from facefusion.streamer import apply_stream_source_paths, resolve_source_face_groups
 from facefusion.types import WebcamMode
 from facefusion.uis.core import register_ui_component
 from facefusion.webcam_config import DEFAULT_SOURCE_FACE_NAME, NO_SOURCE_FACE_NAME, WEBCAM_CAMERA_BACKENDS, WEBCAM_FRAME_SKIPPING_MODES, WEBCAM_INLINE_PREVIEW_RESOLUTIONS, WEBCAM_OUTPUT_RESOLUTIONS, WEBCAM_PERFORMANCE_OVERLAYS, WEBCAM_STATE_KEYS, format_webcam_config, get_source_faces, load_webcam_config, resolve_source_face_directory
@@ -61,6 +61,7 @@ def render() -> None:
 	state_manager.init_item('source_face_uploads', {})
 	state_manager.init_item('source_face_groups_version', 0)
 	state_manager.init_item('source_face_name', source_face_name)
+	apply_stream_source_paths()
 	state_manager.init_item('webcam_frame_skipping', webcam_config.get('frame_skipping'))
 	state_manager.init_item('webcam_performance_overlay', webcam_config.get('performance_overlay'))
 	state_manager.init_item('webcam_stream_bypass', False)

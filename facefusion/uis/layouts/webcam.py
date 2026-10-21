@@ -74,5 +74,8 @@ def listen() -> None:
 
 
 def run(ui : gradio.Blocks) -> None:
-	webcam.listen_auto_start(ui)
+	# Gradio only accepts event listeners while the blocks context is open, so it is re-entered to
+	# register the auto start
+	with ui:
+		webcam.listen_auto_start(ui)
 	ui.launch(favicon_path = 'facefusion.ico', inbrowser = state_manager.get_item('open_browser'))

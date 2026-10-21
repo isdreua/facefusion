@@ -8,7 +8,7 @@ from facefusion import logger, state_manager, translator
 from facefusion.camera_manager import clear_camera_pool, get_local_camera_capture
 from facefusion.filesystem import has_image
 from facefusion.overlay import PERFORMANCE_OVERLAY
-from facefusion.streamer import multi_process_capture, open_stream, resolve_source_face_groups
+from facefusion.streamer import apply_stream_face_selector_mode, multi_process_capture, open_stream, resolve_source_face_groups
 from facefusion.stream_writer import LatestFrameWriter
 from facefusion.types import Fps, VisionFrame, WebcamMode
 from facefusion.uis.components.webcam_options import update_source_face_gallery
@@ -143,7 +143,7 @@ def pre_stop() -> Tuple[gradio.File, gradio.Image, gradio.Button, gradio.Button]
 
 
 def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : str, webcam_fps : Fps, inline_preview_resolution : str = '640x480', webcam_execution_thread_count : int = 2, webcam_camera_backend : str = 'auto', webcam_output_resolution : str = 'copy') -> Iterator[VisionFrame]:
-	state_manager.init_item('face_selector_mode', 'one')
+	apply_stream_face_selector_mode()
 	state_manager.sync_state()
 
 	webcam_width, webcam_height = unpack_resolution(webcam_resolution)
@@ -167,6 +167,10 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 	camera_capture = get_local_camera_capture(webcam_device_id, webcam_width, webcam_height, webcam_fps, webcam_camera_backend)
 	stream_writer = None
 	window_stream = None
+	# Headless says so and exits; the browser layout used to just hand back an empty image, leaving
+	# a failed camera indistinguishable from a stream that produced nothing
+	if not camera_capture or not camera_capture.isOpened():
+		logger.error('webcam device could not be opened', __name__)
 	if camera_capture and camera_capture.isOpened():
 		try:
 			if webcam_mode in [ 'udp', 'v4l2' ]:

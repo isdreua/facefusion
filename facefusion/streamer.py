@@ -21,6 +21,7 @@ from facefusion.face_helper import set_paste_in_place
 from facefusion.face_selector import begin_face_selection_context, end_face_selection_context
 from facefusion.ffmpeg import open_ffmpeg
 from facefusion.filesystem import is_directory
+from facefusion.inference_timer import get_inference_timer, reset_inference_timer
 from facefusion.processors.core import get_processors_modules
 from facefusion.types import AudioFrame, Fps, Mask, Resolution, StreamMode, VisionFrame
 from facefusion.vision import extract_vision_mask, is_vision_frame, read_static_images, restrict_frame
@@ -407,6 +408,8 @@ def process_stream_frame(source_vision_frames : List[VisionFrame], target_vision
 	try:
 		if timing is not None:
 			timing['processing_started'] = time.perf_counter()
+		# Zeroed per frame on this worker, so what is read back below is this frame's model time only
+		reset_inference_timer()
 		begin_face_selection_context()
 		for processor_module in processor_modules:
 			logger.disable()
@@ -435,6 +438,7 @@ def process_stream_frame(source_vision_frames : List[VisionFrame], target_vision
 
 	if timing is not None:
 		timing['processing_finished'] = time.perf_counter()
+		timing['model_ms'], timing['model_runs'] = get_inference_timer()
 		return temp_vision_frame, capture_time, timing
 	return temp_vision_frame, capture_time
 

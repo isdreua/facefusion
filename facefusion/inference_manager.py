@@ -13,6 +13,7 @@ from facefusion.common_helper import is_windows
 from facefusion.execution import create_inference_providers, get_onnxruntime_version, has_execution_provider
 from facefusion.exit_helper import fatal_exit
 from facefusion.filesystem import get_file_name, is_file
+from facefusion.inference_timer import TimedInferenceSession
 from facefusion.time_helper import calculate_end_time
 from facefusion.types import AppContext, DownloadSet, ExecutionProvider, InferencePool, InferencePoolSet, InferenceProvider
 
@@ -115,7 +116,8 @@ def create_inference_session(model_path : str, inference_providers : List[Infere
 
 		inference_session = InferenceSession(MODEL_BYTES_CACHE.get(model_path), providers = inference_providers)
 		logger.debug(translator.get('loading_model_succeeded').format(model_name = model_file_name, seconds = calculate_end_time(start_time)), __name__)
-		return inference_session
+		# Wrapped so every run is measured; the proxy forwards everything else untouched
+		return TimedInferenceSession(inference_session) #type:ignore[return-value]
 
 	except Exception:
 		logger.error(translator.get('loading_model_failed').format(model_name = model_file_name), __name__)

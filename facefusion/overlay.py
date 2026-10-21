@@ -171,6 +171,11 @@ class PerformanceOverlay:
 			frame_interval_ms = timing.get('frame_interval_ms', 0.0)
 			budget_status = 'OVER BUDGET' if frame_interval_ms and p95_latency > frame_interval_ms else 'within budget'
 			inspector_lines.append((f'Bottleneck: {bottleneck} | {budget_status}', (80, 120, 255) if budget_status == 'OVER BUDGET' else (120, 220, 140)))
+			# What the models cost against what the python around them costs; a large remainder means
+			# the frame is spent on preparation, pasting and copies rather than on the device
+			model_ms = timing.get('model_ms')
+			if model_ms is not None:
+				inspector_lines.append((f'Models {model_ms:.1f} ms x{timing.get("model_runs", 0)} | Overhead {max(0.0, process_ms - model_ms):.1f} ms', (120, 220, 255)))
 			processor_times = timing.get('processor_times') or {}
 			if processor_times:
 				slowest_processor = max(processor_times, key = processor_times.get)

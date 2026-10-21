@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional, Set, Tuple
 import numpy
 
 from facefusion import logger, state_manager
+from facefusion.inference_timer import measure_inference
 from facefusion.types import VisionFrame
 
 NVIDIA_VFX_RESOLVED : bool = False
@@ -337,7 +338,8 @@ def apply_super_res(vision_frame : VisionFrame, super_res_mode : str, super_res_
 		synchronize_device()
 		# RGB8 stays in blocking mode on purpose: the sdk documents that its RGB8 conversion can run
 		# on stream 0 while inference runs on the given stream, so non_blocking is unsafe here
-		effect_output = effect.run(device_vision_frame)
+		with measure_inference():
+			effect_output = effect.run(device_vision_frame)
 		result_vision_frame, deviation = download_vision_frame(effect_output)
 		# Keeps the input and the output wrapper referenced until the copy above has completed
 		del effect_output, device_vision_frame
@@ -361,7 +363,8 @@ def apply_frame_generation(previous_vision_frame : VisionFrame, vision_frame : V
 		device_previous_vision_frame = upload_vision_frame(previous_vision_frame)
 		device_vision_frame = upload_vision_frame(vision_frame)
 		synchronize_device()
-		effect_output = effect.run(device_previous_vision_frame, device_vision_frame)
+		with measure_inference():
+			effect_output = effect.run(device_previous_vision_frame, device_vision_frame)
 		result_vision_frame, deviation = download_vision_frame(effect_output)
 		del effect_output, device_vision_frame, device_previous_vision_frame
 	except Exception as exception:

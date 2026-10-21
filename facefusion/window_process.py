@@ -6,6 +6,10 @@ from typing import Any, Dict, Optional
 FRAME_SLOT_COUNT = 2
 OSD_DURATION = 1.5
 OSD_MARGIN = 12
+# The preview is sized against the frame's shorter side - the height of a landscape window, the
+# width of a portrait one - so it keeps the same presence whatever the output resolution is
+OSD_PREVIEW_DIVISOR = 3
+OSD_PREVIEW_GAP = 6
 
 
 def resolve_face_index(pygame : Any, key : int) -> Optional[int]:
@@ -46,6 +50,34 @@ def resolve_osd_text(status : Dict[str, Any]) -> str:
 	return ''
 
 
+# A third of the frame's shorter side, which is the height of a landscape window and the width of a
+# portrait one
+def resolve_osd_preview_size(width : int, height : int) -> int:
+	return max(1, round(min(width, height) / OSD_PREVIEW_DIVISOR))
+
+
+# The source picture's biggest side is matched to that box, so a portrait and a landscape source
+# take up the same amount of the frame rather than one of them running off it.
+#
+# Scaled once per path and kept, because the osd redraws on every frame it is visible for and the
+# box never changes: the window is created at a fixed logical size and SCALED fullscreen keeps it.
+# A path that fails to load caches None so a broken or unreadable image is not retried sixty times
+# a second; the parent has already filtered the path by extension, but it may still be gone by now
+def resolve_osd_preview(pygame : Any, osd_previews : Dict[str, Any], source_face_path : Optional[str], preview_size : int) -> Any:
+	if not source_face_path:
+		return None
+	if source_face_path not in osd_previews:
+		try:
+			preview_surface = pygame.image.load(source_face_path).convert_alpha()
+			preview_width, preview_height = preview_surface.get_size()
+			preview_scale = preview_size / max(1, preview_width, preview_height)
+			osd_previews[source_face_path] = pygame.transform.smoothscale(preview_surface, (max(1, round(preview_width * preview_scale)), max(1, round(preview_height * preview_scale))))
+		except Exception:
+			osd_previews[source_face_path] = None
+
+	return osd_previews.get(source_face_path)
+
+
 # The child reports raw intents and resolves nothing: the parent owns the index to face name mapping
 # so that the window and the browser gallery cannot disagree about what is selected
 def run_window(shared_name : str, width : int, height : int, fps : float, title : str, is_fullscreen : bool, sequence : Any, frame_event : Any, stop_event : Any, intent_queue : Any, status_queue : Any) -> None:
@@ -59,7 +91,9 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 
 	frame_size = width * height * 3
 	shared_frames = None
-	status : Dict[str, Any] = { 'source_face_names': [], 'source_face_name': None, 'is_bypassed': False }
+	status : Dict[str, Any] = { 'source_face_names': [], 'source_face_name': None, 'source_face_path': None, 'is_bypassed': False }
+	osd_previews : Dict[str, Any] = {}
+	osd_preview_size = resolve_osd_preview_size(width, height)
 	osd_expires_at = 0.0
 	is_closing = False
 
@@ -128,6 +162,11 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 				if osd_text and time.monotonic() < osd_expires_at:
 					text_surface = osd_font.render(osd_text, True, (255, 255, 255), (0, 0, 0))
 					display_surface.blit(text_surface, (OSD_MARGIN, OSD_MARGIN))
+					# Under the text, and only while the text is up, so switching faces shows what
+					# was switched to rather than leaving a thumbnail sitting on the frame
+					preview_surface = resolve_osd_preview(pygame, osd_previews, status.get('source_face_path'), osd_preview_size)
+					if preview_surface:
+						display_surface.blit(preview_surface, (OSD_MARGIN, OSD_MARGIN + text_surface.get_height() + OSD_PREVIEW_GAP))
 				pygame.display.flip()
 			else:
 				# Nothing new to draw, so wait on the parent instead of spinning; the sequence above

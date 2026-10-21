@@ -89,8 +89,8 @@ class WindowStream:
 
 	# Only sent when something actually changed, so the window's on screen display appears on a
 	# switch rather than being redrawn for every frame
-	def push_status(self, source_face_names : List[str], source_face_name : Optional[str], is_bypassed : bool) -> None:
-		status = { 'source_face_names': list(source_face_names), 'source_face_name': source_face_name, 'is_bypassed': is_bypassed }
+	def push_status(self, source_face_names : List[str], source_face_name : Optional[str], source_face_path : Optional[str], is_bypassed : bool) -> None:
+		status = { 'source_face_names': list(source_face_names), 'source_face_name': source_face_name, 'source_face_path': source_face_path, 'is_bypassed': is_bypassed }
 
 		if status == self.last_status or self.is_closed or self.is_window_closed:
 			return
@@ -148,6 +148,21 @@ def resolve_window_face_names() -> List[str]:
 	return source_face_names
 
 
+# The window process has no cv2 and no access to the face groups, so the preview travels to it as a
+# path and pygame loads it there. The same first-source-path and is_image filtering as the name list
+# above, so the preview is always the tile the browser gallery would show for that name
+def resolve_window_face_path(source_face_name : Optional[str]) -> Optional[str]:
+	from facefusion.streamer import resolve_source_face_groups
+
+	if not source_face_name:
+		return None
+
+	source_path = get_first(resolve_source_face_groups().get(source_face_name) or [])
+	if source_path and is_image(source_path):
+		return source_path
+	return None
+
+
 def apply_window_intents(window_stream : WindowStream) -> bool:
 	is_running = True
 
@@ -199,5 +214,10 @@ def apply_window_intents(window_stream : WindowStream) -> bool:
 	# The on screen display is part of the overlay, so a run with the overlay off keeps a clean frame
 	# and never names the face it switched to
 	if state_manager.get_item('webcam_performance_overlay') in [ 'simple', 'advanced' ]:
-		window_stream.push_status(resolve_window_face_names(), state_manager.get_item('source_face_name'), bool(state_manager.get_item('webcam_stream_bypass')))
+		source_face_name = state_manager.get_item('source_face_name')
+		is_bypassed = bool(state_manager.get_item('webcam_stream_bypass'))
+		# No preview on the raw camera: the selected face is still remembered, but none of it is
+		# reaching the frame, so showing it would claim a swap that is not happening
+		source_face_path = None if is_bypassed else resolve_window_face_path(source_face_name)
+		window_stream.push_status(resolve_window_face_names(), source_face_name, source_face_path, is_bypassed)
 	return is_running and not window_stream.has_window_closed()

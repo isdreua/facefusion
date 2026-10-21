@@ -9,8 +9,8 @@ from facefusion.common_helper import get_first
 from facefusion.uis import choices as uis_choices
 from facefusion.streamer import apply_stream_source_paths, resolve_source_face_groups
 from facefusion.types import WebcamMode
-from facefusion.uis.core import register_ui_component
-from facefusion.webcam_config import DEFAULT_SOURCE_FACE_NAME, NO_SOURCE_FACE_NAME, WEBCAM_CAMERA_BACKENDS, WEBCAM_CONTENT_ANALYSIS_INTERVALS, WEBCAM_FRAME_SKIPPING_MODES, WEBCAM_INLINE_PREVIEW_RESOLUTIONS, WEBCAM_OUTPUT_RESOLUTIONS, WEBCAM_PERFORMANCE_OVERLAYS, WEBCAM_STATE_KEYS, format_webcam_config, get_source_faces, load_webcam_config, resolve_source_face_directory
+from facefusion.uis.core import get_ui_component, register_ui_component
+from facefusion.webcam_config import DEFAULT_SOURCE_FACE_NAME, NO_SOURCE_FACE_NAME, WEBCAM_BYPASSED_PROCESSORS, WEBCAM_CAMERA_BACKENDS, WEBCAM_CONTENT_ANALYSIS_INTERVALS, WEBCAM_FRAME_SKIPPING_MODES, WEBCAM_INLINE_PREVIEW_RESOLUTIONS, WEBCAM_OUTPUT_RESOLUTIONS, WEBCAM_PERFORMANCE_OVERLAYS, WEBCAM_STATE_KEYS, format_webcam_config, get_source_faces, load_webcam_config, resolve_source_face_directory
 from facefusion.window_output import has_window_output, log_window_output_requirement
 
 WEBCAM_DEVICE_ID_DROPDOWN : Optional[gradio.Dropdown] = None
@@ -20,6 +20,7 @@ WEBCAM_FPS_SLIDER : Optional[gradio.Slider] = None
 WEBCAM_PERFORMANCE_OVERLAY_RADIO : Optional[gradio.Radio] = None
 WEBCAM_FRAME_SKIPPING_RADIO : Optional[gradio.Radio] = None
 WEBCAM_CONTENT_ANALYSIS_INTERVAL_SLIDER : Optional[gradio.Slider] = None
+WEBCAM_BYPASSED_PROCESSORS_CHECKBOX_GROUP : Optional[gradio.CheckboxGroup] = None
 WEBCAM_INLINE_PREVIEW_RESOLUTION_DROPDOWN : Optional[gradio.Dropdown] = None
 WEBCAM_EXECUTION_THREAD_COUNT_SLIDER : Optional[gradio.Slider] = None
 WEBCAM_CAMERA_BACKEND_DROPDOWN : Optional[gradio.Dropdown] = None
@@ -41,6 +42,7 @@ def render() -> None:
 	global WEBCAM_PERFORMANCE_OVERLAY_RADIO
 	global WEBCAM_FRAME_SKIPPING_RADIO
 	global WEBCAM_CONTENT_ANALYSIS_INTERVAL_SLIDER
+	global WEBCAM_BYPASSED_PROCESSORS_CHECKBOX_GROUP
 	global WEBCAM_INLINE_PREVIEW_RESOLUTION_DROPDOWN
 	global WEBCAM_EXECUTION_THREAD_COUNT_SLIDER
 	global WEBCAM_CAMERA_BACKEND_DROPDOWN
@@ -66,6 +68,7 @@ def render() -> None:
 	apply_stream_source_paths()
 	state_manager.init_item('webcam_frame_skipping', webcam_config.get('frame_skipping'))
 	state_manager.init_item('webcam_content_analysis_interval', webcam_config.get('content_analysis_interval'))
+	state_manager.init_item('webcam_bypassed_processors', resolve_bypassed_processors(webcam_config.get('bypassed_processors'), state_manager.get_item('processors')))
 	state_manager.init_item('webcam_performance_overlay', webcam_config.get('performance_overlay'))
 	state_manager.init_item('webcam_stream_bypass', False)
 	state_manager.init_item('webcam_window_fullscreen', webcam_config.get('webcam_window_fullscreen'))
@@ -122,6 +125,11 @@ def render() -> None:
 		minimum = min(WEBCAM_CONTENT_ANALYSIS_INTERVALS),
 		maximum = max(WEBCAM_CONTENT_ANALYSIS_INTERVALS)
 	)
+	WEBCAM_BYPASSED_PROCESSORS_CHECKBOX_GROUP = gradio.CheckboxGroup(
+		label = translator.get('uis.webcam_bypassed_processors_checkbox_group'),
+		choices = state_manager.get_item('processors'),
+		value = state_manager.get_item('webcam_bypassed_processors')
+	)
 	WEBCAM_INLINE_PREVIEW_RESOLUTION_DROPDOWN = gradio.Dropdown(
 		label = translator.get('uis.webcam_inline_preview_resolution_dropdown'),
 		choices = WEBCAM_INLINE_PREVIEW_RESOLUTIONS,
@@ -177,6 +185,7 @@ def render() -> None:
 	register_ui_component('webcam_performance_overlay_radio', WEBCAM_PERFORMANCE_OVERLAY_RADIO)
 	register_ui_component('webcam_frame_skipping_radio', WEBCAM_FRAME_SKIPPING_RADIO)
 	register_ui_component('webcam_content_analysis_interval_slider', WEBCAM_CONTENT_ANALYSIS_INTERVAL_SLIDER)
+	register_ui_component('webcam_bypassed_processors_checkbox_group', WEBCAM_BYPASSED_PROCESSORS_CHECKBOX_GROUP)
 	register_ui_component('webcam_inline_preview_resolution_dropdown', WEBCAM_INLINE_PREVIEW_RESOLUTION_DROPDOWN)
 	register_ui_component('webcam_execution_thread_count_slider', WEBCAM_EXECUTION_THREAD_COUNT_SLIDER)
 	register_ui_component('webcam_camera_backend_dropdown', WEBCAM_CAMERA_BACKEND_DROPDOWN)
@@ -195,6 +204,11 @@ def listen() -> None:
 		WEBCAM_FRAME_SKIPPING_RADIO.change(update_frame_skipping, inputs = WEBCAM_FRAME_SKIPPING_RADIO)
 	if WEBCAM_CONTENT_ANALYSIS_INTERVAL_SLIDER:
 		WEBCAM_CONTENT_ANALYSIS_INTERVAL_SLIDER.change(update_content_analysis_interval, inputs = WEBCAM_CONTENT_ANALYSIS_INTERVAL_SLIDER)
+	if WEBCAM_BYPASSED_PROCESSORS_CHECKBOX_GROUP:
+		WEBCAM_BYPASSED_PROCESSORS_CHECKBOX_GROUP.change(update_bypassed_processors, inputs = WEBCAM_BYPASSED_PROCESSORS_CHECKBOX_GROUP)
+		processors_checkbox_group = get_ui_component('processors_checkbox_group')
+		if processors_checkbox_group:
+			processors_checkbox_group.change(remote_update_bypassed_processors, inputs = processors_checkbox_group, outputs = WEBCAM_BYPASSED_PROCESSORS_CHECKBOX_GROUP)
 	if WEBCAM_WINDOW_FULLSCREEN_CHECKBOX:
 		WEBCAM_WINDOW_FULLSCREEN_CHECKBOX.change(update_window_fullscreen, inputs = WEBCAM_WINDOW_FULLSCREEN_CHECKBOX)
 	if WEBCAM_GENERATE_CONFIG_BUTTON and WEBCAM_GENERATE_CONFIG_TEXTBOX:
@@ -230,6 +244,29 @@ def update_content_analysis_interval(content_analysis_interval : float) -> None:
 	state_manager.set_item('webcam_content_analysis_interval', int(content_analysis_interval))
 
 
+# Only names that are both real processors and in the chain the caller names, so a config written
+# with a different processor selection cannot bypass something the chain never runs
+def resolve_bypassed_processors(bypassed_processors : Optional[List[str]], processors : Optional[List[str]]) -> List[str]:
+	return [ processor for processor in bypassed_processors or [] if processor in WEBCAM_BYPASSED_PROCESSORS and processor in (processors or []) ]
+
+
+# Read per frame by the capture loop, so a change applies to the running stream without touching
+# the inference pools: the model stays on the device and the next frame simply skips it
+def update_bypassed_processors(bypassed_processors : List[str]) -> None:
+	state_manager.set_item('webcam_bypassed_processors', resolve_bypassed_processors(bypassed_processors, state_manager.get_item('processors')))
+
+
+# The processor selection is what can be bypassed, so the choices follow it, and a processor that
+# leaves the chain drops out of the bypass list with it. The new selection arrives as the event's
+# own value rather than being read back from state: processors.update_processors writes that state
+# from a separate listener on this same event, and two listeners on one event have no order
+def remote_update_bypassed_processors(processors : List[str]) -> gradio.CheckboxGroup:
+	bypassed_processors = resolve_bypassed_processors(state_manager.get_item('webcam_bypassed_processors'), processors)
+
+	state_manager.set_item('webcam_bypassed_processors', bypassed_processors)
+	return gradio.CheckboxGroup(value = bypassed_processors, choices = processors)
+
+
 # Faces uploaded through the browser live in a temporary directory that no later run can resolve, so
 # only groups loaded from a local config are carried into the generated one. Groups that came from
 # the face directory are left out too, since the directory path already reproduces them
@@ -255,6 +292,7 @@ def generate_config(webcam_device_id : str, webcam_mode : str, webcam_resolution
 		'fps': int(webcam_fps),
 		'frame_skipping': webcam_frame_skipping,
 		'content_analysis_interval': int(webcam_content_analysis_interval),
+		'bypassed_processors': state_manager.get_item('webcam_bypassed_processors') or [],
 		'performance_overlay': webcam_performance_overlay,
 		'webcam_inline_preview_resolution': webcam_inline_preview_resolution,
 		'webcam_execution_thread_count': int(webcam_execution_thread_count),

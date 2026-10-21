@@ -44,6 +44,7 @@ def run() -> int:
 	# headless never reaches, so the config's skipping and overlay would be ignored here
 	state_manager.init_item('webcam_frame_skipping', webcam_config.get('frame_skipping'))
 	state_manager.init_item('webcam_content_analysis_interval', webcam_config.get('content_analysis_interval'))
+	state_manager.init_item('webcam_bypassed_processors', webcam_config.get('bypassed_processors'))
 	state_manager.init_item('webcam_performance_overlay', webcam_config.get('performance_overlay'))
 	apply_stream_face_selector_mode()
 	state_manager.sync_state()

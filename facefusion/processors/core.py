@@ -36,6 +36,16 @@ def load_processor_module(processor : str) -> Any:
 	return processor_module
 
 
+# The chain carries loaded modules, whose path is 'facefusion.processors.modules.<name>.core'. The
+# name is the segment before core, and is what the state keys, the config and the ui all use
+def resolve_processor_name(processor_module : ModuleType) -> str:
+	processor_parts = processor_module.__name__.split('.')
+
+	if len(processor_parts) > 1 and processor_parts[-1] == 'core':
+		return processor_parts[-2]
+	return processor_parts[-1]
+
+
 def get_processors_modules(processors : List[str]) -> List[ModuleType]:
 	processor_modules = []
 

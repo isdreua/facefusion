@@ -272,6 +272,7 @@ LOCALES : Locales =\
 			'webcam_performance_overlay_radio': 'PERFORMANCE OVERLAY',
 			'webcam_frame_skipping_radio': 'FRAME SKIPPING',
 			'webcam_content_analysis_interval_slider': 'CONTENT ANALYSIS INTERVAL',
+		'webcam_bypassed_processors_checkbox_group': 'BYPASS PROCESSORS (KEEP LOADED)',
 			'webcam_inline_preview_resolution_dropdown': 'INLINE PREVIEW RESOLUTION',
 			'webcam_execution_thread_count_slider': 'WEBCAM WORKERS',
 			'webcam_camera_backend_dropdown': 'CAMERA BACKEND',

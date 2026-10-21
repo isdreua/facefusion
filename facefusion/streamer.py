@@ -23,7 +23,7 @@ from facefusion.face_selector import begin_face_selection_context, end_face_sele
 from facefusion.ffmpeg import open_ffmpeg
 from facefusion.filesystem import has_image, is_directory
 from facefusion.inference_timer import get_inference_timer, reset_inference_timer
-from facefusion.processors.core import get_processors_modules
+from facefusion.processors.core import get_processors_modules, resolve_processor_name
 from facefusion.stream_abort import StreamAborted, abort_stale_stream_frame, set_stream_abort
 from facefusion.types import AppContext, AudioFrame, Fps, Mask, Resolution, StreamMode, VisionFrame
 from facefusion.vision import extract_vision_mask, is_vision_frame, read_static_images, restrict_frame
@@ -534,7 +534,13 @@ def process_stream_frame(source_vision_frames : List[VisionFrame], target_vision
 		# Zeroed per frame on this worker, so what is read back below is this frame's model time only
 		reset_inference_timer()
 		begin_face_selection_context()
+		# Read once for the frame rather than per processor, and never used to rebuild the chain:
+		# a bypassed processor keeps its inference pool loaded, so toggling it is instant and the
+		# frames on either side of the toggle are comparable
+		bypassed_processors = state_manager.get_item('webcam_bypassed_processors') or []
 		for processor_module in processor_modules:
+			if resolve_processor_name(processor_module) in bypassed_processors:
+				continue
 			# Checked between processors rather than only up front, because the frame is overtaken
 			# while the chain runs: this is what keeps a stale frame from paying for the swapper and
 			# everything after it

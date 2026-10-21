@@ -210,6 +210,7 @@ class PerformanceOverlay:
 		if not processors:
 			inspector_lines.append(('Active Processors: None (Pass-through)', (140, 160, 180)))
 		else:
+			bypassed_processors = state_manager.get_item('webcam_bypassed_processors') or []
 			for proc in processors[:3]:
 				model_key = f'{proc}_model'
 				model_val = state_manager.get_item(model_key)
@@ -226,7 +227,12 @@ class PerformanceOverlay:
 					text = f'{proc_name}: {model_val}{res_tag}'
 				else:
 					text = f'{proc_name}: Active'
-				inspector_lines.append((text, (0, 255, 200)))
+				# A bypassed processor is still loaded and still listed, so without this the panel
+				# would name a model that is not touching the frame
+				if proc in bypassed_processors:
+					inspector_lines.append((f'{text} [BYPASSED]', (140, 160, 180)))
+				else:
+					inspector_lines.append((text, (0, 255, 200)))
 
 		return inspector_lines
 

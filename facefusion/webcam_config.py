@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 from facefusion import logger
 from facefusion.json import format_json, read_json
 from facefusion.common_helper import is_windows
-from facefusion.filesystem import is_image, resolve_file_paths
+from facefusion.filesystem import get_file_name, is_image, resolve_file_paths
 from facefusion.normalizer import normalize_color, normalize_space
 
 
@@ -20,6 +20,7 @@ DEFAULT_WEBCAM_CONFIG : Dict[str, Any] =\
 	'fps': 30,
 	'frame_skipping': 'adaptive',
 	'content_analysis_interval': 1,
+	'bypassed_processors': [],
 	'performance_overlay': 'none',
 	'webcam_inline_preview_resolution': '640x480',
 	'webcam_execution_thread_count': 2,
@@ -41,6 +42,11 @@ WEBCAM_FRAME_SKIPPING_MODES = [ 'adaptive', 'disabled', '1-in-2', '1-in-3' ]
 # way; this only sets how much of the device it is allowed to take while it does
 WEBCAM_CONTENT_ANALYSIS_INTERVALS = list(range(1, 31))
 WEBCAM_PERFORMANCE_OVERLAYS = [ 'none', 'simple', 'advanced' ]
+# Processors skipped for the frame while staying loaded on the device, so a comparison costs a
+# click rather than a model reload. Read off the modules directory the same way the processors
+# checkbox group does, so the two lists cannot disagree; a name that is not in the running chain is
+# simply never matched
+WEBCAM_BYPASSED_PROCESSORS = [ get_file_name(file_path) for file_path in resolve_file_paths('facefusion/processors/modules') ]
 WEBCAM_INLINE_PREVIEW_RESOLUTIONS = [ 'native', '320x240', '640x480', '960x540', '240x320', '480x640', '540x960' ]
 WEBCAM_CAMERA_BACKENDS = [ 'auto', 'msmf', 'dshow' ] if is_windows() else [ 'auto' ]
 WEBCAM_OUTPUT_SCALES = [ 'x2', 'x3', 'x4' ]
@@ -57,6 +63,7 @@ WEBCAM_CONFIG_OPTIONS =\
 	'fps': list(range(1, 31)),
 	'frame_skipping': WEBCAM_FRAME_SKIPPING_MODES,
 	'content_analysis_interval': WEBCAM_CONTENT_ANALYSIS_INTERVALS,
+	'bypassed_processors': WEBCAM_BYPASSED_PROCESSORS,
 	'performance_overlay': WEBCAM_PERFORMANCE_OVERLAYS,
 	'webcam_inline_preview_resolution': WEBCAM_INLINE_PREVIEW_RESOLUTIONS,
 	'webcam_execution_thread_count': list(range(1, 9)),
@@ -114,6 +121,8 @@ def load_webcam_config(config_path : str) -> Dict[str, Any]:
 		webcam_config['frame_skipping'] = content.get('frame_skipping')
 	if content.get('content_analysis_interval') in WEBCAM_CONTENT_ANALYSIS_INTERVALS:
 		webcam_config['content_analysis_interval'] = content.get('content_analysis_interval')
+	if isinstance(content.get('bypassed_processors'), list):
+		webcam_config['bypassed_processors'] = [ processor for processor in content.get('bypassed_processors') if processor in WEBCAM_BYPASSED_PROCESSORS ]
 	if content.get('performance_overlay') in WEBCAM_PERFORMANCE_OVERLAYS:
 		webcam_config['performance_overlay'] = content.get('performance_overlay')
 	if content.get('webcam_inline_preview_resolution') in WEBCAM_INLINE_PREVIEW_RESOLUTIONS:

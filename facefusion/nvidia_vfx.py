@@ -10,9 +10,16 @@ from facefusion.types import VisionFrame
 
 NVIDIA_VFX_RESOLVED : bool = False
 NVIDIA_VFX_WARNED : Set[str] = set()
-# Effects are cached per worker thread, so a clear from the ui thread cannot reach them. Bumping a
-# generation counter instead lets every worker notice and rebuild on its next frame
+# Effects used to be cached per worker thread, which cost one sdk load and one set of device buffers
+# per worker and still bought no overlap: the sdk boundary needs a device wide synchronize around
+# every run, so the workers serialized on the driver anyway while each held its own memory. One
+# shared set behind one lock is what that actually amounts to, at a fraction of the memory
+NVIDIA_VFX_EFFECTS : Dict[Any, Any] = {}
+NVIDIA_VFX_LOCK = threading.RLock()
+# A clear from another thread now reaches the effects directly, but the counter still decides
+# whether what is cached predates an option that is fixed at load() time
 NVIDIA_VFX_GENERATION : int = 0
+NVIDIA_VFX_EFFECTS_GENERATION : int = -1
 
 # QualityLevel exposes BICUBIC, a bare LOW/MEDIUM/HIGH/ULTRA ladder for plain upscaling, and
 # prefixed ladders for the other modes. STREAMING only ships MEDIUM and ULTRA
@@ -30,13 +37,6 @@ NVIDIA_FRAME_GENERATION_MODE_VALUES : Dict[str, int] =\
 	'medium': 1,
 	'high': 2
 }
-
-
-class NvidiaVfxContext(threading.local):
-	pass
-
-
-NVIDIA_VFX_CONTEXT = NvidiaVfxContext()
 
 
 def warn_once(warning_key : str, message : str) -> None:
@@ -127,15 +127,17 @@ def resolve_frame_generation_mode(frame_generation_mode : str) -> Any:
 	return NVIDIA_FRAME_GENERATION_MODE_VALUES.get(frame_generation_mode, 1)
 
 
+# Every caller holds NVIDIA_VFX_LOCK, so the dict handed back cannot be rebuilt underneath the
+# effect a caller is about to run
 def resolve_effects() -> Dict[Any, Any]:
-	effects = getattr(NVIDIA_VFX_CONTEXT, 'effects', None)
+	global NVIDIA_VFX_EFFECTS
+	global NVIDIA_VFX_EFFECTS_GENERATION
 
-	if effects is None or getattr(NVIDIA_VFX_CONTEXT, 'generation', None) != NVIDIA_VFX_GENERATION:
-		close_effects(effects)
-		effects = {}
-		NVIDIA_VFX_CONTEXT.effects = effects
-		NVIDIA_VFX_CONTEXT.generation = NVIDIA_VFX_GENERATION
-	return effects
+	if NVIDIA_VFX_EFFECTS_GENERATION != NVIDIA_VFX_GENERATION:
+		close_effects(NVIDIA_VFX_EFFECTS)
+		NVIDIA_VFX_EFFECTS = {}
+		NVIDIA_VFX_EFFECTS_GENERATION = NVIDIA_VFX_GENERATION
+	return NVIDIA_VFX_EFFECTS
 
 
 def close_effects(effects : Optional[Dict[Any, Any]]) -> None:
@@ -210,8 +212,8 @@ def has_device_headroom(required_bytes : int) -> bool:
 	return False
 
 
-# Effect handles carry no documented thread safety guarantee and the streaming executor runs
-# webcam_execution_thread_count workers, so every worker builds and keeps its own
+# Effect handles carry no documented thread safety guarantee, which NVIDIA_VFX_LOCK is what now
+# provides: one worker at a time is inside the effect, from resolve through run to download
 def resolve_super_res_effect(quality_level : Any, strength : float, output_width : int, output_height : int) -> Any:
 	effects = resolve_effects()
 	effect_key = ('super_res', str(quality_level), round(strength, 3), output_width, output_height)
@@ -242,9 +244,12 @@ def resolve_frame_generation_effect(mode : Any, shot_change_detection : bool) ->
 
 
 def clear_nvidia_vfx_effects() -> None:
-	close_effects(getattr(NVIDIA_VFX_CONTEXT, 'effects', None))
-	NVIDIA_VFX_CONTEXT.effects = {}
-	invalidate_nvidia_vfx_effects()
+	global NVIDIA_VFX_EFFECTS
+
+	with NVIDIA_VFX_LOCK:
+		close_effects(NVIDIA_VFX_EFFECTS)
+		NVIDIA_VFX_EFFECTS = {}
+		invalidate_nvidia_vfx_effects()
 
 
 # The sdk documents that its buffers are released and replaced by host operations WITHOUT cuda
@@ -331,18 +336,21 @@ def apply_super_res(vision_frame : VisionFrame, super_res_mode : str, super_res_
 	if not has_device_headroom(estimate_super_res_bytes(width, height, super_res_scale)):
 		return None
 
+	# Held across the whole section: the effect's output buffer belongs to its last run, so a second
+	# worker entering run() would replace the buffer the first is still downloading
 	try:
-		effect = resolve_super_res_effect(quality_level, super_res_strength, width * super_res_scale, height * super_res_scale)
-		device_vision_frame = upload_vision_frame(vision_frame)
-		# The input was written on the array library's stream, so it has to land before run() reads it
-		synchronize_device()
-		# RGB8 stays in blocking mode on purpose: the sdk documents that its RGB8 conversion can run
-		# on stream 0 while inference runs on the given stream, so non_blocking is unsafe here
-		with measure_inference():
-			effect_output = effect.run(device_vision_frame)
-		result_vision_frame, deviation = download_vision_frame(effect_output)
-		# Keeps the input and the output wrapper referenced until the copy above has completed
-		del effect_output, device_vision_frame
+		with NVIDIA_VFX_LOCK:
+			effect = resolve_super_res_effect(quality_level, super_res_strength, width * super_res_scale, height * super_res_scale)
+			device_vision_frame = upload_vision_frame(vision_frame)
+			# The input was written on the array library's stream, so it has to land before run() reads it
+			synchronize_device()
+			# RGB8 stays in blocking mode on purpose: the sdk documents that its RGB8 conversion can run
+			# on stream 0 while inference runs on the given stream, so non_blocking is unsafe here
+			with measure_inference():
+				effect_output = effect.run(device_vision_frame)
+			result_vision_frame, deviation = download_vision_frame(effect_output)
+			# Keeps the input and the output wrapper referenced until the copy above has completed
+			del effect_output, device_vision_frame
 	except Exception as exception:
 		warn_once('super_res', 'nvidia-vfx super resolution failed, leaving the frame untouched: ' + str(exception))
 		return None
@@ -359,14 +367,15 @@ def apply_frame_generation(previous_vision_frame : VisionFrame, vision_frame : V
 		return None
 
 	try:
-		effect = resolve_frame_generation_effect(resolve_frame_generation_mode(frame_generation_mode), shot_change_detection)
-		device_previous_vision_frame = upload_vision_frame(previous_vision_frame)
-		device_vision_frame = upload_vision_frame(vision_frame)
-		synchronize_device()
-		with measure_inference():
-			effect_output = effect.run(device_previous_vision_frame, device_vision_frame)
-		result_vision_frame, deviation = download_vision_frame(effect_output)
-		del effect_output, device_vision_frame, device_previous_vision_frame
+		with NVIDIA_VFX_LOCK:
+			effect = resolve_frame_generation_effect(resolve_frame_generation_mode(frame_generation_mode), shot_change_detection)
+			device_previous_vision_frame = upload_vision_frame(previous_vision_frame)
+			device_vision_frame = upload_vision_frame(vision_frame)
+			synchronize_device()
+			with measure_inference():
+				effect_output = effect.run(device_previous_vision_frame, device_vision_frame)
+			result_vision_frame, deviation = download_vision_frame(effect_output)
+			del effect_output, device_vision_frame, device_previous_vision_frame
 	except Exception as exception:
 		warn_once('frame_generation', 'nvidia-vfx frame generation failed, no frame was interpolated: ' + str(exception) + '. It requires an ada or blackwell gpu')
 		return None

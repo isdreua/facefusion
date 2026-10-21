@@ -155,7 +155,9 @@ class PerformanceOverlay:
 	def _collect_inspector_lines(self, frame_width : int, frame_height : int, timing : Optional[Dict[str, Any]] = None) -> List[Tuple[str, Tuple[int, int, int]]]:
 		inspector_lines : List[Tuple[str, Tuple[int, int, int]]] = []
 
-		threads = state_manager.get_item('execution_thread_count') or 1
+		# The stream runs on the webcam thread count, so reporting the global one named a number no
+		# webcam frame was ever processed with
+		threads = state_manager.get_item('webcam_execution_thread_count') or state_manager.get_item('execution_thread_count') or 1
 		providers = state_manager.get_item('execution_providers') or [ 'cpu' ]
 		prov_str = ', '.join([ p.replace('ExecutionProvider', '').lower() for p in providers ])
 		inspector_lines.append((f'Res: {frame_width}x{frame_height} | Threads: {threads} ({prov_str})', (220, 230, 240)))

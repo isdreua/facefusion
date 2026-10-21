@@ -23,12 +23,13 @@ from facefusion.ffmpeg import open_ffmpeg
 from facefusion.filesystem import has_image, is_directory
 from facefusion.inference_timer import get_inference_timer, reset_inference_timer
 from facefusion.processors.core import get_processors_modules
-from facefusion.types import AudioFrame, Fps, Mask, Resolution, StreamMode, VisionFrame
+from facefusion.types import AppContext, AudioFrame, Fps, Mask, Resolution, StreamMode, VisionFrame
 from facefusion.vision import extract_vision_mask, is_vision_frame, read_static_images, restrict_frame
 from facefusion.webcam_config import DEFAULT_SOURCE_FACE_NAME, NO_SOURCE_FACE_NAME
 
 CONTENT_ANALYSIS_METRICS_LOCK = threading.Lock()
 CONTENT_ANALYSIS_METRICS = { 'runs': 0, 'last_ms': 0.0, 'max_ms': 0.0 }
+WARM_BARRIER_TIMEOUT = 10.0
 
 
 class CameraCaptureThread(threading.Thread):
@@ -215,12 +216,57 @@ def resolve_stream_face_set(stream_face_sets : Dict[str, Dict[str, Any]], source
 	return source_face_name, stream_face_set.get('source_vision_frames') or [], stream_face_set.get('processor_stream_inputs') or {}
 
 
+# Every worker thread that touches nvidia-vfx builds and loads its own effect, which takes seconds,
+# and with ordered output that load stalls every frame behind it: left alone a run freezes once per
+# worker over its first seconds. The warmup moves those loads to one startup pause
+def warm_stream_workers(executor : ThreadPoolExecutor, worker_count : int, processor_modules : List[ModuleType], warm_vision_frame : VisionFrame) -> None:
+	warm_processor_modules = [ processor_module for processor_module in processor_modules if hasattr(processor_module, 'warm_stream_worker') ]
+
+	if not warm_processor_modules or worker_count < 1:
+		return
+	logger.debug('warming ' + str(worker_count) + ' stream workers for ' + ', '.join(processor_module.__name__ for processor_module in warm_processor_modules), __name__)
+	# One task per worker, each holding its thread until every other task has one too, because an
+	# executor hands out threads rather than letting a caller address them: an idle thread would
+	# otherwise take a second task and leave another worker cold
+	warm_barrier = threading.Barrier(worker_count)
+	app_context = detect_app_context()
+	warm_futures = [ executor.submit(warm_stream_worker, warm_barrier, warm_processor_modules, warm_vision_frame, app_context) for _ in range(worker_count) ]
+
+	for warm_future in warm_futures:
+		warm_future.result()
+
+
+def warm_stream_worker(warm_barrier : threading.Barrier, processor_modules : List[ModuleType], warm_vision_frame : VisionFrame, app_context : AppContext) -> None:
+	set_app_context_override(app_context)
+	try:
+		# Timed out rather than waited on forever, so a pool that cannot seat every task still
+		# warms the threads it did seat instead of hanging the stream before its first frame
+		warm_barrier.wait(WARM_BARRIER_TIMEOUT)
+	except threading.BrokenBarrierError:
+		pass
+	try:
+		for processor_module in processor_modules:
+			logger.disable()
+			try:
+				processor_module.warm_stream_worker(warm_vision_frame)
+			except Exception as exception:
+				logger.enable()
+				logger.debug('warming ' + processor_module.__name__ + ' failed, its first frame pays the load instead: ' + str(exception), __name__)
+			finally:
+				logger.enable()
+	finally:
+		set_app_context_override(None)
+
+
 def has_stream_capacity(pending_total : int, buffered_total : int, max_queue_size : int) -> bool:
 	return pending_total < max_queue_size and buffered_total < max_queue_size
 
 
 def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, webcam_execution_thread_count : Optional[int] = None, capture_resolution : Optional[Resolution] = None) -> Iterator[Tuple[VisionFrame, float, bool, Dict[str, Any]]]:
 	webcam_execution_thread_count = webcam_execution_thread_count or state_manager.get_item('execution_thread_count')
+	# Published so the overlay can name the count the stream actually runs on instead of the global
+	# execution thread count, which no webcam frame is processed with
+	state_manager.set_item('webcam_execution_thread_count', webcam_execution_thread_count)
 	max_queue_size = max(1, webcam_execution_thread_count)
 	processor_names = list(state_manager.get_item('processors') or [])
 	source_face_groups_version = state_manager.get_item('source_face_groups_version')
@@ -242,6 +288,7 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 	nsfw_frame_index = 0
 	has_logged_capture_downscale = False
 	is_stream_bypassed = False
+	is_stream_warmed = False
 
 	with tqdm(desc = translator.get('streaming'), unit = 'frame', disable = state_manager.get_item('log_level') in [ 'warn', 'error' ]) as progress:
 		# Add +1 to max_workers to accommodate the background NSFW analysis without stalling frame processing
@@ -266,6 +313,7 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 					stream_face_sets = prepare_stream_face_sets(processor_modules, source_face_groups)
 					source_face_name, source_vision_frames, processor_stream_inputs = resolve_stream_face_set(stream_face_sets, source_face_name)
 					face_analysis_features = collect_stream_face_analysis_features(processor_modules)
+					is_stream_warmed = False
 
 				# 1. Preserve ordered output normally; adaptive mode drops stale work when a newer result is ready
 				if skipping_mode == 'adaptive':
@@ -307,6 +355,12 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 							has_logged_capture_downscale = True
 							logger.debug('camera delivered ' + str(capture_width) + 'x' + str(capture_height) + ' for requested ' + str(capture_resolution[0]) + 'x' + str(capture_resolution[1]) + ', downscaling to the working resolution', __name__)
 						capture_vision_frame = restrict_frame(capture_vision_frame, capture_resolution)
+
+				# Warmed on a real frame at the resolution the workers will see, so each one builds
+				# the effect the stream goes on using rather than a second one on its first frame
+				if not is_stream_warmed and is_vision_frame(capture_vision_frame):
+					is_stream_warmed = True
+					warm_stream_workers(executor, webcam_execution_thread_count, processor_modules, capture_vision_frame)
 
 				# 3. Sample NSFW analysis to ~once per second, only copying/submitting the sampled frame
 				nsfw_frame_index += 1

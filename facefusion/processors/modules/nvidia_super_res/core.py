@@ -107,6 +107,14 @@ def blend_merge_frame(temp_vision_frame : VisionFrame, merge_vision_frame : Visi
 	return blend_frame(temp_vision_frame, merge_vision_frame, nvidia_super_res_blend)
 
 
+# The sdk keeps one effect per thread and its load() takes seconds, so the first frame each stream
+# worker sees would otherwise stall the whole ordered output. The warmup runs the real path on a
+# real frame: a constant frame would trip the blank result guard and disable the effect for the
+# session
+def warm_stream_worker(vision_frame : VisionFrame) -> None:
+	enhance_frame(vision_frame)
+
+
 def process_frame(inputs : NvidiaSuperResInputs) -> ProcessorOutputs:
 	temp_vision_frame = inputs.get('temp_vision_frame')
 	temp_vision_mask = inputs.get('temp_vision_mask')

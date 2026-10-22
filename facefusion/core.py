@@ -44,6 +44,14 @@ def route(args : Args) -> None:
 		error_code = force_download()
 		hard_exit(error_code)
 
+	if state_manager.get_item('command') == 'tensorrt-precache':
+		from facefusion import tensorrt_precache
+
+		if not common_pre_check() or not processors_pre_check():
+			hard_exit(2)
+		error_code = tensorrt_precache.run()
+		hard_exit(error_code)
+
 	if state_manager.get_item('command') == 'benchmark':
 		if not common_pre_check() or not processors_pre_check() or not benchmarker.pre_check():
 			hard_exit(2)

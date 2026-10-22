@@ -169,6 +169,7 @@ LOCALES : Locales =\
 			'batch_run': 'run the program in batch mode',
 			'force_download': 'force automate downloads and exit',
 			'benchmark': 'benchmark the program',
+			'tensorrt_precache': 'build the tensorrt engine cache for the selected processors and exit',
 			'job_id': 'specify the job id',
 			'job_status': 'specify the job status',
 			'step_index': 'specify the step index',

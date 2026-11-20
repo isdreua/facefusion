@@ -58,11 +58,13 @@ class PerformanceOverlay:
 				return (len(timestamps) - 1) / total_elapsed
 		return fallback_rate
 
-	def render(self, vision_frame : VisionFrame, capture_time : float, mode : str = 'simple', is_duplicate : bool = False, timing : Optional[Dict[str, Any]] = None) -> VisionFrame:
+	# A generated frame is delivered like any other but was never processed, so it counts towards
+	# the output rate the same way a re-delivered duplicate does and leaves the processed rate alone
+	def render(self, vision_frame : VisionFrame, capture_time : float, mode : str = 'simple', is_duplicate : bool = False, timing : Optional[Dict[str, Any]] = None, is_generated : bool = False) -> VisionFrame:
 		# The caller must pass an exclusively owned frame because overlays are rendered in place.
 
 		# 1. Render Top-Left Performance HUD
-		vision_frame = self._render_performance_hud(vision_frame, capture_time, is_duplicate)
+		vision_frame = self._render_performance_hud(vision_frame, capture_time, is_duplicate or is_generated, timing)
 
 		# 2. Render Top-Right Pipeline Inspector HUD if advanced mode is enabled
 		if mode == 'advanced':
@@ -70,8 +72,14 @@ class PerformanceOverlay:
 
 		return vision_frame
 
-	def _render_performance_hud(self, vision_frame : VisionFrame, capture_time : float, is_duplicate : bool = False) -> VisionFrame:
+	def _render_performance_hud(self, vision_frame : VisionFrame, capture_time : float, is_duplicate : bool = False, timing : Optional[Dict[str, Any]] = None) -> VisionFrame:
 		instant_fps, avg_fps, instant_lat, avg_lat, output_fps = self.update(capture_time, is_duplicate)
+		writer_stats = (timing or {}).get('writer_stats') or {}
+		frame_generation_stats = (timing or {}).get('frame_generation') or {}
+		# What the transport actually wrote, repeats excluded, is the rate that reaches the screen; the
+		# rate frames reach this overlay is only the fallback for the inline preview, which has no writer
+		if writer_stats.get('written_fps'):
+			output_fps = writer_stats.get('written_fps')
 		frame_height, frame_width = vision_frame.shape[:2]
 
 		box_x, box_y = 12, 12
@@ -98,6 +106,12 @@ class PerformanceOverlay:
 
 		# Metrics Readout, reporting the rate at which frames get processed rather than delivered
 		fps_text = f'FPS: {instant_fps:5.1f}  (Avg: {avg_fps:4.1f})'
+		# A generator that gave up or never found the sdk is named as such, so an output rate equal to
+		# the processed one is not mistaken for frame generation running
+		if frame_generation_stats.get('mode') in [ 'failed', 'unavailable' ]:
+			fps_text = f'FPS: {instant_fps:5.1f} (Avg: {avg_fps:4.1f}) FG {frame_generation_stats.get("mode").upper()}'
+		elif frame_generation_stats.get('mode', 'none') != 'none':
+			fps_text = f'FPS: {instant_fps:5.1f} (Avg: {avg_fps:4.1f}) FG {output_fps:5.1f}'
 		p95_latency = float(numpy.percentile(self.latencies, 95)) if self.latencies else instant_lat
 		lat_text = f'PIPE: {instant_lat:5.1f}ms (P95: {p95_latency:4.1f}ms)'
 		# One per line: side by side they were placed at a fixed offset that assumed a shorter
@@ -204,6 +218,15 @@ class PerformanceOverlay:
 		selector_mode = state_manager.get_item('face_selector_mode') or 'one'
 		skipping_mode = state_manager.get_item('webcam_frame_skipping') or 'adaptive'
 		inspector_lines.append((f'Selector: {selector_mode} | Skipping: {skipping_mode}', (220, 230, 240)))
+
+		# Generation is timed on the delivery loop, so its cost lands on top of the pipeline latency
+		# rather than inside the processing time above
+		frame_generation_stats = (timing or {}).get('frame_generation') or {}
+		if frame_generation_stats.get('mode', 'none') != 'none':
+			inspector_lines.append((f'Frame gen: {frame_generation_stats.get("mode")} | {frame_generation_stats.get("last_ms", 0.0):.1f} ms | gen {frame_generation_stats.get("generated", 0)} skip {frame_generation_stats.get("skipped", 0)}', (200, 140, 255)))
+		writer_stats = (timing or {}).get('writer_stats') or {}
+		if writer_stats:
+			inspector_lines.append((f'Writer: {writer_stats.get("written_fps", 0.0):.1f} fps | gen {writer_stats.get("generated", 0)} | drop {writer_stats.get("replaced", 0)} | rep {writer_stats.get("repeated", 0)}', (200, 140, 255)))
 
 		# Active Processors and Models
 		processors : List[str] = state_manager.get_item('processors') or []

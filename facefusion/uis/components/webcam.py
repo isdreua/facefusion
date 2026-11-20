@@ -7,6 +7,7 @@ import gradio
 from facefusion import logger, state_manager, translator
 from facefusion.camera_manager import clear_camera_pool, get_local_camera_capture
 from facefusion.filesystem import has_image
+from facefusion.frame_generator import StreamFrameGenerator, resolve_output_fps
 from facefusion.overlay import PERFORMANCE_OVERLAY
 from facefusion.streamer import apply_stream_face_selector_mode, multi_process_capture, open_stream, resolve_source_face_groups
 from facefusion.stream_writer import LatestFrameWriter
@@ -167,6 +168,9 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 	camera_capture = get_local_camera_capture(webcam_device_id, webcam_width, webcam_height, webcam_fps, webcam_camera_backend)
 	stream_writer = None
 	window_stream = None
+	# The camera keeps its own rate; only the transport runs at the generated one
+	output_fps = resolve_output_fps(webcam_fps)
+	frame_generator = StreamFrameGenerator()
 	# Headless says so and exits; the browser layout used to just hand back an empty image, leaving
 	# a failed camera indistinguishable from a stream that produced nothing
 	if not camera_capture or not camera_capture.isOpened():
@@ -174,22 +178,30 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 	if camera_capture and camera_capture.isOpened():
 		try:
 			if webcam_mode in [ 'udp', 'v4l2' ]:
-				stream_writer = LatestFrameWriter(lambda: open_stream(webcam_mode, output_resolution, webcam_fps), output_width, output_height, webcam_mode == 'v4l2', webcam_fps) #type:ignore[arg-type]
+				stream_writer = LatestFrameWriter(lambda: open_stream(webcam_mode, output_resolution, output_fps), output_width, output_height, webcam_mode == 'v4l2', output_fps) #type:ignore[arg-type]
 				stream_writer.start()
 			# Created here rather than inside the factory so that poll_events stays reachable from
 			# this loop and a broken pygame fails before the camera is opened. repeat_latest is off
 			# because the window goes on showing the last frame by itself
 			if webcam_mode == 'window':
-				window_stream = WindowStream(output_width, output_height, webcam_fps, 'FaceFusion', state_manager.get_item('webcam_window_fullscreen'))
-				stream_writer = LatestFrameWriter(lambda: window_stream, output_width, output_height, False, webcam_fps)
+				window_stream = WindowStream(output_width, output_height, output_fps, 'FaceFusion', state_manager.get_item('webcam_window_fullscreen'))
+				stream_writer = LatestFrameWriter(lambda: window_stream, output_width, output_height, False, output_fps)
 				stream_writer.start()
 			for capture_vision_frame, capture_time, is_duplicate, timing in multi_process_capture(camera_capture, webcam_fps, webcam_execution_thread_count, (webcam_width, webcam_height)):
 				capture_vision_frame = cv2.cvtColor(capture_vision_frame, cv2.COLOR_BGR2RGB)
 				capture_vision_frame = fit_cover_frame(capture_vision_frame, (output_width, output_height))
+				# Here and not in the workers: this loop sees the frames one at a time in delivery
+				# order, and before the overlay so the hud is never blended between two readings. The
+				# inline preview has no writer to pace a generated frame, so it never gets one
+				generated_vision_frame = frame_generator.generate(capture_vision_frame, is_duplicate) if stream_writer else None
 				timing['post_processing_finished'] = time.perf_counter()
 
 				overlay_mode = state_manager.get_item('webcam_performance_overlay')
 				if overlay_mode in [ 'simple', 'advanced' ]:
+					timing['frame_generation'] = frame_generator.get_stats()
+					timing['writer_stats'] = stream_writer.get_stats() if stream_writer else None
+					if generated_vision_frame is not None:
+						generated_vision_frame = PERFORMANCE_OVERLAY.render(generated_vision_frame, capture_time, overlay_mode, is_duplicate, timing, True)
 					capture_vision_frame = PERFORMANCE_OVERLAY.render(capture_vision_frame, capture_time, overlay_mode, is_duplicate, timing)
 
 				if webcam_mode == 'inline':
@@ -197,7 +209,7 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 						capture_vision_frame = restrict_frame(capture_vision_frame, unpack_resolution(inline_preview_resolution))
 					yield capture_vision_frame
 				if stream_writer:
-					stream_writer.submit(capture_vision_frame, timing)
+					stream_writer.submit(capture_vision_frame, timing, generated_vision_frame)
 				if window_stream and not apply_window_intents(window_stream):
 					break
 		finally:

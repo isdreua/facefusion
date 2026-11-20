@@ -27,6 +27,7 @@ DEFAULT_WEBCAM_CONFIG : Dict[str, Any] =\
 	'webcam_camera_backend': 'auto',
 	'webcam_output_resolution': 'copy',
 	'webcam_window_fullscreen': False,
+	'webcam_frame_generation': 'none',
 	'webcam_source_faces': {},
 	'webcam_source_faces_directory': None,
 	'webcam_source_face': None
@@ -42,6 +43,9 @@ WEBCAM_FRAME_SKIPPING_MODES = [ 'adaptive', 'disabled', '1-in-2', '1-in-3' ]
 # way; this only sets how much of the device it is allowed to take while it does
 WEBCAM_CONTENT_ANALYSIS_INTERVALS = list(range(1, 31))
 WEBCAM_PERFORMANCE_OVERLAYS = [ 'none', 'simple', 'advanced' ]
+# NVIDIA frame generation quality, or none. It needs an ada or blackwell gpu and the nvidia-vfx
+# bindings, and it only reaches the outputs that have a writer, so the inline preview never gets it
+WEBCAM_FRAME_GENERATION_MODES = [ 'none', 'low', 'medium', 'high' ]
 # Processors skipped for the frame while staying loaded on the device, so a comparison costs a
 # click rather than a model reload. Read off the modules directory the same way the processors
 # checkbox group does, so the two lists cannot disagree; a name that is not in the running chain is
@@ -69,7 +73,8 @@ WEBCAM_CONFIG_OPTIONS =\
 	'webcam_execution_thread_count': list(range(1, 9)),
 	'webcam_camera_backend': WEBCAM_CAMERA_BACKENDS,
 	'webcam_output_resolution': WEBCAM_OUTPUT_RESOLUTIONS,
-	'webcam_window_fullscreen': [ True, False ]
+	'webcam_window_fullscreen': [ True, False ],
+	'webcam_frame_generation': WEBCAM_FRAME_GENERATION_MODES
 }
 # These settings reach code that needs a fixed length tuple, and create_box_mask is lru_cached so a
 # list is not even hashable; args.py normalizes them on the cli path and this path must match
@@ -135,6 +140,8 @@ def load_webcam_config(config_path : str) -> Dict[str, Any]:
 		webcam_config['webcam_output_resolution'] = content.get('webcam_output_resolution')
 	if isinstance(content.get('webcam_window_fullscreen'), bool):
 		webcam_config['webcam_window_fullscreen'] = content.get('webcam_window_fullscreen')
+	if content.get('webcam_frame_generation') in WEBCAM_FRAME_GENERATION_MODES:
+		webcam_config['webcam_frame_generation'] = content.get('webcam_frame_generation')
 	if isinstance(content.get('webcam_source_faces_directory'), str):
 		webcam_config['webcam_source_faces_directory'] = content.get('webcam_source_faces_directory')
 	source_faces = resolve_source_face_directory(webcam_config.get('webcam_source_faces_directory'))

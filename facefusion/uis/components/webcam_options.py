@@ -10,7 +10,7 @@ from facefusion.uis import choices as uis_choices
 from facefusion.streamer import apply_stream_source_paths, resolve_source_face_groups
 from facefusion.types import WebcamMode
 from facefusion.uis.core import get_ui_component, register_ui_component
-from facefusion.webcam_config import DEFAULT_SOURCE_FACE_NAME, NO_SOURCE_FACE_NAME, WEBCAM_BYPASSED_PROCESSORS, WEBCAM_CAMERA_BACKENDS, WEBCAM_CONTENT_ANALYSIS_INTERVALS, WEBCAM_FRAME_SKIPPING_MODES, WEBCAM_INLINE_PREVIEW_RESOLUTIONS, WEBCAM_OUTPUT_RESOLUTIONS, WEBCAM_PERFORMANCE_OVERLAYS, WEBCAM_STATE_KEYS, format_webcam_config, get_source_faces, load_webcam_config, resolve_source_face_directory
+from facefusion.webcam_config import DEFAULT_SOURCE_FACE_NAME, NO_SOURCE_FACE_NAME, WEBCAM_BYPASSED_PROCESSORS, WEBCAM_CAMERA_BACKENDS, WEBCAM_CONTENT_ANALYSIS_INTERVALS, WEBCAM_FRAME_GENERATION_MODES, WEBCAM_FRAME_SKIPPING_MODES, WEBCAM_INLINE_PREVIEW_RESOLUTIONS, WEBCAM_OUTPUT_RESOLUTIONS, WEBCAM_PERFORMANCE_OVERLAYS, WEBCAM_STATE_KEYS, format_webcam_config, get_source_faces, load_webcam_config, resolve_source_face_directory
 from facefusion.window_output import has_window_output, log_window_output_requirement
 
 WEBCAM_DEVICE_ID_DROPDOWN : Optional[gradio.Dropdown] = None
@@ -19,6 +19,7 @@ WEBCAM_RESOLUTION_DROPDOWN : Optional[gradio.Dropdown] = None
 WEBCAM_FPS_SLIDER : Optional[gradio.Slider] = None
 WEBCAM_PERFORMANCE_OVERLAY_RADIO : Optional[gradio.Radio] = None
 WEBCAM_FRAME_SKIPPING_RADIO : Optional[gradio.Radio] = None
+WEBCAM_FRAME_GENERATION_RADIO : Optional[gradio.Radio] = None
 WEBCAM_CONTENT_ANALYSIS_INTERVAL_SLIDER : Optional[gradio.Slider] = None
 WEBCAM_BYPASSED_PROCESSORS_CHECKBOX_GROUP : Optional[gradio.CheckboxGroup] = None
 WEBCAM_INLINE_PREVIEW_RESOLUTION_DROPDOWN : Optional[gradio.Dropdown] = None
@@ -41,6 +42,7 @@ def render() -> None:
 	global WEBCAM_FPS_SLIDER
 	global WEBCAM_PERFORMANCE_OVERLAY_RADIO
 	global WEBCAM_FRAME_SKIPPING_RADIO
+	global WEBCAM_FRAME_GENERATION_RADIO
 	global WEBCAM_CONTENT_ANALYSIS_INTERVAL_SLIDER
 	global WEBCAM_BYPASSED_PROCESSORS_CHECKBOX_GROUP
 	global WEBCAM_INLINE_PREVIEW_RESOLUTION_DROPDOWN
@@ -72,6 +74,7 @@ def render() -> None:
 	state_manager.init_item('webcam_performance_overlay', webcam_config.get('performance_overlay'))
 	state_manager.init_item('webcam_stream_bypass', False)
 	state_manager.init_item('webcam_window_fullscreen', webcam_config.get('webcam_window_fullscreen'))
+	state_manager.init_item('webcam_frame_generation', webcam_config.get('webcam_frame_generation'))
 	WEBCAM_DEVICE_ID_DROPDOWN = gradio.Dropdown(
 		value = webcam_device_id,
 		label = translator.get('uis.webcam_device_id_dropdown'),
@@ -117,6 +120,14 @@ def render() -> None:
 		label = translator.get('uis.webcam_frame_skipping_radio'),
 		choices = WEBCAM_FRAME_SKIPPING_MODES,
 		value = webcam_config.get('frame_skipping')
+	)
+	# Read from state like the fullscreen checkbox, so it stays off start()'s signature. The quality
+	# applies to the running stream, while turning it on or off takes effect on the next start because
+	# the output rate is fixed when the transport opens
+	WEBCAM_FRAME_GENERATION_RADIO = gradio.Radio(
+		label = translator.get('uis.webcam_frame_generation_radio'),
+		choices = WEBCAM_FRAME_GENERATION_MODES,
+		value = webcam_config.get('webcam_frame_generation')
 	)
 	WEBCAM_CONTENT_ANALYSIS_INTERVAL_SLIDER = gradio.Slider(
 		label = translator.get('uis.webcam_content_analysis_interval_slider'),
@@ -184,6 +195,7 @@ def render() -> None:
 	register_ui_component('webcam_fps_slider', WEBCAM_FPS_SLIDER)
 	register_ui_component('webcam_performance_overlay_radio', WEBCAM_PERFORMANCE_OVERLAY_RADIO)
 	register_ui_component('webcam_frame_skipping_radio', WEBCAM_FRAME_SKIPPING_RADIO)
+	register_ui_component('webcam_frame_generation_radio', WEBCAM_FRAME_GENERATION_RADIO)
 	register_ui_component('webcam_content_analysis_interval_slider', WEBCAM_CONTENT_ANALYSIS_INTERVAL_SLIDER)
 	register_ui_component('webcam_bypassed_processors_checkbox_group', WEBCAM_BYPASSED_PROCESSORS_CHECKBOX_GROUP)
 	register_ui_component('webcam_inline_preview_resolution_dropdown', WEBCAM_INLINE_PREVIEW_RESOLUTION_DROPDOWN)
@@ -202,6 +214,8 @@ def listen() -> None:
 		WEBCAM_PERFORMANCE_OVERLAY_RADIO.change(update_performance_overlay, inputs = WEBCAM_PERFORMANCE_OVERLAY_RADIO)
 	if WEBCAM_FRAME_SKIPPING_RADIO:
 		WEBCAM_FRAME_SKIPPING_RADIO.change(update_frame_skipping, inputs = WEBCAM_FRAME_SKIPPING_RADIO)
+	if WEBCAM_FRAME_GENERATION_RADIO:
+		WEBCAM_FRAME_GENERATION_RADIO.change(update_frame_generation, inputs = WEBCAM_FRAME_GENERATION_RADIO)
 	if WEBCAM_CONTENT_ANALYSIS_INTERVAL_SLIDER:
 		WEBCAM_CONTENT_ANALYSIS_INTERVAL_SLIDER.change(update_content_analysis_interval, inputs = WEBCAM_CONTENT_ANALYSIS_INTERVAL_SLIDER)
 	if WEBCAM_BYPASSED_PROCESSORS_CHECKBOX_GROUP:
@@ -237,6 +251,10 @@ def update_performance_overlay(performance_overlay : str) -> None:
 
 def update_frame_skipping(frame_skipping : str) -> None:
 	state_manager.set_item('webcam_frame_skipping', frame_skipping)
+
+
+def update_frame_generation(frame_generation : str) -> None:
+	state_manager.set_item('webcam_frame_generation', frame_generation)
 
 
 # Read per iteration by the capture loop, so a change applies to the running stream
@@ -299,6 +317,7 @@ def generate_config(webcam_device_id : str, webcam_mode : str, webcam_resolution
 		'webcam_camera_backend': webcam_camera_backend,
 		'webcam_output_resolution': webcam_output_resolution,
 		'webcam_window_fullscreen': bool(state_manager.get_item('webcam_window_fullscreen')),
+		'webcam_frame_generation': state_manager.get_item('webcam_frame_generation'),
 		'webcam_source_faces': { face_name: source_paths for face_name, source_paths in source_face_groups.items() if face_name not in directory_source_faces },
 		'webcam_source_faces_directory': source_face_directory,
 		'webcam_source_face': state_manager.get_item('source_face_name')

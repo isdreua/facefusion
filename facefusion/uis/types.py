@@ -93,6 +93,7 @@ ComponentName = Literal\
 	'webcam_mode_radio',
 	'webcam_resolution_dropdown',
 	'webcam_window_fullscreen_checkbox',
+	'webcam_frame_generation_radio',
 	'webcam_window_hint_markdown'
 ]
 Component : TypeAlias = Any

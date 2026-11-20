@@ -235,14 +235,23 @@ def resolve_super_res_effect(quality_level : Any, strength : float, output_width
 	return effects.get(effect_key)
 
 
-def resolve_frame_generation_effect(mode : Any, shot_change_detection : bool) -> Any:
+# The frame size is fixed at load() like the super resolution output size is, so it is part of the
+# key: a stream at another output resolution builds its own effect rather than feeding this one
+def resolve_frame_generation_effect(mode : Any, shot_change_detection : bool, input_width : int, input_height : int) -> Any:
 	effects = resolve_effects()
-	effect_key = ('frame_generation', str(mode), shot_change_detection)
+	effect_key = ('frame_generation', str(mode), shot_change_detection, input_width, input_height)
 
 	if effect_key not in effects:
 		vfx_module = resolve_vfx_module()
 		execution_device_ids = state_manager.get_item('execution_device_ids') or [ 0 ]
 		effect = vfx_module.VideoFrameGeneration(mode, shot_change_detection, execution_device_ids[0])
+		effect.input_width = input_width
+		effect.input_height = input_height
+		# The interpolated frame has the size of the two it sits between. Only set where the binding
+		# exposes it, since load() asks for the input size alone
+		if hasattr(effect, 'output_width') and hasattr(effect, 'output_height'):
+			effect.output_width = input_width
+			effect.output_height = input_height
 		effect.load()
 		effects[effect_key] = effect
 	return effects.get(effect_key)
@@ -397,7 +406,8 @@ def apply_frame_generation(previous_vision_frame : VisionFrame, vision_frame : V
 	try:
 		with NVIDIA_VFX_LOCK:
 			with_deviation = needs_blank_check('frame_generation')
-			effect = resolve_frame_generation_effect(resolve_frame_generation_mode(frame_generation_mode), shot_change_detection)
+			vision_frame_height, vision_frame_width = vision_frame.shape[:2]
+			effect = resolve_frame_generation_effect(resolve_frame_generation_mode(frame_generation_mode), shot_change_detection, vision_frame_width, vision_frame_height)
 			device_previous_vision_frame = upload_vision_frame(previous_vision_frame)
 			device_vision_frame = upload_vision_frame(vision_frame)
 			synchronize_device()

@@ -6,6 +6,7 @@ import cv2
 from facefusion import logger, state_manager
 from facefusion.camera_manager import clear_camera_pool, get_local_camera_capture
 from facefusion.common_helper import get_first
+from facefusion.frame_generator import StreamFrameGenerator, resolve_output_fps
 from facefusion.overlay import PERFORMANCE_OVERLAY
 from facefusion.streamer import apply_stream_face_selector_mode, apply_stream_source_paths, multi_process_capture, open_stream
 from facefusion.stream_writer import LatestFrameWriter
@@ -46,6 +47,7 @@ def run() -> int:
 	state_manager.init_item('webcam_content_analysis_interval', webcam_config.get('content_analysis_interval'))
 	state_manager.init_item('webcam_bypassed_processors', webcam_config.get('bypassed_processors'))
 	state_manager.init_item('webcam_performance_overlay', webcam_config.get('performance_overlay'))
+	state_manager.init_item('webcam_frame_generation', webcam_config.get('webcam_frame_generation'))
 	apply_stream_face_selector_mode()
 	state_manager.sync_state()
 	webcam_width, webcam_height = unpack_resolution(webcam_resolution)
@@ -66,23 +68,34 @@ def run() -> int:
 		logger.error('webcam device could not be opened', __name__)
 		return 1
 
+	# The camera keeps its own rate; only the transport runs at the generated one
+	output_fps = resolve_output_fps(webcam_fps)
+	frame_generator = StreamFrameGenerator()
+
 	try:
 		# The window is the control channel headless never had: it carries the hotkeys that switch
 		# the source face mid run, which no config file can do
 		if webcam_mode == 'window':
-			window_stream = WindowStream(output_width, output_height, webcam_fps, 'FaceFusion', webcam_config.get('webcam_window_fullscreen'))
-			stream_writer = LatestFrameWriter(lambda: window_stream, output_width, output_height, False, webcam_fps)
+			window_stream = WindowStream(output_width, output_height, output_fps, 'FaceFusion', webcam_config.get('webcam_window_fullscreen'))
+			stream_writer = LatestFrameWriter(lambda: window_stream, output_width, output_height, False, output_fps)
 		else:
-			stream_writer = LatestFrameWriter(lambda: open_stream(webcam_mode, output_resolution, webcam_fps), output_width, output_height, webcam_mode == 'v4l2', webcam_fps)
+			stream_writer = LatestFrameWriter(lambda: open_stream(webcam_mode, output_resolution, output_fps), output_width, output_height, webcam_mode == 'v4l2', output_fps)
 		stream_writer.start()
 		for capture_vision_frame, capture_time, is_duplicate, timing in multi_process_capture(camera_capture, webcam_fps, webcam_execution_thread_count, (webcam_width, webcam_height)):
 			capture_vision_frame = cv2.cvtColor(capture_vision_frame, cv2.COLOR_BGR2RGB)
 			capture_vision_frame = fit_cover_frame(capture_vision_frame, (output_width, output_height))
+			# Here and not in the workers: this loop sees the frames one at a time in delivery order,
+			# and before the overlay so the hud is never blended between two readings
+			generated_vision_frame = frame_generator.generate(capture_vision_frame, is_duplicate)
 			timing['post_processing_finished'] = time.perf_counter()
 			overlay_mode = state_manager.get_item('webcam_performance_overlay')
 			if overlay_mode in [ 'simple', 'advanced' ]:
+				timing['frame_generation'] = frame_generator.get_stats()
+				timing['writer_stats'] = stream_writer.get_stats()
+				if generated_vision_frame is not None:
+					generated_vision_frame = PERFORMANCE_OVERLAY.render(generated_vision_frame, capture_time, overlay_mode, is_duplicate, timing, True)
 				capture_vision_frame = PERFORMANCE_OVERLAY.render(capture_vision_frame, capture_time, overlay_mode, is_duplicate, timing)
-			stream_writer.submit(capture_vision_frame, timing)
+			stream_writer.submit(capture_vision_frame, timing, generated_vision_frame)
 			if window_stream and not apply_window_intents(window_stream):
 				break
 	finally:

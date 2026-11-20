@@ -234,6 +234,8 @@ class PerformanceOverlay:
 			inspector_lines.append(('Active Processors: None (Pass-through)', (140, 160, 180)))
 		else:
 			bypassed_processors = state_manager.get_item('webcam_bypassed_processors') or []
+			from facefusion.streamer import get_stream_skipped_processors
+			skipped_processors = get_stream_skipped_processors()
 			for proc in processors[:3]:
 				model_key = f'{proc}_model'
 				model_val = state_manager.get_item(model_key)
@@ -252,7 +254,10 @@ class PerformanceOverlay:
 					text = f'{proc_name}: Active'
 				# A bypassed processor is still loaded and still listed, so without this the panel
 				# would name a model that is not touching the frame
-				if proc in bypassed_processors:
+				# Left out when the stream started, so like a bypassed one it is not touching the frame
+				if proc in skipped_processors:
+					inspector_lines.append((f'{text} [NOT IN STREAM]', (80, 120, 255)))
+				elif proc in bypassed_processors:
 					inspector_lines.append((f'{text} [BYPASSED]', (140, 160, 180)))
 				else:
 					inspector_lines.append((text, (0, 255, 200)))

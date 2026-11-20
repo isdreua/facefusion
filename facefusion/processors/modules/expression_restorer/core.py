@@ -127,10 +127,10 @@ def pre_check() -> bool:
 	return conditional_download_hashes(model_hash_set) and conditional_download_sources(model_source_set)
 
 
+# Allowed in the stream: the camera frame is the target whose expression is restored onto the swapped
+# face, the same pairing a video frame gets. Upstream refused it there, most likely for its cost of
+# three liveportrait models per face per frame, which the overlay now makes visible instead
 def pre_process(mode : ProcessMode) -> bool:
-	if mode == 'stream':
-		logger.error(translator.get('stream_not_supported') + translator.get('exclamation_mark'), __name__)
-		return False
 	if mode in [ 'output', 'preview' ] and not is_image(state_manager.get_item('target_path')) and not is_video(state_manager.get_item('target_path')):
 		logger.error(translator.get('choose_image_or_video_target') + translator.get('exclamation_mark'), __name__)
 		return False

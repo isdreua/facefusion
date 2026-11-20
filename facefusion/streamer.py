@@ -33,6 +33,14 @@ from facefusion.webcam_config import DEFAULT_SOURCE_FACE_NAME, NO_SOURCE_FACE_NA
 CONTENT_ANALYSIS_METRICS_LOCK = threading.Lock()
 CONTENT_ANALYSIS_METRICS = { 'runs': 0, 'last_ms': 0.0, 'max_ms': 0.0 }
 WARM_BARRIER_TIMEOUT = 10.0
+# The processors the running stream left out because their stream check failed, so the overlay can
+# tell a processor that is selected from one that is actually touching the frame
+STREAM_SKIPPED_PROCESSORS : List[str] = []
+STREAM_SKIPPED_PROCESSOR_HINTS : Dict[str, str] =\
+{
+	'face_swapper': ': it needs a source image with a detectable face',
+	'lip_syncer': ': it needs an audio file among the sources, and the stream has no live microphone so it would sync to silence'
+}
 
 
 # A frame older than the one the output has already shown is certain to be dropped: the scheduler
@@ -108,9 +116,13 @@ def get_content_analysis_metrics() -> Dict[str, float]:
 		return dict(CONTENT_ANALYSIS_METRICS)
 
 
+# The processors' own reasons stay muted because they are worded for a file run, but a processor that
+# is left out is named: dropping one silently made toggling it in the browser look like it did nothing.
+# Only runs on start and on a change of the processor selection, so the warning cannot repeat per frame
 def validate_stream_processors(processor_names : List[str]) -> List[ModuleType]:
 	processor_modules = get_processors_modules(processor_names)
 	validated_processor_modules = []
+	skipped_processor_names = []
 
 	for processor_module in processor_modules:
 		logger.disable()
@@ -120,8 +132,17 @@ def validate_stream_processors(processor_names : List[str]) -> List[ModuleType]:
 			logger.enable()
 		if is_processor_ready:
 			validated_processor_modules.append(processor_module)
+		else:
+			skipped_processor_names.append(resolve_processor_name(processor_module))
 
+	for processor_name in skipped_processor_names:
+		logger.warn(processor_name + ' cannot run in the webcam stream with the current settings and was left out' + STREAM_SKIPPED_PROCESSOR_HINTS.get(processor_name, ''), __name__)
+	STREAM_SKIPPED_PROCESSORS[:] = skipped_processor_names
 	return validated_processor_modules
+
+
+def get_stream_skipped_processors() -> List[str]:
+	return list(STREAM_SKIPPED_PROCESSORS)
 
 
 def prepare_stream_inputs(processor_modules : List[ModuleType], source_vision_frames : List[VisionFrame]) -> Dict[str, Dict[str, Any]]:

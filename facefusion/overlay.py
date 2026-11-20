@@ -227,6 +227,10 @@ class PerformanceOverlay:
 		writer_stats = (timing or {}).get('writer_stats') or {}
 		if writer_stats:
 			inspector_lines.append((f'Writer: {writer_stats.get("written_fps", 0.0):.1f} fps | gen {writer_stats.get("generated", 0)} | drop {writer_stats.get("replaced", 0)} | rep {writer_stats.get("repeated", 0)}', (200, 140, 255)))
+			# The paced writer holds frames back by this much past their capture, on top of what the
+			# pipeline latency above shows, and lets go of frames whose slot had already passed
+			if writer_stats.get('pacing_delay_ms'):
+				inspector_lines.append((f'Pacing: hold {writer_stats.get("pacing_delay_ms"):.1f} ms after capture | late {writer_stats.get("late", 0)}', (200, 140, 255)))
 
 		# Active Processors and Models
 		processors : List[str] = state_manager.get_item('processors') or []

@@ -10,7 +10,7 @@ from facefusion.uis import choices as uis_choices
 from facefusion.streamer import apply_stream_source_paths, resolve_source_face_groups
 from facefusion.types import WebcamMode
 from facefusion.uis.core import get_ui_component, register_ui_component
-from facefusion.webcam_config import DEFAULT_SOURCE_FACE_NAME, NO_SOURCE_FACE_NAME, WEBCAM_BYPASSED_PROCESSORS, WEBCAM_CAMERA_BACKENDS, WEBCAM_CONTENT_ANALYSIS_INTERVALS, WEBCAM_FRAME_GENERATION_MODES, WEBCAM_FRAME_SKIPPING_MODES, WEBCAM_INLINE_PREVIEW_RESOLUTIONS, WEBCAM_OUTPUT_RESOLUTIONS, WEBCAM_PERFORMANCE_OVERLAYS, WEBCAM_STATE_KEYS, format_webcam_config, get_source_faces, load_webcam_config, resolve_source_face_directory
+from facefusion.webcam_config import DEFAULT_SOURCE_FACE_NAME, NO_SOURCE_FACE_NAME, WEBCAM_BYPASSED_PROCESSORS, WEBCAM_CAMERA_BACKENDS, WEBCAM_CONTENT_ANALYSIS_INTERVALS, WEBCAM_FRAME_GENERATION_MODES, WEBCAM_FRAME_SKIPPING_MODES, WEBCAM_INLINE_PREVIEW_RESOLUTIONS, WEBCAM_OUTPUT_RESOLUTIONS, WEBCAM_PERFORMANCE_OVERLAYS, WEBCAM_STATE_KEYS, format_webcam_config, normalize_webcam_resolution, get_source_faces, load_webcam_config, resolve_source_face_directory
 from facefusion.window_output import has_window_output, log_window_output_requirement
 
 WEBCAM_DEVICE_ID_DROPDOWN : Optional[gradio.Dropdown] = None
@@ -99,10 +99,13 @@ def render() -> None:
 		value = translator.get('uis.webcam_window_hint_markdown'),
 		visible = not has_window_output()
 	)
+	# Typed values are allowed so a camera mode outside the presets can be asked for; what is typed is
+	# normalized or refused on change, since unpack_resolution would otherwise fail on start
 	WEBCAM_RESOLUTION_DROPDOWN = gradio.Dropdown(
 		label = translator.get('uis.webcam_resolution_dropdown'),
 		choices = uis_choices.webcam_resolutions,
-		value = webcam_config.get('resolution')
+		value = webcam_config.get('resolution'),
+		allow_custom_value = True
 	)
 	WEBCAM_FPS_SLIDER = gradio.Slider(
 		label = translator.get('uis.webcam_fps_slider'),
@@ -214,6 +217,8 @@ def listen() -> None:
 		WEBCAM_PERFORMANCE_OVERLAY_RADIO.change(update_performance_overlay, inputs = WEBCAM_PERFORMANCE_OVERLAY_RADIO)
 	if WEBCAM_FRAME_SKIPPING_RADIO:
 		WEBCAM_FRAME_SKIPPING_RADIO.change(update_frame_skipping, inputs = WEBCAM_FRAME_SKIPPING_RADIO)
+	if WEBCAM_RESOLUTION_DROPDOWN:
+		WEBCAM_RESOLUTION_DROPDOWN.change(update_webcam_resolution, inputs = WEBCAM_RESOLUTION_DROPDOWN, outputs = WEBCAM_RESOLUTION_DROPDOWN)
 	if WEBCAM_FRAME_GENERATION_RADIO:
 		WEBCAM_FRAME_GENERATION_RADIO.change(update_frame_generation, inputs = WEBCAM_FRAME_GENERATION_RADIO)
 	if WEBCAM_CONTENT_ANALYSIS_INTERVAL_SLIDER:
@@ -251,6 +256,17 @@ def update_performance_overlay(performance_overlay : str) -> None:
 
 def update_frame_skipping(frame_skipping : str) -> None:
 	state_manager.set_item('webcam_frame_skipping', frame_skipping)
+
+
+# Rewritten into the WIDTHxHEIGHT form, which fires one more change with a value that already
+# normalizes to itself and so settles. A value that cannot be used goes back to the configured one
+def update_webcam_resolution(webcam_resolution : str) -> gradio.Dropdown:
+	normalized_webcam_resolution = normalize_webcam_resolution(webcam_resolution)
+
+	if normalized_webcam_resolution:
+		return gradio.Dropdown(value = normalized_webcam_resolution)
+	gradio.Warning(translator.get('uis.webcam_resolution_invalid').format(resolution = webcam_resolution))
+	return gradio.Dropdown(value = load_webcam_config(state_manager.get_item('webcam_config')).get('resolution'))
 
 
 def update_frame_generation(frame_generation : str) -> None:
@@ -306,7 +322,7 @@ def generate_config(webcam_device_id : str, webcam_mode : str, webcam_resolution
 		'device_id': int(webcam_device_id) if str(webcam_device_id).isdigit() else 0,
 		'mode': webcam_mode,
 		'headless_mode': webcam_config.get('headless_mode'),
-		'resolution': webcam_resolution,
+		'resolution': normalize_webcam_resolution(webcam_resolution) or webcam_config.get('resolution'),
 		'fps': int(webcam_fps),
 		'frame_skipping': webcam_frame_skipping,
 		'content_analysis_interval': int(webcam_content_analysis_interval),

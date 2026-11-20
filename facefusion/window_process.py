@@ -106,9 +106,13 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 		display_flags = pygame.RESIZABLE | pygame.SCALED
 		if is_fullscreen:
 			display_flags = display_flags | pygame.FULLSCREEN
-		display_surface = pygame.display.set_mode((width, height), display_flags)
+		# Synced to the display so a frame lands on a refresh instead of tearing across one; SCALED is
+		# what makes vsync available without opengl. A driver that refuses it still gets a window
+		try:
+			display_surface = pygame.display.set_mode((width, height), display_flags, vsync = 1)
+		except pygame.error:
+			display_surface = pygame.display.set_mode((width, height), display_flags)
 		osd_font = pygame.font.SysFont(None, 24)
-		clock = pygame.time.Clock()
 		last_sequence = -1
 
 		while not is_closing and not stop_event.is_set():
@@ -173,7 +177,9 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 				# is the real source of truth, which makes a missed event harmless
 				frame_event.wait(0.005)
 				frame_event.clear()
-			clock.tick(max(1.0, fps) * 2)
+			# No frame rate cap here any more: it slept after every flip, so a frame arriving meanwhile
+			# waited up to half a frame and the generated stream reached the screen unevenly. The loop
+			# only draws on a new frame, idles on the event otherwise, and vsync paces the flips
 	except BaseException:
 		pass
 	finally:

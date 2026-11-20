@@ -16,7 +16,7 @@ from facefusion.uis.components.webcam_options import update_source_face_gallery
 from facefusion.uis.core import get_ui_component
 from facefusion.uis.types import File
 from facefusion.vision import fit_cover_frame, pack_resolution, restrict_frame, unpack_resolution
-from facefusion.webcam_config import append_source_face_uploads, load_webcam_config
+from facefusion.webcam_config import append_source_face_uploads, load_webcam_config, normalize_webcam_resolution
 from facefusion.window_output import WindowStream, apply_window_intents, has_window_output, log_window_output_requirement
 
 SOURCE_FILE : Optional[gradio.File] = None
@@ -147,6 +147,12 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 	apply_stream_face_selector_mode()
 	state_manager.sync_state()
 
+	# Checked again here because start can be clicked before the dropdown's change has normalized a
+	# typed value, and unpack_resolution raises on anything that is not WIDTHxHEIGHT
+	webcam_resolution = normalize_webcam_resolution(webcam_resolution)
+	if not webcam_resolution:
+		logger.error('webcam resolution must be WIDTHxHEIGHT with even sides between 16 and 7680', __name__)
+		return
 	webcam_width, webcam_height = unpack_resolution(webcam_resolution)
 	if webcam_output_resolution == 'copy':
 		output_resolution = webcam_resolution
@@ -168,7 +174,8 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 	camera_capture = get_local_camera_capture(webcam_device_id, webcam_width, webcam_height, webcam_fps, webcam_camera_backend)
 	stream_writer = None
 	window_stream = None
-	# The camera keeps its own rate; only the transport runs at the generated one
+	# The camera keeps its own rate; only the transport runs at the generated one. A generated stream
+	# is also paced by capture time, since uneven worker finishing is what makes doubled frames judder
 	output_fps = resolve_output_fps(webcam_fps)
 	frame_generator = StreamFrameGenerator()
 	# Headless says so and exits; the browser layout used to just hand back an empty image, leaving
@@ -178,14 +185,14 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 	if camera_capture and camera_capture.isOpened():
 		try:
 			if webcam_mode in [ 'udp', 'v4l2' ]:
-				stream_writer = LatestFrameWriter(lambda: open_stream(webcam_mode, output_resolution, output_fps), output_width, output_height, webcam_mode == 'v4l2', output_fps) #type:ignore[arg-type]
+				stream_writer = LatestFrameWriter(lambda: open_stream(webcam_mode, output_resolution, output_fps), output_width, output_height, webcam_mode == 'v4l2', output_fps, output_fps != webcam_fps) #type:ignore[arg-type]
 				stream_writer.start()
 			# Created here rather than inside the factory so that poll_events stays reachable from
 			# this loop and a broken pygame fails before the camera is opened. repeat_latest is off
 			# because the window goes on showing the last frame by itself
 			if webcam_mode == 'window':
 				window_stream = WindowStream(output_width, output_height, output_fps, 'FaceFusion', state_manager.get_item('webcam_window_fullscreen'))
-				stream_writer = LatestFrameWriter(lambda: window_stream, output_width, output_height, False, output_fps)
+				stream_writer = LatestFrameWriter(lambda: window_stream, output_width, output_height, False, output_fps, output_fps != webcam_fps)
 				stream_writer.start()
 			for capture_vision_frame, capture_time, is_duplicate, timing in multi_process_capture(camera_capture, webcam_fps, webcam_execution_thread_count, (webcam_width, webcam_height)):
 				capture_vision_frame = cv2.cvtColor(capture_vision_frame, cv2.COLOR_BGR2RGB)

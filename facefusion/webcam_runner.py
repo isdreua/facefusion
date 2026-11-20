@@ -68,7 +68,8 @@ def run() -> int:
 		logger.error('webcam device could not be opened', __name__)
 		return 1
 
-	# The camera keeps its own rate; only the transport runs at the generated one
+	# The camera keeps its own rate; only the transport runs at the generated one. A generated stream
+	# is also paced by capture time, since uneven worker finishing is what makes doubled frames judder
 	output_fps = resolve_output_fps(webcam_fps)
 	frame_generator = StreamFrameGenerator()
 
@@ -77,9 +78,9 @@ def run() -> int:
 		# the source face mid run, which no config file can do
 		if webcam_mode == 'window':
 			window_stream = WindowStream(output_width, output_height, output_fps, 'FaceFusion', webcam_config.get('webcam_window_fullscreen'))
-			stream_writer = LatestFrameWriter(lambda: window_stream, output_width, output_height, False, output_fps)
+			stream_writer = LatestFrameWriter(lambda: window_stream, output_width, output_height, False, output_fps, output_fps != webcam_fps)
 		else:
-			stream_writer = LatestFrameWriter(lambda: open_stream(webcam_mode, output_resolution, output_fps), output_width, output_height, webcam_mode == 'v4l2', output_fps)
+			stream_writer = LatestFrameWriter(lambda: open_stream(webcam_mode, output_resolution, output_fps), output_width, output_height, webcam_mode == 'v4l2', output_fps, output_fps != webcam_fps)
 		stream_writer.start()
 		for capture_vision_frame, capture_time, is_duplicate, timing in multi_process_capture(camera_capture, webcam_fps, webcam_execution_thread_count, (webcam_width, webcam_height)):
 			capture_vision_frame = cv2.cvtColor(capture_vision_frame, cv2.COLOR_BGR2RGB)

@@ -1,4 +1,5 @@
 import os
+import re
 from copy import deepcopy
 from functools import lru_cache
 from typing import Any, Dict, List, Optional
@@ -38,6 +39,10 @@ DEFAULT_SOURCE_FACE_NAME = 'default'
 NO_SOURCE_FACE_NAME = '(none)'
 WEBCAM_MODES = [ 'inline', 'udp', 'v4l2', 'window' ]
 WEBCAM_RESOLUTIONS = [ '320x240', '640x480', '800x600', '1024x768', '1280x720', '1280x960', '1920x1080', '240x320', '480x640', '600x800', '768x1024', '720x1280', '960x1280', '1080x1920' ]
+# A typed capture resolution is held to what a camera mode can be: both sides even, which every real
+# mode is and the udp output's yuv420p encoder requires, and within what a capture device reports
+WEBCAM_RESOLUTION_RANGE = (16, 7680)
+WEBCAM_RESOLUTION_PATTERN = re.compile(r'^(\d+)\s*[x*\u00d7]\s*(\d+)$')
 WEBCAM_FRAME_SKIPPING_MODES = [ 'adaptive', 'disabled', '1-in-2', '1-in-3' ]
 # How many seconds apart the stream samples a frame for content analysis. The check runs either
 # way; this only sets how much of the device it is allowed to take while it does
@@ -118,8 +123,8 @@ def load_webcam_config(config_path : str) -> Dict[str, Any]:
 		webcam_config['mode'] = content.get('mode')
 	if content.get('headless_mode') in WEBCAM_HEADLESS_MODES:
 		webcam_config['headless_mode'] = content.get('headless_mode')
-	if content.get('resolution') in WEBCAM_RESOLUTIONS:
-		webcam_config['resolution'] = content.get('resolution')
+	if normalize_webcam_resolution(content.get('resolution')):
+		webcam_config['resolution'] = normalize_webcam_resolution(content.get('resolution'))
 	if isinstance(content.get('fps'), int) and 1 <= content.get('fps') <= 30:
 		webcam_config['fps'] = content.get('fps')
 	if content.get('frame_skipping') in WEBCAM_FRAME_SKIPPING_MODES:
@@ -152,6 +157,23 @@ def load_webcam_config(config_path : str) -> Dict[str, Any]:
 		webcam_config['webcam_source_face'] = content.get('webcam_source_face')
 
 	return webcam_config
+
+
+# The presets pass unchanged; anything else is accepted when it spells an even width and height in
+# range, written the way people type one, and comes back in the WIDTHxHEIGHT form unpack_resolution reads
+def normalize_webcam_resolution(resolution : Any) -> Optional[str]:
+	if not isinstance(resolution, str):
+		return None
+	if resolution in WEBCAM_RESOLUTIONS:
+		return resolution
+
+	resolution_match = WEBCAM_RESOLUTION_PATTERN.match(resolution.strip().lower())
+	if not resolution_match:
+		return None
+	width, height = int(resolution_match.group(1)), int(resolution_match.group(2))
+	if all(WEBCAM_RESOLUTION_RANGE[0] <= side <= WEBCAM_RESOLUTION_RANGE[1] and side % 2 == 0 for side in (width, height)):
+		return str(width) + 'x' + str(height)
+	return None
 
 
 # A face group holds every photo of one identity, so a group with no usable path is dropped rather

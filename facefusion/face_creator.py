@@ -1,16 +1,19 @@
 import threading
-from typing import List, Optional, Set
+from concurrent.futures import ThreadPoolExecutor
+from typing import List, Optional, Set, Tuple
 
 import numpy
 
 from facefusion import face_store, state_manager
+from facefusion.app_context import detect_app_context, set_app_context_override
 from facefusion.common_helper import get_first, get_middle
 from facefusion.face_classifier import classify_face
-from facefusion.face_detector import detect_faces, detect_faces_by_angle
+from facefusion.face_detector import detect_faces, detect_faces_by_angle, get_stream_worker_count
 from facefusion.face_helper import apply_nms, average_points, convert_to_face_landmark_5, estimate_face_angle, get_nms_threshold
 from facefusion.face_landmarker import detect_face_landmark, estimate_face_landmark_68_5
 from facefusion.face_recognizer import calculate_face_embedding
-from facefusion.types import BoundingBox, Face, FaceLandmark5, FaceLandmarkSet, FaceScoreSet, Score, VisionFrame
+from facefusion.inference_timer import add_inference_timer, get_inference_timer, reset_inference_timer
+from facefusion.types import Angle, AppContext, BoundingBox, Face, FaceLandmark5, FaceLandmarkSet, FaceScoreSet, Score, VisionFrame
 from facefusion.vision import is_vision_frame
 
 
@@ -20,6 +23,9 @@ class FaceAnalysisContext(threading.local):
 
 
 FACE_ANALYSIS_CONTEXT = FaceAnalysisContext()
+# A ceiling rather than a size: the executor only starts a thread when no idle one is left, so it
+# grows to the stream's workers times its extra angles and no further
+FACE_DETECTOR_ANGLE_EXECUTOR = ThreadPoolExecutor(max_workers = 32, thread_name_prefix = 'face_detector_angle')
 
 
 def set_face_analysis_features(face_analysis_features : Optional[Set[str]]) -> None:
@@ -113,11 +119,7 @@ def get_many_faces(vision_frames : List[VisionFrame]) -> List[Face]:
 			all_face_scores = []
 			all_face_landmarks_5 = []
 
-			for face_detector_angle in state_manager.get_item('face_detector_angles'):
-				if face_detector_angle == 0:
-					bounding_boxes, face_scores, face_landmarks_5 = detect_faces(vision_frame)
-				else:
-					bounding_boxes, face_scores, face_landmarks_5 = detect_faces_by_angle(vision_frame, face_detector_angle)
+			for bounding_boxes, face_scores, face_landmarks_5 in detect_faces_by_angles(vision_frame, state_manager.get_item('face_detector_angles')):
 				all_bounding_boxes.extend(bounding_boxes)
 				all_face_scores.extend(face_scores)
 				all_face_landmarks_5.extend(face_landmarks_5)
@@ -129,6 +131,43 @@ def get_many_faces(vision_frames : List[VisionFrame]) -> List[Face]:
 					many_faces.extend(faces)
 
 	return many_faces
+
+
+def detect_faces_at_angle(vision_frame : VisionFrame, face_detector_angle : Angle) -> Tuple[List[BoundingBox], List[Score], List[FaceLandmark5]]:
+	if face_detector_angle == 0:
+		return detect_faces(vision_frame)
+	return detect_faces_by_angle(vision_frame, face_detector_angle)
+
+
+# In a stream every angle after the first runs on a helper thread while the worker runs the first
+# itself, so a frame waits for its slowest angle instead of their sum. The detector hands each caller
+# a session of its own, so this adds no sharing. Results keep the angle order, so the nms after it
+# sees exactly what the sequential loop produced. Outside a stream the loop stays sequential
+def detect_faces_by_angles(vision_frame : VisionFrame, face_detector_angles : List[Angle]) -> List[Tuple[List[BoundingBox], List[Score], List[FaceLandmark5]]]:
+	if get_stream_worker_count() < 1 or len(face_detector_angles) < 2:
+		return [ detect_faces_at_angle(vision_frame, face_detector_angle) for face_detector_angle in face_detector_angles ]
+
+	app_context = detect_app_context()
+	angle_futures = [ FACE_DETECTOR_ANGLE_EXECUTOR.submit(detect_faces_at_angle_task, vision_frame, face_detector_angle, app_context) for face_detector_angle in face_detector_angles[1:] ]
+	angle_detections = [ detect_faces_at_angle(vision_frame, face_detector_angles[0]) ]
+
+	for angle_future in angle_futures:
+		angle_detection, (total_ms, run_count) = angle_future.result()
+		add_inference_timer(total_ms, run_count)
+		angle_detections.append(angle_detection)
+	return angle_detections
+
+
+# The app context is thread local and decides which inference pool set the detector reads, so a
+# helper without the worker's context would load a second set of sessions
+def detect_faces_at_angle_task(vision_frame : VisionFrame, face_detector_angle : Angle, app_context : AppContext) -> Tuple[Tuple[List[BoundingBox], List[Score], List[FaceLandmark5]], Tuple[float, int]]:
+	set_app_context_override(app_context)
+	reset_inference_timer()
+
+	try:
+		return detect_faces_at_angle(vision_frame, face_detector_angle), get_inference_timer()
+	finally:
+		set_app_context_override(None)
 
 
 def get_static_faces(vision_frames : List[VisionFrame]) -> List[Face]:

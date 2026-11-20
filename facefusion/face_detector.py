@@ -1,5 +1,7 @@
+import threading
+from contextlib import contextmanager
 from functools import lru_cache
-from typing import List, Sequence, Tuple
+from typing import Iterator, List, Sequence, Tuple
 
 import cv2
 import numpy
@@ -8,9 +10,16 @@ from facefusion import inference_manager, state_manager
 from facefusion.download import conditional_download_hashes, conditional_download_sources, resolve_download_url
 from facefusion.face_helper import create_rotation_matrix_and_size, create_static_anchors, distance_to_bounding_box, distance_to_face_landmark_5, normalize_bounding_box, transform_bounding_box, transform_points
 from facefusion.filesystem import resolve_relative_path
-from facefusion.thread_helper import conditional_thread_semaphore
 from facefusion.types import Angle, BoundingBox, Detection, DownloadScope, DownloadSet, FaceLandmark5, InferencePool, Margin, ModelSet, Score, VisionFrame
 from facefusion.vision import restrict_frame, unpack_resolution
+
+# Concurrent run() calls on one cuda session took a stream with several detector angles down with an
+# illegal memory access, which is why upstream serializes the detector. A stream instead gets one
+# session per concurrent caller, its workers times its angles, and a session is only ever checked
+# out by one thread at a time. Outside a stream the limit is one, which is the upstream behaviour
+DETECTOR_SLOT_CONDITION = threading.Condition()
+DETECTOR_SLOT_INDICES : List[int] = []
+DETECTOR_SLOT_COUNTS = { 'created': 0, 'stream_workers': 0 }
 
 
 @lru_cache()
@@ -120,16 +129,83 @@ def create_static_model_set(download_scope : DownloadScope) -> ModelSet:
 	}
 
 
-def get_inference_pool() -> InferencePool:
-	model_names = [ state_manager.get_item('face_detector_model') ]
+def get_inference_pool(slot_index : int = 0) -> InferencePool:
+	model_names = resolve_slot_model_names(slot_index)
 	_, model_source_set = collect_model_downloads()
 
 	return inference_manager.get_inference_pool(__name__, model_names, model_source_set)
 
 
+# Slot indices outlive a clear, so a session still checked out while the pool is cleared cannot end
+# up shared: its index goes back to the free list and the session behind it is rebuilt on next use
 def clear_inference_pool() -> None:
+	with DETECTOR_SLOT_CONDITION:
+		slot_count = max(1, DETECTOR_SLOT_COUNTS.get('created'))
+
+	for slot_index in range(slot_count):
+		inference_manager.clear_inference_pool(__name__, resolve_slot_model_names(slot_index))
+
+
+# Slot zero keeps the plain context, so it is the very session everything outside a stream and the
+# tensorrt precache use. Every further slot is a context of its own and therefore a session of its own
+def resolve_slot_model_names(slot_index : int) -> List[str]:
 	model_names = [ state_manager.get_item('face_detector_model') ]
-	inference_manager.clear_inference_pool(__name__, model_names)
+
+	if slot_index > 0:
+		model_names.append('slot_' + str(slot_index))
+	return model_names
+
+
+def set_stream_worker_count(stream_worker_count : int) -> None:
+	with DETECTOR_SLOT_CONDITION:
+		DETECTOR_SLOT_COUNTS['stream_workers'] = stream_worker_count
+		DETECTOR_SLOT_CONDITION.notify_all()
+
+
+def get_stream_worker_count() -> int:
+	return DETECTOR_SLOT_COUNTS.get('stream_workers')
+
+
+# Read on every checkout rather than fixed at stream start, so changing the angles mid stream takes
+# effect on the next frame
+def resolve_slot_limit() -> int:
+	stream_worker_count = get_stream_worker_count()
+
+	if stream_worker_count > 0:
+		return stream_worker_count * max(1, len(state_manager.get_item('face_detector_angles') or []))
+	return 1
+
+
+def acquire_slot() -> int:
+	with DETECTOR_SLOT_CONDITION:
+		while True:
+			slot_limit = resolve_slot_limit()
+			free_slot_indices = [ slot_index for slot_index in DETECTOR_SLOT_INDICES if slot_index < slot_limit ]
+
+			if free_slot_indices:
+				slot_index = min(free_slot_indices)
+				DETECTOR_SLOT_INDICES.remove(slot_index)
+				return slot_index
+			if DETECTOR_SLOT_COUNTS.get('created') < slot_limit:
+				DETECTOR_SLOT_COUNTS['created'] += 1
+				return DETECTOR_SLOT_COUNTS.get('created') - 1
+			DETECTOR_SLOT_CONDITION.wait()
+
+
+def release_slot(slot_index : int) -> None:
+	with DETECTOR_SLOT_CONDITION:
+		DETECTOR_SLOT_INDICES.append(slot_index)
+		DETECTOR_SLOT_CONDITION.notify_all()
+
+
+@contextmanager
+def checkout_inference_pool() -> Iterator[InferencePool]:
+	slot_index = acquire_slot()
+
+	try:
+		yield get_inference_pool(slot_index)
+	finally:
+		release_slot(slot_index)
 
 
 def collect_model_downloads() -> Tuple[DownloadSet, DownloadSet]:
@@ -400,9 +476,8 @@ def detect_with_yunet(vision_frame : VisionFrame, face_detector_size : str) -> T
 
 
 def forward_with_retinaface(detect_vision_frame : VisionFrame) -> Detection:
-	face_detector = get_inference_pool().get('retinaface')
-
-	with conditional_thread_semaphore():
+	with checkout_inference_pool() as inference_pool:
+		face_detector = inference_pool.get('retinaface')
 		detection = face_detector.run(None,
 		{
 			'input': detect_vision_frame
@@ -412,9 +487,8 @@ def forward_with_retinaface(detect_vision_frame : VisionFrame) -> Detection:
 
 
 def forward_with_scrfd(detect_vision_frame : VisionFrame) -> Detection:
-	face_detector = get_inference_pool().get('scrfd')
-
-	with conditional_thread_semaphore():
+	with checkout_inference_pool() as inference_pool:
+		face_detector = inference_pool.get('scrfd')
 		detection = face_detector.run(None,
 		{
 			'input': detect_vision_frame
@@ -424,9 +498,8 @@ def forward_with_scrfd(detect_vision_frame : VisionFrame) -> Detection:
 
 
 def forward_with_yolo_face(detect_vision_frame : VisionFrame) -> Detection:
-	face_detector = get_inference_pool().get('yolo_face')
-
-	with conditional_thread_semaphore():
+	with checkout_inference_pool() as inference_pool:
+		face_detector = inference_pool.get('yolo_face')
 		detection = face_detector.run(None,
 		{
 			'input': detect_vision_frame
@@ -436,9 +509,8 @@ def forward_with_yolo_face(detect_vision_frame : VisionFrame) -> Detection:
 
 
 def forward_with_yunet(detect_vision_frame : VisionFrame) -> Detection:
-	face_detector = get_inference_pool().get('yunet')
-
-	with conditional_thread_semaphore():
+	with checkout_inference_pool() as inference_pool:
+		face_detector = inference_pool.get('yunet')
 		detection = face_detector.run(None,
 		{
 			'input': detect_vision_frame

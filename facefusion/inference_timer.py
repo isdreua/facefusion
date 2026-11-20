@@ -25,6 +25,13 @@ def get_inference_timer() -> Tuple[float, int]:
 	return INFERENCE_TIMER_CONTEXT.total_ms, INFERENCE_TIMER_CONTEXT.run_count
 
 
+# Work a frame hands to a helper thread is timed on that thread, so the helper reads its own figure
+# back and the frame's worker adds it here, keeping the frame's model time whole
+def add_inference_timer(total_ms : float, run_count : int) -> None:
+	INFERENCE_TIMER_CONTEXT.total_ms += total_ms
+	INFERENCE_TIMER_CONTEXT.run_count += run_count
+
+
 # Wall clock around the call, which is what the frame actually waits for. On cuda the runtime
 # synchronizes on output, so this is the real device time rather than a queue submission
 @contextmanager

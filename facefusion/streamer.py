@@ -18,6 +18,7 @@ from facefusion.common_helper import get_first, is_windows
 from facefusion.content_analyser import analyse_frame
 from facefusion.device_memory import reset_device_memory_metrics, sample_device_memory
 from facefusion.face_creator import set_face_analysis_features
+from facefusion.face_detector import set_stream_worker_count
 from facefusion.face_helper import set_paste_in_place
 from facefusion.face_selector import begin_face_selection_context, end_face_selection_context
 from facefusion.ffmpeg import open_ffmpeg
@@ -315,6 +316,9 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 		
 		try:
 			set_app_context_override(detect_app_context())
+			# Sizes the detector's session pool and turns on its angle fan out for as long as this
+			# stream runs
+			set_stream_worker_count(webcam_execution_thread_count)
 			# Zeroed here so the drift reported for this stream is measured from its own first
 			# reading rather than from a previous one
 			reset_device_memory_metrics()
@@ -499,6 +503,7 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 					yield capture_vision_frame, capture_time, False, timing
 		finally:
 			set_app_context_override(None)
+			set_stream_worker_count(0)
 			capture_thread.stop()
 			if hasattr(camera_capture, 'release'):
 				camera_capture.release()

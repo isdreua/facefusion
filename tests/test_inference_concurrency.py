@@ -26,20 +26,19 @@ class FakeSession:
 	('forward_with_yolo_face', 'yolo_face'),
 	('forward_with_yunet', 'yunet')
 ])
-def test_face_detector_forwards_use_conditional_semaphore(monkeypatch, forward_name, model_name):
+def test_face_detector_forwards_check_out_inference_pool(monkeypatch, forward_name, model_name):
 	session = FakeSession([ numpy.zeros(1) ])
-	semaphore_entries = []
+	checkout_entries = []
 
 	@contextmanager
-	def conditional_semaphore():
-		semaphore_entries.append(model_name)
-		yield
+	def checkout_inference_pool():
+		checkout_entries.append(model_name)
+		yield { model_name: session }
 
-	monkeypatch.setattr(face_detector, 'get_inference_pool', lambda: { model_name: session })
-	monkeypatch.setattr(face_detector, 'conditional_thread_semaphore', conditional_semaphore)
+	monkeypatch.setattr(face_detector, 'checkout_inference_pool', checkout_inference_pool)
 
 	getattr(face_detector, forward_name)(numpy.zeros((1, 3, 1, 1), dtype = numpy.float32))
-	assert semaphore_entries == [ model_name ]
+	assert checkout_entries == [ model_name ]
 	assert session.calls == 1
 
 

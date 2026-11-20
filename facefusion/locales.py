@@ -277,6 +277,7 @@ LOCALES : Locales =\
 		'webcam_bypassed_processors_checkbox_group': 'BYPASS PROCESSORS (KEEP LOADED)',
 			'webcam_inline_preview_resolution_dropdown': 'INLINE PREVIEW RESOLUTION',
 			'webcam_execution_thread_count_slider': 'WEBCAM WORKERS',
+			'webcam_face_enhancer_worker_count_slider': 'FACE ENHANCER WORKERS (0 = WEBCAM WORKERS)',
 			'webcam_camera_backend_dropdown': 'CAMERA BACKEND',
 			'webcam_output_resolution_dropdown': 'OUTPUT RESOLUTION',
 			'webcam_window_fullscreen_checkbox': 'START WINDOW IN FULLSCREEN',

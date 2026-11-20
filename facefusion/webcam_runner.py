@@ -48,6 +48,7 @@ def run() -> int:
 	state_manager.init_item('webcam_bypassed_processors', webcam_config.get('bypassed_processors'))
 	state_manager.init_item('webcam_performance_overlay', webcam_config.get('performance_overlay'))
 	state_manager.init_item('webcam_frame_generation', webcam_config.get('webcam_frame_generation'))
+	state_manager.init_item('webcam_face_enhancer_worker_count', webcam_config.get('webcam_face_enhancer_worker_count'))
 	apply_stream_face_selector_mode()
 	state_manager.sync_state()
 	webcam_width, webcam_height = unpack_resolution(webcam_resolution)

@@ -25,6 +25,7 @@ DEFAULT_WEBCAM_CONFIG : Dict[str, Any] =\
 	'performance_overlay': 'none',
 	'webcam_inline_preview_resolution': '640x480',
 	'webcam_execution_thread_count': 2,
+	'webcam_face_enhancer_worker_count': 0,
 	'webcam_camera_backend': 'auto',
 	'webcam_output_resolution': 'copy',
 	'webcam_window_fullscreen': False,
@@ -76,6 +77,7 @@ WEBCAM_CONFIG_OPTIONS =\
 	'performance_overlay': WEBCAM_PERFORMANCE_OVERLAYS,
 	'webcam_inline_preview_resolution': WEBCAM_INLINE_PREVIEW_RESOLUTIONS,
 	'webcam_execution_thread_count': list(range(1, 9)),
+	'webcam_face_enhancer_worker_count': list(range(0, 9)),
 	'webcam_camera_backend': WEBCAM_CAMERA_BACKENDS,
 	'webcam_output_resolution': WEBCAM_OUTPUT_RESOLUTIONS,
 	'webcam_window_fullscreen': [ True, False ],
@@ -139,6 +141,8 @@ def load_webcam_config(config_path : str) -> Dict[str, Any]:
 		webcam_config['webcam_inline_preview_resolution'] = content.get('webcam_inline_preview_resolution')
 	if isinstance(content.get('webcam_execution_thread_count'), int) and 1 <= content.get('webcam_execution_thread_count') <= 8:
 		webcam_config['webcam_execution_thread_count'] = content.get('webcam_execution_thread_count')
+	if isinstance(content.get('webcam_face_enhancer_worker_count'), int) and 0 <= content.get('webcam_face_enhancer_worker_count') <= 8:
+		webcam_config['webcam_face_enhancer_worker_count'] = content.get('webcam_face_enhancer_worker_count')
 	if content.get('webcam_camera_backend') in WEBCAM_CAMERA_BACKENDS:
 		webcam_config['webcam_camera_backend'] = content.get('webcam_camera_backend')
 	if content.get('webcam_output_resolution') in WEBCAM_OUTPUT_RESOLUTIONS:

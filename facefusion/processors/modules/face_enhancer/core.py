@@ -1,7 +1,9 @@
+import threading
 from argparse import ArgumentParser
+from contextlib import contextmanager
 from functools import lru_cache
 from types import ModuleType
-from typing import List
+from typing import Iterator, List
 
 import numpy
 
@@ -11,6 +13,7 @@ from facefusion import config, content_analyser, face_classifier, face_detector,
 from facefusion.common_helper import create_float_metavar, create_int_metavar, get_middle
 from facefusion.download import conditional_download_hashes, conditional_download_sources, resolve_download_url
 from facefusion.face_creator import scale_face
+from facefusion.face_detector import get_stream_worker_count
 from facefusion.face_helper import paste_back, warp_face_by_face_landmark_5
 from facefusion.face_masker import create_box_mask, create_occlusion_mask
 from facefusion.face_selector import select_faces
@@ -22,6 +25,14 @@ from facefusion.program_helper import find_argument_group
 from facefusion.thread_helper import conditional_thread_semaphore
 from facefusion.types import ApplyStateItem, Args, DownloadScope, Face, InferencePool, ModelOptions, ModelSet, ProcessMode, VisionFrame
 from facefusion.vision import read_static_image, read_static_video_frame
+
+# A stream gives the enhancer workers of its own, decoupled from the webcam workers: each is a session
+# of its own, checked out by one thread at a time, so the count bounds how many frames enhance at once.
+# Zero copies the webcam worker count. Outside a stream the plain shared session is used unchecked,
+# which is the upstream behaviour
+ENHANCER_SLOT_CONDITION = threading.Condition()
+ENHANCER_SLOT_INDICES : List[int] = []
+ENHANCER_SLOT_COUNTS = { 'created': 0 }
 
 
 @lru_cache()
@@ -274,16 +285,76 @@ def create_static_model_set(download_scope : DownloadScope) -> ModelSet:
 	}
 
 
-def get_inference_pool() -> InferencePool:
-	model_names = [ state_manager.get_item('face_enhancer_model') ]
+def get_inference_pool(slot_index : int = 0) -> InferencePool:
+	model_names = resolve_slot_model_names(slot_index)
 	model_source_set = get_model_options().get('sources')
 
 	return inference_manager.get_inference_pool(__name__, model_names, model_source_set)
 
 
 def clear_inference_pool() -> None:
+	with ENHANCER_SLOT_CONDITION:
+		slot_count = max(1, ENHANCER_SLOT_COUNTS.get('created'))
+
+	for slot_index in range(slot_count):
+		inference_manager.clear_inference_pool(__name__, resolve_slot_model_names(slot_index))
+
+
+# Slot zero keeps the plain context, so it is the very session everything outside a stream and the
+# tensorrt precache use. Every further slot is a context of its own and therefore a session of its own
+def resolve_slot_model_names(slot_index : int) -> List[str]:
 	model_names = [ state_manager.get_item('face_enhancer_model') ]
-	inference_manager.clear_inference_pool(__name__, model_names)
+
+	if slot_index > 0:
+		model_names.append('slot_' + str(slot_index))
+	return model_names
+
+
+# Read on every checkout rather than fixed at stream start, so changing either count mid stream takes
+# effect on the next face. Zero means no stream is running
+def resolve_slot_limit() -> int:
+	stream_worker_count = get_stream_worker_count()
+
+	if stream_worker_count > 0:
+		return state_manager.get_item('webcam_face_enhancer_worker_count') or stream_worker_count
+	return 0
+
+
+def acquire_slot(slot_limit : int) -> int:
+	with ENHANCER_SLOT_CONDITION:
+		while True:
+			free_slot_indices = [ slot_index for slot_index in ENHANCER_SLOT_INDICES if slot_index < slot_limit ]
+
+			if free_slot_indices:
+				slot_index = min(free_slot_indices)
+				ENHANCER_SLOT_INDICES.remove(slot_index)
+				return slot_index
+			if ENHANCER_SLOT_COUNTS.get('created') < slot_limit:
+				ENHANCER_SLOT_COUNTS['created'] += 1
+				return ENHANCER_SLOT_COUNTS.get('created') - 1
+			ENHANCER_SLOT_CONDITION.wait()
+			slot_limit = resolve_slot_limit() or slot_limit
+
+
+def release_slot(slot_index : int) -> None:
+	with ENHANCER_SLOT_CONDITION:
+		ENHANCER_SLOT_INDICES.append(slot_index)
+		ENHANCER_SLOT_CONDITION.notify_all()
+
+
+@contextmanager
+def checkout_inference_pool() -> Iterator[InferencePool]:
+	slot_limit = resolve_slot_limit()
+
+	if slot_limit < 1:
+		yield get_inference_pool()
+		return
+	slot_index = acquire_slot(slot_limit)
+
+	try:
+		yield get_inference_pool(slot_index)
+	finally:
+		release_slot(slot_index)
 
 
 def get_model_options() -> ModelOptions:
@@ -373,17 +444,18 @@ def enhance_face(target_face : Face, temp_vision_frame : VisionFrame) -> VisionF
 
 
 def forward(crop_vision_frame : VisionFrame, face_enhancer_weight : FaceEnhancerWeight) -> VisionFrame:
-	face_enhancer = get_inference_pool().get('face_enhancer')
-	face_enhancer_inputs = {}
+	with checkout_inference_pool() as inference_pool:
+		face_enhancer = inference_pool.get('face_enhancer')
+		face_enhancer_inputs = {}
 
-	for face_enhancer_input in face_enhancer.get_inputs():
-		if face_enhancer_input.name == 'input':
-			face_enhancer_inputs[face_enhancer_input.name] = crop_vision_frame
-		if face_enhancer_input.name == 'weight':
-			face_enhancer_inputs[face_enhancer_input.name] = face_enhancer_weight
+		for face_enhancer_input in face_enhancer.get_inputs():
+			if face_enhancer_input.name == 'input':
+				face_enhancer_inputs[face_enhancer_input.name] = crop_vision_frame
+			if face_enhancer_input.name == 'weight':
+				face_enhancer_inputs[face_enhancer_input.name] = face_enhancer_weight
 
-	with conditional_thread_semaphore():
-		crop_vision_frame = face_enhancer.run(None, face_enhancer_inputs)[0][0]
+		with conditional_thread_semaphore():
+			crop_vision_frame = face_enhancer.run(None, face_enhancer_inputs)[0][0]
 
 	return crop_vision_frame
 

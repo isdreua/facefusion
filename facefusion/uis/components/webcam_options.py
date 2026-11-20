@@ -24,6 +24,7 @@ WEBCAM_CONTENT_ANALYSIS_INTERVAL_SLIDER : Optional[gradio.Slider] = None
 WEBCAM_BYPASSED_PROCESSORS_CHECKBOX_GROUP : Optional[gradio.CheckboxGroup] = None
 WEBCAM_INLINE_PREVIEW_RESOLUTION_DROPDOWN : Optional[gradio.Dropdown] = None
 WEBCAM_EXECUTION_THREAD_COUNT_SLIDER : Optional[gradio.Slider] = None
+WEBCAM_FACE_ENHANCER_WORKER_COUNT_SLIDER : Optional[gradio.Slider] = None
 WEBCAM_CAMERA_BACKEND_DROPDOWN : Optional[gradio.Dropdown] = None
 WEBCAM_OUTPUT_RESOLUTION_DROPDOWN : Optional[gradio.Dropdown] = None
 WEBCAM_WINDOW_FULLSCREEN_CHECKBOX : Optional[gradio.Checkbox] = None
@@ -47,6 +48,7 @@ def render() -> None:
 	global WEBCAM_BYPASSED_PROCESSORS_CHECKBOX_GROUP
 	global WEBCAM_INLINE_PREVIEW_RESOLUTION_DROPDOWN
 	global WEBCAM_EXECUTION_THREAD_COUNT_SLIDER
+	global WEBCAM_FACE_ENHANCER_WORKER_COUNT_SLIDER
 	global WEBCAM_CAMERA_BACKEND_DROPDOWN
 	global WEBCAM_OUTPUT_RESOLUTION_DROPDOWN
 	global WEBCAM_WINDOW_FULLSCREEN_CHECKBOX
@@ -75,6 +77,7 @@ def render() -> None:
 	state_manager.init_item('webcam_stream_bypass', False)
 	state_manager.init_item('webcam_window_fullscreen', webcam_config.get('webcam_window_fullscreen'))
 	state_manager.init_item('webcam_frame_generation', webcam_config.get('webcam_frame_generation'))
+	state_manager.init_item('webcam_face_enhancer_worker_count', webcam_config.get('webcam_face_enhancer_worker_count'))
 	WEBCAM_DEVICE_ID_DROPDOWN = gradio.Dropdown(
 		value = webcam_device_id,
 		label = translator.get('uis.webcam_device_id_dropdown'),
@@ -156,6 +159,13 @@ def render() -> None:
 		minimum = 1,
 		maximum = 8
 	)
+	WEBCAM_FACE_ENHANCER_WORKER_COUNT_SLIDER = gradio.Slider(
+		label = translator.get('uis.webcam_face_enhancer_worker_count_slider'),
+		value = state_manager.get_item('webcam_face_enhancer_worker_count'),
+		step = 1,
+		minimum = 0,
+		maximum = 8
+	)
 	WEBCAM_CAMERA_BACKEND_DROPDOWN = gradio.Dropdown(
 		label = translator.get('uis.webcam_camera_backend_dropdown'),
 		choices = WEBCAM_CAMERA_BACKENDS,
@@ -203,6 +213,7 @@ def render() -> None:
 	register_ui_component('webcam_bypassed_processors_checkbox_group', WEBCAM_BYPASSED_PROCESSORS_CHECKBOX_GROUP)
 	register_ui_component('webcam_inline_preview_resolution_dropdown', WEBCAM_INLINE_PREVIEW_RESOLUTION_DROPDOWN)
 	register_ui_component('webcam_execution_thread_count_slider', WEBCAM_EXECUTION_THREAD_COUNT_SLIDER)
+	register_ui_component('webcam_face_enhancer_worker_count_slider', WEBCAM_FACE_ENHANCER_WORKER_COUNT_SLIDER)
 	register_ui_component('webcam_camera_backend_dropdown', WEBCAM_CAMERA_BACKEND_DROPDOWN)
 	register_ui_component('webcam_output_resolution_dropdown', WEBCAM_OUTPUT_RESOLUTION_DROPDOWN)
 	register_ui_component('webcam_window_fullscreen_checkbox', WEBCAM_WINDOW_FULLSCREEN_CHECKBOX)
@@ -221,6 +232,8 @@ def listen() -> None:
 		WEBCAM_RESOLUTION_DROPDOWN.change(update_webcam_resolution, inputs = WEBCAM_RESOLUTION_DROPDOWN, outputs = WEBCAM_RESOLUTION_DROPDOWN)
 	if WEBCAM_FRAME_GENERATION_RADIO:
 		WEBCAM_FRAME_GENERATION_RADIO.change(update_frame_generation, inputs = WEBCAM_FRAME_GENERATION_RADIO)
+	if WEBCAM_FACE_ENHANCER_WORKER_COUNT_SLIDER:
+		WEBCAM_FACE_ENHANCER_WORKER_COUNT_SLIDER.change(update_face_enhancer_worker_count, inputs = WEBCAM_FACE_ENHANCER_WORKER_COUNT_SLIDER)
 	if WEBCAM_CONTENT_ANALYSIS_INTERVAL_SLIDER:
 		WEBCAM_CONTENT_ANALYSIS_INTERVAL_SLIDER.change(update_content_analysis_interval, inputs = WEBCAM_CONTENT_ANALYSIS_INTERVAL_SLIDER)
 	if WEBCAM_BYPASSED_PROCESSORS_CHECKBOX_GROUP:
@@ -271,6 +284,12 @@ def update_webcam_resolution(webcam_resolution : str) -> gradio.Dropdown:
 
 def update_frame_generation(frame_generation : str) -> None:
 	state_manager.set_item('webcam_frame_generation', frame_generation)
+
+
+# Read by the face enhancer on every checkout, so a change applies to the running stream. Zero copies
+# the webcam worker count
+def update_face_enhancer_worker_count(face_enhancer_worker_count : float) -> None:
+	state_manager.set_item('webcam_face_enhancer_worker_count', int(face_enhancer_worker_count))
 
 
 # Read per iteration by the capture loop, so a change applies to the running stream
@@ -330,6 +349,7 @@ def generate_config(webcam_device_id : str, webcam_mode : str, webcam_resolution
 		'performance_overlay': webcam_performance_overlay,
 		'webcam_inline_preview_resolution': webcam_inline_preview_resolution,
 		'webcam_execution_thread_count': int(webcam_execution_thread_count),
+		'webcam_face_enhancer_worker_count': state_manager.get_item('webcam_face_enhancer_worker_count') or 0,
 		'webcam_camera_backend': webcam_camera_backend,
 		'webcam_output_resolution': webcam_output_resolution,
 		'webcam_window_fullscreen': bool(state_manager.get_item('webcam_window_fullscreen')),

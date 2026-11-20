@@ -17,7 +17,7 @@ from facefusion.uis.core import get_ui_component
 from facefusion.uis.types import File
 from facefusion.vision import fit_cover_frame, pack_resolution, restrict_frame, unpack_resolution
 from facefusion.webcam_config import append_source_face_uploads, load_webcam_config, normalize_webcam_resolution
-from facefusion.window_output import WindowStream, apply_window_intents, has_window_output, log_window_output_requirement
+from facefusion.window_output import SharedWindowTransport, acquire_shared_window_stream, apply_window_intents, has_window_output, log_window_output_requirement, release_shared_window_stream
 
 SOURCE_FILE : Optional[gradio.File] = None
 WEBCAM_IMAGE : Optional[gradio.Image] = None
@@ -78,6 +78,9 @@ def listen() -> None:
 		start_event.then(pre_stop)
 		WEBCAM_STOP_BUTTON.click(stop, cancels = start_event, outputs = WEBCAM_IMAGE)
 		WEBCAM_STOP_BUTTON.click(pre_stop, outputs = [ SOURCE_FILE, WEBCAM_IMAGE, WEBCAM_START_BUTTON, WEBCAM_STOP_BUTTON ])
+	if webcam_mode_radio and webcam_resolution_dropdown and webcam_fps_slider and webcam_output_resolution_dropdown:
+		for window_component in [ webcam_mode_radio, webcam_resolution_dropdown, webcam_output_resolution_dropdown ]:
+			window_component.change(update_window_output, inputs = [ webcam_mode_radio, webcam_resolution_dropdown, webcam_fps_slider, webcam_output_resolution_dropdown ])
 
 
 def listen_auto_start(ui : gradio.Blocks) -> None:
@@ -91,6 +94,9 @@ def listen_auto_start(ui : gradio.Blocks) -> None:
 	webcam_camera_backend_dropdown = get_ui_component('webcam_camera_backend_dropdown')
 	webcam_output_resolution_dropdown = get_ui_component('webcam_output_resolution_dropdown')
 
+	# Whether or not the stream starts by itself, a page opened with window mode selected has its window
+	if webcam_mode_radio and webcam_resolution_dropdown and webcam_fps_slider and webcam_output_resolution_dropdown:
+		ui.load(update_window_output, inputs = [ webcam_mode_radio, webcam_resolution_dropdown, webcam_fps_slider, webcam_output_resolution_dropdown ])
 	if webcam_config.get('auto_start') and webcam_device_id_dropdown and webcam_mode_radio and webcam_resolution_dropdown and webcam_fps_slider and webcam_inline_preview_resolution_dropdown and webcam_execution_thread_count_slider and webcam_camera_backend_dropdown and webcam_output_resolution_dropdown:
 		load_event = ui.load(pre_start, outputs = [ SOURCE_FILE, WEBCAM_IMAGE, WEBCAM_START_BUTTON, WEBCAM_STOP_BUTTON ])
 		start_event = load_event.then(start, inputs = [ webcam_device_id_dropdown, webcam_mode_radio, webcam_resolution_dropdown, webcam_fps_slider, webcam_inline_preview_resolution_dropdown, webcam_execution_thread_count_slider, webcam_camera_backend_dropdown, webcam_output_resolution_dropdown ], outputs = WEBCAM_IMAGE)
@@ -154,16 +160,7 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 		logger.error('webcam resolution must be WIDTHxHEIGHT with even sides between 16 and 7680', __name__)
 		return
 	webcam_width, webcam_height = unpack_resolution(webcam_resolution)
-	if webcam_output_resolution == 'copy':
-		output_resolution = webcam_resolution
-		output_width, output_height = webcam_width, webcam_height
-	elif webcam_output_resolution.startswith('x'):
-		output_scale = int(webcam_output_resolution[1:])
-		output_resolution = pack_resolution((webcam_width * output_scale, webcam_height * output_scale))
-		output_width, output_height = unpack_resolution(output_resolution)
-	else:
-		output_resolution = webcam_output_resolution
-		output_width, output_height = unpack_resolution(webcam_output_resolution)
+	output_resolution, output_width, output_height = resolve_output_resolution(webcam_resolution, webcam_output_resolution)
 	if webcam_width * output_height != output_width * webcam_height:
 		logger.warn('webcam output resolution ' + output_resolution + ' does not match the aspect ratio of capture resolution ' + webcam_resolution + ', edges will be cropped', __name__)
 	# Refused rather than downgraded: falling back to inline would hand back the very encoder the
@@ -174,6 +171,7 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 	camera_capture = get_local_camera_capture(webcam_device_id, webcam_width, webcam_height, webcam_fps, webcam_camera_backend)
 	stream_writer = None
 	window_stream = None
+	window_transport = None
 	# The camera keeps its own rate; only the transport runs at the generated one. A generated stream
 	# is also paced by capture time, since uneven worker finishing is what makes doubled frames judder
 	output_fps = resolve_output_fps(webcam_fps)
@@ -187,12 +185,14 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 			if webcam_mode in [ 'udp', 'v4l2' ]:
 				stream_writer = LatestFrameWriter(lambda: open_stream(webcam_mode, output_resolution, output_fps), output_width, output_height, webcam_mode == 'v4l2', output_fps, output_fps != webcam_fps) #type:ignore[arg-type]
 				stream_writer.start()
-			# Created here rather than inside the factory so that poll_events stays reachable from
-			# this loop and a broken pygame fails before the camera is opened. repeat_latest is off
-			# because the window goes on showing the last frame by itself
+			# The window outlives the stream: it is the one already open since window mode was selected,
+			# or opened now, and the writer gets a transport whose close blanks it instead of closing it.
+			# Acquired here rather than inside the factory so that poll_events stays reachable from this
+			# loop. repeat_latest is off because the window goes on showing the last frame by itself
 			if webcam_mode == 'window':
-				window_stream = WindowStream(output_width, output_height, output_fps, 'FaceFusion', state_manager.get_item('webcam_window_fullscreen'))
-				stream_writer = LatestFrameWriter(lambda: window_stream, output_width, output_height, False, output_fps, output_fps != webcam_fps)
+				window_stream = acquire_shared_window_stream(output_width, output_height, output_fps, state_manager.get_item('webcam_window_fullscreen'))
+				window_transport = SharedWindowTransport(window_stream)
+				stream_writer = LatestFrameWriter(lambda: window_transport, output_width, output_height, False, output_fps, output_fps != webcam_fps)
 				stream_writer.start()
 			for capture_vision_frame, capture_time, is_duplicate, timing in multi_process_capture(camera_capture, webcam_fps, webcam_execution_thread_count, (webcam_width, webcam_height)):
 				capture_vision_frame = cv2.cvtColor(capture_vision_frame, cv2.COLOR_BGR2RGB)
@@ -222,9 +222,36 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 		finally:
 			if stream_writer:
 				stream_writer.close()
-			if window_stream:
-				window_stream.close()
+			# Also closed by the writer when its thread finishes; this covers one that did not
+			if window_transport:
+				window_transport.close()
 			clear_camera_pool()
+
+
+def resolve_output_resolution(webcam_resolution : str, webcam_output_resolution : str) -> Tuple[str, int, int]:
+	webcam_width, webcam_height = unpack_resolution(webcam_resolution)
+
+	if webcam_output_resolution == 'copy':
+		return webcam_resolution, webcam_width, webcam_height
+	if webcam_output_resolution.startswith('x'):
+		output_scale = int(webcam_output_resolution[1:])
+		output_resolution = pack_resolution((webcam_width * output_scale, webcam_height * output_scale))
+		return output_resolution, webcam_width * output_scale, webcam_height * output_scale
+	output_width, output_height = unpack_resolution(webcam_output_resolution)
+	return webcam_output_resolution, output_width, output_height
+
+
+# Selecting the window mode opens the window and keeps it, so it can be placed and captured before
+# anything streams into it; selecting any other mode closes it. Also run on page load and when the
+# size changes, which reopens it at the size the next start will deliver
+def update_window_output(webcam_mode : WebcamMode, webcam_resolution : str, webcam_fps : Fps, webcam_output_resolution : str) -> None:
+	if webcam_mode != 'window' or not has_window_output():
+		release_shared_window_stream()
+		return
+	webcam_resolution = normalize_webcam_resolution(webcam_resolution)
+	if webcam_resolution:
+		_, output_width, output_height = resolve_output_resolution(webcam_resolution, webcam_output_resolution)
+		acquire_shared_window_stream(output_width, output_height, resolve_output_fps(webcam_fps), state_manager.get_item('webcam_window_fullscreen'))
 
 
 def stop() -> gradio.Image:

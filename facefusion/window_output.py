@@ -1,4 +1,6 @@
+import atexit
 import multiprocessing
+import threading
 from functools import lru_cache
 from multiprocessing import shared_memory
 from typing import Any, Dict, List, Optional, Tuple
@@ -103,6 +105,11 @@ class WindowStream:
 	def has_window_closed(self) -> bool:
 		return self.is_window_closed
 
+	# Black rather than the last frame, so a stopped stream does not leave a swapped face standing on
+	# screen as if it were live
+	def clear(self) -> None:
+		self.write(bytes(self.frame_size))
+
 	# Reached from LatestFrameWriter._run's finally through transport.stdin.close(), and possibly
 	# again from the caller, so it has to tolerate being called twice
 	def close(self) -> None:
@@ -128,6 +135,86 @@ class WindowStream:
 		if self.process.is_alive():
 			self.process.terminate()
 		self.close()
+
+
+# The browser layout keeps one window open across streams while the window mode is selected, so
+# starting and stopping does not make it flash away and come back at another place. Handlers run on
+# gradio's worker threads, hence the lock
+SHARED_WINDOW_STREAM : Optional[WindowStream] = None
+SHARED_WINDOW_LOCK = threading.Lock()
+SHARED_WINDOW_STATE : Dict[str, bool] = { 'in_use': False, 'close_pending': False }
+
+
+# Reused when it is still open at the size asked for. The shared memory is sized at creation, so
+# another output size needs another window. Keys pressed while no stream was reading them are
+# dropped, or the next start would replay them as face switches
+def acquire_shared_window_stream(width : int, height : int, fps : Fps, is_fullscreen : bool) -> WindowStream:
+	global SHARED_WINDOW_STREAM
+
+	with SHARED_WINDOW_LOCK:
+		if SHARED_WINDOW_STREAM:
+			SHARED_WINDOW_STREAM.poll_events()
+			# A stream still writing keeps its window; the new size is picked up by the next start
+			is_resized = (SHARED_WINDOW_STREAM.width, SHARED_WINDOW_STREAM.height) != (width, height) and not SHARED_WINDOW_STATE.get('in_use')
+			if SHARED_WINDOW_STREAM.has_window_closed() or is_resized:
+				SHARED_WINDOW_STREAM.close()
+				SHARED_WINDOW_STREAM = None
+		if not SHARED_WINDOW_STREAM:
+			SHARED_WINDOW_STREAM = WindowStream(width, height, fps, 'FaceFusion', is_fullscreen)
+			SHARED_WINDOW_STREAM.clear()
+		SHARED_WINDOW_STATE['close_pending'] = False
+		return SHARED_WINDOW_STREAM
+
+
+# A running stream keeps its window even when the mode is switched away underneath it; the close is
+# then left to the end of that stream
+def release_shared_window_stream() -> None:
+	global SHARED_WINDOW_STREAM
+
+	with SHARED_WINDOW_LOCK:
+		if SHARED_WINDOW_STATE.get('in_use'):
+			SHARED_WINDOW_STATE['close_pending'] = True
+			return
+		if SHARED_WINDOW_STREAM:
+			SHARED_WINDOW_STREAM.close()
+			SHARED_WINDOW_STREAM = None
+
+
+# The window now outlives every stream, so nothing else would close it on exit and its shared memory
+# would be left behind; at exit there is no stream to wait for
+@atexit.register
+def close_shared_window_stream() -> None:
+	global SHARED_WINDOW_STREAM
+
+	with SHARED_WINDOW_LOCK:
+		if SHARED_WINDOW_STREAM:
+			SHARED_WINDOW_STREAM.close()
+			SHARED_WINDOW_STREAM = None
+
+
+# What a stream hands to LatestFrameWriter in place of the window itself. The writer closes its
+# transport when it finishes, which for the shared window has to mean going black, not going away
+class SharedWindowTransport:
+	def __init__(self, window_stream : WindowStream):
+		self.window_stream = window_stream
+		self.stdin = self
+		with SHARED_WINDOW_LOCK:
+			SHARED_WINDOW_STATE['in_use'] = True
+
+	def write(self, frame_bytes : bytes) -> None:
+		self.window_stream.write(frame_bytes)
+
+	# Reached from the writer's finally and again from the stream's own, so it tolerates both
+	def close(self) -> None:
+		with SHARED_WINDOW_LOCK:
+			if not SHARED_WINDOW_STATE.get('in_use'):
+				return
+			SHARED_WINDOW_STATE['in_use'] = False
+			is_close_pending = SHARED_WINDOW_STATE.get('close_pending')
+		if is_close_pending:
+			release_shared_window_stream()
+		else:
+			self.window_stream.clear()
 
 
 # The window reports a key, this resolves what it means. Both entry points call it so that neither

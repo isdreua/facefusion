@@ -1,5 +1,6 @@
 import glob
 import threading
+import time
 from typing import Callable, List, Optional
 
 import cv2
@@ -15,6 +16,13 @@ CAMERA_POOL_SET : CameraPoolSet =\
 # A camera switched mid stream is opened and released on the capture thread while the stream's start
 # and stop run on another, so the pool is only ever changed under this lock
 CAMERA_POOL_LOCK = threading.RLock()
+# A camera that will not open is often only busy (another program releasing it, a driver waking up,
+# a cable being plugged back in), so it is tried again every 100 ms until it opens. The log says so
+# once and then every five seconds instead of ten times a second
+CAMERA_RETRY_DELAY = 0.1
+CAMERA_RETRY_LOG_INTERVAL = 50
+# Set by the browser's stop button, so a start still waiting for its camera gives up
+CAMERA_OPEN_CANCEL = threading.Event()
 
 
 def configure_camera_capture(camera_capture : cv2.VideoCapture, width : Optional[int] = None, height : Optional[int] = None, fps : Optional[int] = None) -> None:
@@ -41,9 +49,56 @@ def get_camera_backend_flag(backend : str) -> int:
 	return cv2.CAP_ANY
 
 
-def get_local_camera_capture(camera_id : int, width : Optional[int] = None, height : Optional[int] = None, fps : Optional[int] = None, backend : str = 'auto') -> cv2.VideoCapture:
-	with CAMERA_POOL_LOCK:
-		return open_local_camera_capture(camera_id, width, height, fps, backend)
+# Tries until the camera opens. Only is_cancelled ends it early (the browser's stop button); headless
+# has none and is ended with Ctrl+C. The wait is spent outside the pool lock
+def get_local_camera_capture(camera_id : int, width : Optional[int] = None, height : Optional[int] = None, fps : Optional[int] = None, backend : str = 'auto', is_cancelled : Optional[Callable[[], bool]] = None) -> Optional[cv2.VideoCapture]:
+	camera_open_attempt = 0
+
+	while True:
+		camera_open_attempt += 1
+		camera_capture = open_camera_capture_once(camera_id, width, height, fps, backend, camera_open_attempt > 1)
+		if camera_capture:
+			if camera_open_attempt > 1:
+				logger.info('camera ' + str(camera_id) + ' opened after ' + str(camera_open_attempt) + ' attempts', __name__)
+			return camera_capture
+		if is_cancelled and is_cancelled():
+			return None
+		log_camera_retry(camera_id, camera_open_attempt)
+		time.sleep(CAMERA_RETRY_DELAY)
+
+
+# One attempt. Repeated attempts on an absent device would make opencv log an error each time, ten
+# times a second, so those are silenced where the build allows it
+def open_camera_capture_once(camera_id : int, width : Optional[int] = None, height : Optional[int] = None, fps : Optional[int] = None, backend : str = 'auto', is_quiet : bool = False) -> Optional[cv2.VideoCapture]:
+	previous_log_level = suppress_camera_log_level() if is_quiet else None
+
+	try:
+		with CAMERA_POOL_LOCK:
+			camera_capture = open_local_camera_capture(camera_id, width, height, fps, backend)
+	finally:
+		restore_camera_log_level(previous_log_level)
+	if camera_capture and camera_capture.isOpened():
+		return camera_capture
+	return None
+
+
+def log_camera_retry(camera_id : int, camera_open_attempt : int) -> None:
+	if camera_open_attempt == 1:
+		logger.warn('camera ' + str(camera_id) + ' could not be opened, trying again every ' + str(int(CAMERA_RETRY_DELAY * 1000)) + ' ms until it opens', __name__)
+	elif camera_open_attempt % CAMERA_RETRY_LOG_INTERVAL == 0:
+		logger.warn('camera ' + str(camera_id) + ' still could not be opened after ' + str(camera_open_attempt) + ' attempts, still trying', __name__)
+
+
+def cancel_camera_open() -> None:
+	CAMERA_OPEN_CANCEL.set()
+
+
+def reset_camera_open() -> None:
+	CAMERA_OPEN_CANCEL.clear()
+
+
+def is_camera_open_cancelled() -> bool:
+	return CAMERA_OPEN_CANCEL.is_set()
 
 
 def open_local_camera_capture(camera_id : int, width : Optional[int] = None, height : Optional[int] = None, fps : Optional[int] = None, backend : str = 'auto') -> cv2.VideoCapture:
@@ -63,6 +118,9 @@ def open_local_camera_capture(camera_id : int, width : Optional[int] = None, hei
 		if camera_capture.isOpened():
 			configure_camera_capture(camera_capture, width, height, fps)
 			CAMERA_POOL_SET['capture'][camera_key] = camera_capture
+		else:
+			# Released so the next attempt does not find the device still held by this one
+			camera_capture.release()
 
 	return CAMERA_POOL_SET.get('capture').get(camera_key)
 
@@ -159,10 +217,12 @@ def resolve_camera_label(camera_id : int) -> str:
 	return str(camera_id)
 
 
-# Carries a camera switch asked for from a window (Ctrl+0-9) to the capture thread, which opens the
-# new camera itself: opening takes a moment, and on that thread it stalls only the capture, while the
-# processing loop and the windows stay responsive. The new camera is opened at the same resolution,
-# rate and backend as the first. The current camera is published to state for the overlay
+# Carries the camera a stream should be on to its capture thread: a switch asked for with Ctrl+0-9 or
+# the browser's camera dropdown, or the same camera again after it stopped delivering. The capture
+# thread makes one attempt every 100 ms and keeps reading the current camera in between, so a switch
+# to a camera that is not there yet leaves the stream running until it appears, and asking for
+# another camera replaces the one being waited for. New cameras open at the first one's resolution,
+# rate and backend. What the stream is on, and waits for, is published to state for the overlay
 class CameraSwitch:
 	def __init__(self, camera_id : int, width : Optional[int] = None, height : Optional[int] = None, fps : Optional[int] = None, backend : str = 'auto'):
 		self.camera_id = camera_id
@@ -170,41 +230,136 @@ class CameraSwitch:
 		self.height = height
 		self.fps = fps
 		self.backend = backend
-		self.pending_camera_id : Optional[int] = None
+		self.target_camera_id : Optional[int] = None
+		self.is_reconnecting = False
+		self.open_attempt = 0
+		self.next_attempt_time = 0.0
 		self.lock = threading.Lock()
 		self.listeners : List[Callable[[int, str], None]] = []
-		state_manager.set_item('webcam_camera_name', resolve_camera_label(camera_id))
+		self.publish_label()
 
-	# Asking for the camera already running, or asking twice before the switch, leaves one request
+	# Asking for the camera already running drops a switch still waiting, except while that camera is
+	# itself being reopened
 	def request(self, camera_id : int) -> None:
 		with self.lock:
-			self.pending_camera_id = None if camera_id == self.camera_id else camera_id
+			if camera_id == self.camera_id and not self.is_reconnecting:
+				self.target_camera_id = None
+			elif camera_id != self.target_camera_id:
+				self.target_camera_id = camera_id
+				self.open_attempt = 0
+				self.next_attempt_time = 0.0
+		self.publish_label()
 
-	def take_pending(self) -> Optional[int]:
+	# The camera the browser should show as selected: the one waited for, else the one running
+	def get_selected_camera_id(self) -> int:
 		with self.lock:
-			camera_id = self.pending_camera_id
-			self.pending_camera_id = None
-			return camera_id
+			if self.target_camera_id is not None:
+				return self.target_camera_id
+			return self.camera_id
 
-	def open_capture(self, camera_id : int) -> Optional[cv2.VideoCapture]:
-		return get_local_camera_capture(camera_id, self.width, self.height, self.fps, self.backend)
+	def take_due_target(self) -> Optional[int]:
+		with self.lock:
+			if self.target_camera_id is not None and time.perf_counter() >= self.next_attempt_time:
+				return self.target_camera_id
+			return None
+
+	def try_open(self, camera_id : int) -> Optional[cv2.VideoCapture]:
+		try:
+			camera_capture = open_camera_capture_once(camera_id, self.width, self.height, self.fps, self.backend, self.open_attempt > 0)
+		except Exception:
+			camera_capture = None
+		if camera_capture:
+			return camera_capture
+		with self.lock:
+			self.open_attempt += 1
+			self.next_attempt_time = time.perf_counter() + CAMERA_RETRY_DELAY
+			camera_open_attempt = self.open_attempt
+		log_camera_retry(camera_id, camera_open_attempt)
+		return None
 
 	def release_capture(self, camera_capture : cv2.VideoCapture) -> None:
 		release_camera_capture(camera_capture)
 
+	# The current camera stopped delivering, so it becomes the camera to open again, unless a switch
+	# to another one is already waiting
+	def mark_lost(self) -> None:
+		with self.lock:
+			if self.is_reconnecting:
+				return
+			self.is_reconnecting = True
+			if self.target_camera_id is None:
+				self.target_camera_id = self.camera_id
+				self.open_attempt = 0
+				self.next_attempt_time = 0.0
+		logger.warn('camera ' + resolve_camera_label(self.camera_id) + ' stopped delivering, reopening it', __name__)
+		self.publish_label()
+
 	def commit(self, camera_id : int) -> None:
 		with self.lock:
+			is_reopened = self.is_reconnecting and camera_id == self.camera_id
 			self.camera_id = camera_id
-		state_manager.set_item('webcam_camera_name', resolve_camera_label(camera_id))
-		logger.info('switched to camera ' + resolve_camera_label(camera_id), __name__)
+			if self.target_camera_id == camera_id:
+				self.target_camera_id = None
+			self.is_reconnecting = False
+			self.open_attempt = 0
+		self.publish_label()
+		if is_reopened:
+			logger.info('camera ' + resolve_camera_label(camera_id) + ' reopened', __name__)
+		else:
+			logger.info('switched to camera ' + resolve_camera_label(camera_id), __name__)
 		for listener in list(self.listeners):
 			try:
 				listener(camera_id, resolve_camera_window_title(camera_id))
 			except Exception:
 				pass
 
-	def refuse(self, camera_id : int) -> None:
-		logger.warn('camera ' + str(camera_id) + ' could not be opened, staying on camera ' + resolve_camera_label(self.camera_id), __name__)
+	def publish_label(self) -> None:
+		with self.lock:
+			camera_id = self.camera_id
+			target_camera_id = self.target_camera_id
+			is_reconnecting = self.is_reconnecting
+		camera_label = resolve_camera_label(camera_id)
+		if is_reconnecting and target_camera_id in [ None, camera_id ]:
+			camera_label += ' (reopening)'
+		elif target_camera_id is not None and is_reconnecting:
+			camera_label = resolve_camera_label(target_camera_id) + ' (opening)'
+		elif target_camera_id is not None:
+			camera_label += ' > waiting for ' + str(target_camera_id)
+		state_manager.set_item('webcam_camera_name', camera_label)
+
+	# Made the target of request_camera_switch for as long as its stream runs, so the browser's camera
+	# dropdown reaches a running stream the way Ctrl+0-9 does
+	def activate(self) -> None:
+		global ACTIVE_CAMERA_SWITCH
+
+		ACTIVE_CAMERA_SWITCH = self
+
+	def deactivate(self) -> None:
+		global ACTIVE_CAMERA_SWITCH
+
+		if ACTIVE_CAMERA_SWITCH is self:
+			ACTIVE_CAMERA_SWITCH = None
+
+
+ACTIVE_CAMERA_SWITCH : Optional[CameraSwitch] = None
+
+
+# True when a running stream took the request; the switch itself happens on its capture thread
+def request_camera_switch(camera_id : int) -> bool:
+	camera_switch = ACTIVE_CAMERA_SWITCH
+
+	if camera_switch:
+		camera_switch.request(camera_id)
+		return True
+	return False
+
+
+def get_active_camera_id() -> Optional[int]:
+	camera_switch = ACTIVE_CAMERA_SWITCH
+
+	if camera_switch:
+		return camera_switch.get_selected_camera_id()
+	return None
 
 
 def detect_local_camera_ids(id_start : int, id_end : int, backend : str = 'auto') -> List[int]:

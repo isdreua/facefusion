@@ -87,7 +87,7 @@ def run() -> int:
 		stream_writer.start()
 		if webcam_config.get('webcam_raw_window'):
 			raw_camera_view = open_raw_camera_view(resolve_camera_window_title(webcam_device_id), webcam_fps, webcam_config.get('webcam_raw_window_fullscreen'), webcam_config.get('webcam_raw_window_display'), camera_switch)
-		for capture_vision_frame, capture_time, is_duplicate, timing in multi_process_capture(camera_capture, webcam_fps, webcam_execution_thread_count, (webcam_width, webcam_height), raw_camera_view.submit if raw_camera_view else None, camera_switch):
+		for capture_vision_frame, capture_time, is_duplicate, timing in multi_process_capture(camera_capture, webcam_fps, webcam_execution_thread_count, (webcam_width, webcam_height), raw_camera_view.submit if raw_camera_view else None, camera_switch, (lambda: apply_window_intents(window_stream, camera_switch)) if window_stream else None):
 			capture_vision_frame = cv2.cvtColor(capture_vision_frame, cv2.COLOR_BGR2RGB)
 			capture_vision_frame = fit_cover_frame(capture_vision_frame, (output_width, output_height))
 			# Here and not in the workers: this loop sees the frames one at a time in delivery order,

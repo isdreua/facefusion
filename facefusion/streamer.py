@@ -34,6 +34,7 @@ from facefusion.webcam_config import DEFAULT_SOURCE_FACE_NAME, NO_SOURCE_FACE_NA
 CONTENT_ANALYSIS_METRICS_LOCK = threading.Lock()
 CONTENT_ANALYSIS_METRICS = { 'runs': 0, 'last_ms': 0.0, 'max_ms': 0.0 }
 WARM_BARRIER_TIMEOUT = 10.0
+IDLE_LISTENER_INTERVAL = 0.1
 # The processors the running stream left out because their stream check failed, so the overlay can
 # tell a processor that is selected from one that is actually touching the frame
 STREAM_SKIPPED_PROCESSORS : List[str] = []
@@ -70,21 +71,32 @@ class CameraCaptureThread(threading.Thread):
 		self.running = True
 		self.daemon = True
 
+	# With a camera switch the thread never ends on its own: a camera that stops delivering (unplugged,
+	# taken by another program) is released and opened again every 100 ms, and a switch is tried
+	# between reads. Without one, as in the tests, it ends after a run of failed reads as before
 	def run(self):
 		consecutive_read_failures = 0
 		try:
-			while self.running and self.camera_capture.isOpened():
-				switch_camera_id = self.camera_switch.take_pending() if self.camera_switch else None
-				if switch_camera_id is not None:
-					self.switch_camera(switch_camera_id)
+			while self.running:
+				if self.camera_switch and self.try_camera_switch():
 					consecutive_read_failures = 0
+				if not self.camera_capture or not self.camera_capture.isOpened():
+					if not self.camera_switch:
+						break
+					self.lose_camera()
+					time.sleep(self.READ_FAILURE_RETRY_DELAY)
+					continue
 				capture_time = time.perf_counter()
 				ret, frame = self.camera_capture.read()
 				capture_read_end = time.perf_counter()
 				if not ret:
 					consecutive_read_failures += 1
 					if not self.camera_capture.isOpened() or consecutive_read_failures >= self.MAX_CONSECUTIVE_READ_FAILURES:
-						break
+						if not self.camera_switch:
+							break
+						self.lose_camera()
+						consecutive_read_failures = 0
+						continue
 					time.sleep(self.READ_FAILURE_RETRY_DELAY)
 					continue
 				consecutive_read_failures = 0
@@ -106,20 +118,28 @@ class CameraCaptureThread(threading.Thread):
 		finally:
 			self.running = False
 
-	# The previous camera keeps delivering until the new one is open, and stays on when the new one
-	# cannot be opened. Swapped here because this thread is the capture's only reader
-	def switch_camera(self, camera_id : int) -> None:
-		try:
-			next_capture = self.camera_switch.open_capture(camera_id)
-		except Exception:
-			next_capture = None
-		if not next_capture or not next_capture.isOpened():
-			self.camera_switch.refuse(camera_id)
-			return
+	# One attempt when one is due. The current camera keeps delivering until the new one is open,
+	# and is released only then. Swapped here because this thread is the capture's only reader
+	def try_camera_switch(self) -> bool:
+		camera_id = self.camera_switch.take_due_target()
+		if camera_id is None:
+			return False
+		next_capture = self.camera_switch.try_open(camera_id)
+		if not next_capture:
+			return False
 		previous_capture = self.camera_capture
 		self.camera_capture = next_capture
-		self.camera_switch.release_capture(previous_capture)
+		if previous_capture is not None and previous_capture is not next_capture:
+			self.camera_switch.release_capture(previous_capture)
 		self.camera_switch.commit(camera_id)
+		return True
+
+	# Released so the device is free to be opened again, by this stream or another program
+	def lose_camera(self) -> None:
+		if self.camera_capture is not None:
+			self.camera_switch.release_capture(self.camera_capture)
+			self.camera_capture = None
+		self.camera_switch.mark_lost()
 
 	def stop(self):
 		self.running = False
@@ -325,7 +345,7 @@ def has_stream_capacity(pending_total : int, buffered_total : int, max_queue_siz
 	return pending_total < max_queue_size and buffered_total < max_queue_size
 
 
-def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, webcam_execution_thread_count : Optional[int] = None, capture_resolution : Optional[Resolution] = None, raw_frame_listener : Optional[Callable[[VisionFrame], None]] = None, camera_switch : Optional[CameraSwitch] = None) -> Iterator[Tuple[VisionFrame, float, bool, Dict[str, Any]]]:
+def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, webcam_execution_thread_count : Optional[int] = None, capture_resolution : Optional[Resolution] = None, raw_frame_listener : Optional[Callable[[VisionFrame], None]] = None, camera_switch : Optional[CameraSwitch] = None, idle_listener : Optional[Callable[[], bool]] = None) -> Iterator[Tuple[VisionFrame, float, bool, Dict[str, Any]]]:
 	webcam_execution_thread_count = webcam_execution_thread_count or state_manager.get_item('execution_thread_count')
 	# Published so the overlay can name the count the stream actually runs on instead of the global
 	# execution thread count, which no webcam frame is processed with
@@ -353,6 +373,7 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 	is_stream_bypassed = False
 	is_stream_warmed = False
 	stream_frame_cursor = StreamFrameCursor()
+	idle_listener_time = time.perf_counter()
 
 	with tqdm(desc = translator.get('streaming'), unit = 'frame', disable = state_manager.get_item('log_level') in [ 'warn', 'error' ]) as progress:
 		# Add +1 to max_workers to accommodate the background NSFW analysis without stalling frame processing
@@ -436,7 +457,15 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 						capture_time, capture_vision_frame = queue_item
 						capture_read_end = capture_time
 				except queue.Empty:
+					# While no frame comes (a camera being reopened or switched to) the caller's loop
+					# body never runs, so its window keys would go unread: Ctrl+0-9 is exactly what
+					# gets out of a camera that is gone. Returning False ends the stream
+					if idle_listener and time.perf_counter() - idle_listener_time > IDLE_LISTENER_INTERVAL:
+						idle_listener_time = time.perf_counter()
+						if not idle_listener():
+							break
 					continue
+				idle_listener_time = time.perf_counter()
 
 				# The camera may negotiate a mode larger than the one requested, so bring the frame down
 				# to the working resolution before anything processes it
@@ -559,7 +588,7 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 				camera_capture.release()
 			# A camera switched to mid stream is the thread's capture now, not the one passed in
 			switched_capture = getattr(capture_thread, 'camera_capture', camera_capture)
-			if switched_capture is not camera_capture and hasattr(switched_capture, 'release'):
+			if switched_capture is not None and switched_capture is not camera_capture and hasattr(switched_capture, 'release'):
 				switched_capture.release()
 			capture_thread.join(timeout = 1.0)
 			if capture_thread.is_alive():

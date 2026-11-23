@@ -5,14 +5,14 @@ import cv2
 import gradio
 
 from facefusion import logger, state_manager, translator
-from facefusion.camera_manager import CameraSwitch, clear_camera_pool, get_local_camera_capture, resolve_camera_window_title
+from facefusion.camera_manager import CameraSwitch, cancel_camera_open, clear_camera_pool, get_active_camera_id, get_local_camera_capture, is_camera_open_cancelled, request_camera_switch, reset_camera_open, resolve_camera_window_title
 from facefusion.filesystem import has_image
 from facefusion.frame_generator import StreamFrameGenerator, resolve_output_fps
 from facefusion.overlay import PERFORMANCE_OVERLAY
 from facefusion.streamer import apply_stream_face_selector_mode, multi_process_capture, open_stream, resolve_source_face_groups
 from facefusion.stream_writer import LatestFrameWriter
 from facefusion.types import Fps, VisionFrame, WebcamMode
-from facefusion.uis.components.webcam_options import update_source_face_gallery
+from facefusion.uis.components.webcam_options import get_local_camera_ids, update_source_face_gallery
 from facefusion.uis.core import get_ui_component
 from facefusion.uis.types import File
 from facefusion.vision import fit_cover_frame, pack_resolution, restrict_frame, unpack_resolution
@@ -23,6 +23,7 @@ SOURCE_FILE : Optional[gradio.File] = None
 WEBCAM_IMAGE : Optional[gradio.Image] = None
 WEBCAM_START_BUTTON : Optional[gradio.Button] = None
 WEBCAM_STOP_BUTTON : Optional[gradio.Button] = None
+WEBCAM_CAMERA_TIMER : Optional[gradio.Timer] = None
 
 
 def render() -> None:
@@ -30,6 +31,7 @@ def render() -> None:
 	global WEBCAM_IMAGE
 	global WEBCAM_START_BUTTON
 	global WEBCAM_STOP_BUTTON
+	global WEBCAM_CAMERA_TIMER
 
 	# Starts and stays empty: it is an intake for adding faces, and configured source paths already
 	# show up in the gallery as a selectable face
@@ -53,6 +55,9 @@ def render() -> None:
 		size = 'sm',
 		visible = False
 	)
+	# The server cannot push to the page, so the page asks: a camera switched with Ctrl+0-9 (or one
+	# being waited for) shows up in the camera dropdown within half a second
+	WEBCAM_CAMERA_TIMER = gradio.Timer(0.5)
 
 
 def listen() -> None:
@@ -81,6 +86,11 @@ def listen() -> None:
 	if webcam_mode_radio and webcam_resolution_dropdown and webcam_fps_slider and webcam_output_resolution_dropdown:
 		for window_component in [ webcam_mode_radio, webcam_resolution_dropdown, webcam_output_resolution_dropdown ]:
 			window_component.change(update_window_output, inputs = [ webcam_mode_radio, webcam_resolution_dropdown, webcam_fps_slider, webcam_output_resolution_dropdown ])
+	# Picking another camera while streaming switches it in place, no stop and start needed
+	if webcam_device_id_dropdown:
+		webcam_device_id_dropdown.change(switch_running_camera, inputs = webcam_device_id_dropdown)
+		if WEBCAM_CAMERA_TIMER:
+			WEBCAM_CAMERA_TIMER.tick(sync_camera_dropdown, inputs = webcam_device_id_dropdown, outputs = webcam_device_id_dropdown)
 	camera_window_inputs = resolve_camera_window_inputs()
 	if camera_window_inputs:
 		for camera_window_component in camera_window_inputs[:4]:
@@ -193,7 +203,9 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 	if webcam_mode == 'window' and not has_window_output():
 		log_window_output_requirement()
 		return
-	camera_capture = get_local_camera_capture(webcam_device_id, webcam_width, webcam_height, webcam_fps, webcam_camera_backend)
+	# Tried every 100 ms until the camera opens; only the stop button gives up on it
+	reset_camera_open()
+	camera_capture = get_local_camera_capture(webcam_device_id, webcam_width, webcam_height, webcam_fps, webcam_camera_backend, is_camera_open_cancelled)
 	stream_writer = None
 	window_stream = None
 	window_transport = None
@@ -208,6 +220,7 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 	if not camera_capture or not camera_capture.isOpened():
 		logger.error('webcam device could not be opened', __name__)
 	if camera_capture and camera_capture.isOpened():
+		camera_switch.activate()
 		try:
 			if webcam_mode in [ 'udp', 'v4l2' ]:
 				stream_writer = LatestFrameWriter(lambda: open_stream(webcam_mode, output_resolution, output_fps), output_width, output_height, webcam_mode == 'v4l2', output_fps, output_fps != webcam_fps) #type:ignore[arg-type]
@@ -227,7 +240,7 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 				acquire_shared_camera_window(webcam_width, webcam_height, webcam_fps, resolve_camera_window_title(webcam_device_id), bool(state_manager.get_item('webcam_raw_window_fullscreen')), state_manager.get_item('webcam_raw_window_display') or 0)
 			if state_manager.get_item('webcam_raw_window'):
 				raw_camera_view = open_raw_camera_view(resolve_camera_window_title(webcam_device_id), webcam_fps, bool(state_manager.get_item('webcam_raw_window_fullscreen')), state_manager.get_item('webcam_raw_window_display') or 0, camera_switch, True)
-			for capture_vision_frame, capture_time, is_duplicate, timing in multi_process_capture(camera_capture, webcam_fps, webcam_execution_thread_count, (webcam_width, webcam_height), raw_camera_view.submit if raw_camera_view else None, camera_switch):
+			for capture_vision_frame, capture_time, is_duplicate, timing in multi_process_capture(camera_capture, webcam_fps, webcam_execution_thread_count, (webcam_width, webcam_height), raw_camera_view.submit if raw_camera_view else None, camera_switch, (lambda: apply_window_intents(window_stream, camera_switch)) if window_stream else None):
 				capture_vision_frame = cv2.cvtColor(capture_vision_frame, cv2.COLOR_BGR2RGB)
 				capture_vision_frame = fit_cover_frame(capture_vision_frame, (output_width, output_height))
 				# Here and not in the workers: this loop sees the frames one at a time in delivery
@@ -260,6 +273,7 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 				window_transport.close()
 			if raw_camera_view:
 				raw_camera_view.close()
+			camera_switch.deactivate()
 			clear_camera_pool()
 
 
@@ -292,6 +306,34 @@ def update_window_output(webcam_mode : WebcamMode, webcam_resolution : str, webc
 # The camera window stays open while its option is on, black until a stream feeds it, the same way
 # the output window does in window mode. Opened at the capture resolution asked for, under the name
 # of the selected camera; a stream reopens it if the camera grants another size
+# Shows the camera the running stream is on, or the one it is waiting for, so it can never disagree
+# with the stream and send it back. Setting the value fires the dropdown's change, which asks for the
+# camera already selected and so changes nothing. A camera not detected when the page was built is
+# added to the choices, since gradio refuses a value outside them
+def sync_camera_dropdown(webcam_device_id : int) -> gradio.Dropdown:
+	active_camera_id = get_active_camera_id()
+
+	if active_camera_id is None or str(active_camera_id) == str(webcam_device_id):
+		return skip_component_update()
+	local_camera_ids = list(get_local_camera_ids())
+	if active_camera_id not in local_camera_ids:
+		local_camera_ids.append(active_camera_id)
+		return gradio.Dropdown(value = active_camera_id, choices = local_camera_ids)
+	return gradio.Dropdown(value = active_camera_id)
+
+
+def skip_component_update() -> gradio.Dropdown:
+	if hasattr(gradio, 'skip'):
+		return gradio.skip()
+	return gradio.Dropdown()
+
+
+# Nothing to do without a running stream: the next start opens whatever the dropdown then shows
+def switch_running_camera(webcam_device_id : int) -> None:
+	if str(webcam_device_id).isdigit():
+		request_camera_switch(int(webcam_device_id))
+
+
 def update_camera_window(raw_window : bool, raw_window_fullscreen : bool, webcam_device_id : int, webcam_resolution : str, webcam_fps : Fps) -> None:
 	if not raw_window or not has_window_output():
 		release_shared_camera_window()
@@ -304,5 +346,6 @@ def update_camera_window(raw_window : bool, raw_window_fullscreen : bool, webcam
 
 
 def stop() -> gradio.Image:
+	cancel_camera_open()
 	clear_camera_pool()
 	return gradio.Image(value = None)

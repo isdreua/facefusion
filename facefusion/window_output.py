@@ -250,6 +250,10 @@ class RawCameraView:
 		try:
 			while self.is_running:
 				if not self.frame_event.wait(0.1):
+					# No camera frames (one being reopened or switched to): its keys are still read,
+					# so Ctrl+0-9 can leave a camera that is gone and closing the window still works
+					if self.window_stream:
+						self.poll_window_intents()
 					continue
 				self.frame_event.clear()
 				with self.frame_lock:
@@ -261,14 +265,17 @@ class RawCameraView:
 				if not self.window_stream or (frame_width, frame_height) != (self.window_stream.width, self.window_stream.height):
 					self.window_stream = self.acquire_window(frame_width, frame_height)
 				self.window_stream.write(vision_frame.tobytes())
-				# Ctrl+0-9 works here too, since with any output mode but window this is the only window
-				for intent_name, intent_value in self.window_stream.poll_events():
-					if intent_name == 'camera_id' and self.camera_switch:
-						self.camera_switch.request(intent_value)
-				if self.window_stream.has_window_closed():
-					self.is_running = False
+				self.poll_window_intents()
 		except Exception as exception:
 			logger.warn('the raw camera window stopped: ' + str(exception), __name__)
+			self.is_running = False
+
+	# Ctrl+0-9 works here too, since with any output mode but window this is the only window
+	def poll_window_intents(self) -> None:
+		for intent_name, intent_value in self.window_stream.poll_events():
+			if intent_name == 'camera_id' and self.camera_switch:
+				self.camera_switch.request(intent_value)
+		if self.window_stream.has_window_closed():
 			self.is_running = False
 
 	# The shared window goes black and stays while the option is on; an owned one closes

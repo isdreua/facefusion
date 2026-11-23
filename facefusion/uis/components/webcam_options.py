@@ -14,6 +14,8 @@ from facefusion.webcam_config import DEFAULT_SOURCE_FACE_NAME, NO_SOURCE_FACE_NA
 from facefusion.window_output import detect_window_displays, has_window_output, log_window_output_requirement, move_raw_camera_view, move_shared_window_stream
 
 WEBCAM_DEVICE_ID_DROPDOWN : Optional[gradio.Dropdown] = None
+# The camera choices the dropdown was last given, so the camera sync can add one it lacks
+LOCAL_CAMERA_IDS : List[int] = []
 WEBCAM_MODE_RADIO : Optional[gradio.Radio] = None
 WEBCAM_RESOLUTION_DROPDOWN : Optional[gradio.Dropdown] = None
 WEBCAM_FPS_SLIDER : Optional[gradio.Slider] = None
@@ -67,7 +69,10 @@ def render() -> None:
 	global WEBCAM_GENERATE_CONFIG_TEXTBOX
 
 	webcam_config = load_webcam_config(state_manager.get_item('webcam_config'))
+	global LOCAL_CAMERA_IDS
+
 	local_camera_ids = detect_local_camera_ids(0, 10, webcam_config.get('webcam_camera_backend')) or [ 'none' ] #type:ignore[list-item]
+	LOCAL_CAMERA_IDS = list(local_camera_ids)
 	webcam_device_id = webcam_config.get('device_id')
 	if webcam_device_id not in local_camera_ids:
 		webcam_device_id = get_first(local_camera_ids)
@@ -315,7 +320,11 @@ def update_window_fullscreen(window_fullscreen : bool) -> None:
 	state_manager.set_item('webcam_window_fullscreen', window_fullscreen)
 
 
-# Read when the window opens. An idle window on another display is reopened by the next start
+def get_local_camera_ids() -> List[int]:
+	return LOCAL_CAMERA_IDS
+
+
+# Moves the open output window at once, fullscreen or not, keeping the same window
 def update_window_display(window_display : int) -> None:
 	state_manager.set_item('webcam_window_display', int(window_display or 0))
 	move_shared_window_stream(int(window_display or 0))
@@ -538,5 +547,8 @@ def select_source_face(event : gradio.SelectData) -> gradio.Gallery:
 
 
 def update_camera_backend(camera_backend : str) -> gradio.Dropdown:
+	global LOCAL_CAMERA_IDS
+
 	local_camera_ids = detect_local_camera_ids(0, 10, camera_backend) or [ 'none' ] #type:ignore[list-item]
+	LOCAL_CAMERA_IDS = list(local_camera_ids)
 	return gradio.Dropdown(value = get_first(local_camera_ids), choices = local_camera_ids)

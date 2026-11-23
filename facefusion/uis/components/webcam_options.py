@@ -11,7 +11,7 @@ from facefusion.streamer import apply_stream_source_paths, resolve_source_face_g
 from facefusion.types import WebcamMode
 from facefusion.uis.core import get_ui_component, register_ui_component
 from facefusion.webcam_config import DEFAULT_SOURCE_FACE_NAME, NO_SOURCE_FACE_NAME, WEBCAM_BYPASSED_PROCESSORS, WEBCAM_CAMERA_BACKENDS, WEBCAM_CONTENT_ANALYSIS_INTERVALS, WEBCAM_FRAME_GENERATION_MODES, WEBCAM_FRAME_SKIPPING_MODES, WEBCAM_INLINE_PREVIEW_RESOLUTIONS, WEBCAM_OUTPUT_RESOLUTIONS, WEBCAM_PERFORMANCE_OVERLAYS, WEBCAM_STATE_KEYS, WEBCAM_WINDOW_DISPLAYS, format_webcam_config, normalize_webcam_resolution, get_source_faces, load_webcam_config, resolve_source_face_directory
-from facefusion.window_output import has_window_output, log_window_output_requirement
+from facefusion.window_output import detect_window_displays, has_window_output, log_window_output_requirement, move_raw_camera_view, move_shared_window_stream
 
 WEBCAM_DEVICE_ID_DROPDOWN : Optional[gradio.Dropdown] = None
 WEBCAM_MODE_RADIO : Optional[gradio.Radio] = None
@@ -110,12 +110,11 @@ def render() -> None:
 		value = webcam_config.get('webcam_window_fullscreen'),
 		visible = has_window_output()
 	)
-	# Listed as a fixed range instead of the displays actually attached: counting them needs a video
-	# subsystem in this process, which macOS only allows on the main thread gradio already owns. A
-	# number past the last display falls back to the default placement in the window process
+	# Only the displays attached when the page was built, counted by a short lived window process
+	window_displays = detect_window_displays() if has_window_output() else None
 	WEBCAM_WINDOW_DISPLAY_DROPDOWN = gradio.Dropdown(
 		label = translator.get('uis.webcam_window_display_dropdown'),
-		choices = resolve_window_display_choices(),
+		choices = resolve_window_display_choices(window_displays, state_manager.get_item('webcam_window_display')),
 		value = state_manager.get_item('webcam_window_display'),
 		visible = has_window_output()
 	)
@@ -135,7 +134,7 @@ def render() -> None:
 	)
 	WEBCAM_RAW_WINDOW_DISPLAY_DROPDOWN = gradio.Dropdown(
 		label = translator.get('uis.webcam_raw_window_display_dropdown'),
-		choices = resolve_window_display_choices(),
+		choices = resolve_window_display_choices(window_displays, state_manager.get_item('webcam_raw_window_display')),
 		value = state_manager.get_item('webcam_raw_window_display'),
 		visible = has_window_output()
 	)
@@ -319,6 +318,7 @@ def update_window_fullscreen(window_fullscreen : bool) -> None:
 # Read when the window opens. An idle window on another display is reopened by the next start
 def update_window_display(window_display : int) -> None:
 	state_manager.set_item('webcam_window_display', int(window_display or 0))
+	move_shared_window_stream(int(window_display or 0))
 
 
 # Read when a stream starts, so a change takes effect on the next start
@@ -332,10 +332,26 @@ def update_raw_window_fullscreen(raw_window_fullscreen : bool) -> None:
 
 def update_raw_window_display(raw_window_display : int) -> None:
 	state_manager.set_item('webcam_raw_window_display', int(raw_window_display or 0))
+	move_raw_camera_view(int(raw_window_display or 0))
 
 
-def resolve_window_display_choices() -> List[Tuple[str, int]]:
-	return [ ('auto' if window_display == 0 else str(window_display), window_display) for window_display in WEBCAM_WINDOW_DISPLAYS ]
+# One choice per attached display, labelled with its size so two displays can be told apart. A
+# configured display that is not attached stays selectable, marked as such, so the config value is
+# not silently replaced. When the probe failed, the whole range is offered as before
+def resolve_window_display_choices(window_displays : Optional[List[Tuple[int, int]]], selected_window_display : Optional[int]) -> List[Tuple[str, int]]:
+	window_display_choices = [ ('auto', 0) ]
+
+	if window_displays is None:
+		window_display_choices.extend((str(window_display), window_display) for window_display in WEBCAM_WINDOW_DISPLAYS if window_display > 0)
+		return window_display_choices
+	for window_display, (display_width, display_height) in enumerate(window_displays[:max(WEBCAM_WINDOW_DISPLAYS)], start = 1):
+		display_label = str(window_display)
+		if display_width and display_height:
+			display_label += ' (' + str(display_width) + 'x' + str(display_height) + ')'
+		window_display_choices.append((display_label, window_display))
+	if selected_window_display and selected_window_display not in [ choice_value for _, choice_value in window_display_choices ]:
+		window_display_choices.append((str(selected_window_display) + ' (not connected)', selected_window_display))
+	return window_display_choices
 
 
 def update_performance_overlay(performance_overlay : str) -> None:

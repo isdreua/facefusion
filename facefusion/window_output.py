@@ -10,7 +10,7 @@ from facefusion.common_helper import get_first
 from facefusion.filesystem import is_image
 from facefusion.types import Fps
 from facefusion.webcam_config import NO_SOURCE_FACE_NAME, WEBCAM_PERFORMANCE_OVERLAYS
-from facefusion.window_process import FRAME_SLOT_COUNT, run_window
+from facefusion.window_process import FRAME_SLOT_COUNT, probe_displays, run_window
 
 # How many faces the window can reach. The digit keys stop at 9, so the arrows walk the same nine
 # rather than reaching faces no other key can name
@@ -29,6 +29,30 @@ def resolve_pygame_module() -> Any:
 
 def has_window_output() -> bool:
 	return resolve_pygame_module() is not None
+
+
+# The displays attached right now, as one desktop size each in SDL's order, so the display dropdowns
+# offer exactly those. None when pygame is missing or the probe found no display to ask
+def detect_window_displays() -> Optional[List[Tuple[int, int]]]:
+	if not has_window_output():
+		return None
+	context = multiprocessing.get_context('spawn')
+	result_queue = context.Queue()
+	probe_process = context.Process(target = probe_displays, args = (result_queue,), daemon = True)
+	display_sizes = None
+
+	try:
+		probe_process.start()
+		display_sizes = result_queue.get(timeout = 10)
+	except Exception:
+		logger.debug('the displays could not be detected', __name__)
+	finally:
+		probe_process.join(1.0)
+		if probe_process.is_alive():
+			probe_process.terminate()
+	if not display_sizes:
+		return None
+	return [ (int(display_width), int(display_height)) for display_width, display_height in display_sizes ]
 
 
 def log_window_output_requirement() -> None:
@@ -106,6 +130,16 @@ class WindowStream:
 	def has_window_closed(self) -> bool:
 		return self.is_window_closed
 
+	# Moves the open window, fullscreen or not, instead of reopening it
+	def set_display(self, window_display : int) -> None:
+		self.window_display = int(window_display or 0)
+		if self.is_closed or self.is_window_closed:
+			return
+		try:
+			self.status_queue.put_nowait({ 'window_display': self.window_display })
+		except Exception:
+			pass
+
 	def set_title(self, title : str) -> None:
 		if self.is_closed or self.is_window_closed:
 			return
@@ -174,6 +208,13 @@ class RawCameraView:
 		if camera_switch:
 			camera_switch.listeners.append(self.on_camera_switched)
 
+	# Called from the display dropdown. A window not open yet opens on the new display
+	def set_display(self, window_display : int) -> None:
+		self.window_display = int(window_display or 0)
+		window_stream = self.window_stream
+		if window_stream:
+			window_stream.set_display(self.window_display)
+
 	# Called on the capture thread. A window not open yet takes the new title when it opens
 	def on_camera_switched(self, camera_id : int, camera_title : str) -> None:
 		self.title = camera_title
@@ -225,6 +266,10 @@ class RawCameraView:
 			self.is_running = False
 
 	def close(self) -> None:
+		global ACTIVE_RAW_CAMERA_VIEW
+
+		if ACTIVE_RAW_CAMERA_VIEW is self:
+			ACTIVE_RAW_CAMERA_VIEW = None
 		self.is_running = False
 		if self.camera_switch and self.on_camera_switched in self.camera_switch.listeners:
 			self.camera_switch.listeners.remove(self.on_camera_switched)
@@ -235,13 +280,26 @@ class RawCameraView:
 			self.window_stream = None
 
 
+# The one camera window of the running stream, so the display dropdown can move it while it is open
+ACTIVE_RAW_CAMERA_VIEW : Optional[RawCameraView] = None
+
+
 # Started next to any output mode, the native window or not. Without pygame it is skipped with a
 # warning rather than refusing the stream, since the processed output does not depend on it
 def open_raw_camera_view(camera_title : str, fps : Fps, is_fullscreen : bool = False, window_display : int = 0, camera_switch : Any = None) -> Optional[RawCameraView]:
 	if not has_window_output():
 		log_window_output_requirement()
 		return None
-	return RawCameraView(camera_title, fps, is_fullscreen, window_display, camera_switch)
+	global ACTIVE_RAW_CAMERA_VIEW
+
+	ACTIVE_RAW_CAMERA_VIEW = RawCameraView(camera_title, fps, is_fullscreen, window_display, camera_switch)
+	return ACTIVE_RAW_CAMERA_VIEW
+
+
+def move_raw_camera_view(window_display : int) -> None:
+	raw_camera_view = ACTIVE_RAW_CAMERA_VIEW
+	if raw_camera_view:
+		raw_camera_view.set_display(window_display)
 
 
 # The browser layout keeps one window open across streams while the window mode is selected, so
@@ -273,6 +331,13 @@ def acquire_shared_window_stream(width : int, height : int, fps : Fps, is_fullsc
 			SHARED_WINDOW_STREAM.clear()
 		SHARED_WINDOW_STATE['close_pending'] = False
 		return SHARED_WINDOW_STREAM
+
+
+# The display dropdown moves the open shared window right away, whether or not a stream is running
+def move_shared_window_stream(window_display : int) -> None:
+	with SHARED_WINDOW_LOCK:
+		if SHARED_WINDOW_STREAM and not SHARED_WINDOW_STREAM.has_window_closed():
+			SHARED_WINDOW_STREAM.set_display(window_display)
 
 
 # A running stream keeps its window even when the mode is switched away underneath it; the close is

@@ -110,11 +110,19 @@ def resolve_display_index(pygame : Any, window_display : int) -> Optional[int]:
 
 
 # Synced to the display so a frame lands on a refresh instead of tearing across one; SCALED is what
-# makes vsync available without opengl. A driver that refuses it still gets a window
+# makes vsync available without opengl. A driver that refuses it still gets a window.
+#
+# The display argument alone did not pin anything: without SDL_VIDEO_CENTERED pygame asks for an
+# undefined position on that display, which X11 window managers and Windows treat as "place it
+# anywhere", and fullscreen then follows wherever the window landed. Centred, SDL works out real
+# coordinates inside that display's bounds, and fullscreen takes the display the window is on
 def set_display_mode(pygame : Any, width : int, height : int, display_flags : int, display_index : Optional[int]) -> Any:
+	import os
+
 	display_options : Dict[str, Any] = {}
 
 	if display_index is not None:
+		os.environ['SDL_VIDEO_CENTERED'] = '1'
 		display_options['display'] = display_index
 	try:
 		return pygame.display.set_mode((width, height), display_flags, vsync = 1, **display_options)
@@ -122,17 +130,67 @@ def set_display_mode(pygame : Any, width : int, height : int, display_flags : in
 		return pygame.display.set_mode((width, height), display_flags, **display_options)
 
 
+def resolve_display_flags(pygame : Any, is_fullscreen : bool) -> int:
+	display_flags = pygame.RESIZABLE | pygame.SCALED
+
+	if is_fullscreen:
+		display_flags = display_flags | pygame.FULLSCREEN
+	return display_flags
+
+
+# Fullscreen is left first and entered again from a window centred on the target display: a
+# fullscreen window keeps its display through set_mode, so going there directly would not move it
+def move_to_display(pygame : Any, display_surface : Any, width : int, height : int, display_index : int) -> Any:
+	is_fullscreen = bool(display_surface.get_flags() & pygame.FULLSCREEN)
+
+	try:
+		display_surface = set_display_mode(pygame, width, height, resolve_display_flags(pygame, False), display_index)
+		if is_fullscreen:
+			display_surface = set_display_mode(pygame, width, height, resolve_display_flags(pygame, True), display_index)
+	except Exception:
+		pass
+	return pygame.display.get_surface() or display_surface
+
+
 # toggle_fullscreen goes fullscreen on whichever display the window sits on, so a window dragged
-# elsewhere would leave its pin behind. A pinned window is set up again on its own display instead,
-# and only falls back to the plain toggle when that is refused
+# elsewhere would leave its pin behind. A pinned window is moved back to its display first, and only
+# falls back to the plain toggle when that is refused
 def switch_fullscreen(pygame : Any, display_surface : Any, width : int, height : int, display_index : Optional[int]) -> Any:
+	is_fullscreen = bool(display_surface.get_flags() & pygame.FULLSCREEN)
+
 	if display_index is not None:
 		try:
-			return set_display_mode(pygame, width, height, display_surface.get_flags() ^ pygame.FULLSCREEN, display_index)
+			display_surface = set_display_mode(pygame, width, height, resolve_display_flags(pygame, False), display_index)
+			if not is_fullscreen:
+				display_surface = set_display_mode(pygame, width, height, resolve_display_flags(pygame, True), display_index)
+			return display_surface
 		except Exception:
 			pass
 	pygame.display.toggle_fullscreen()
 	return pygame.display.get_surface() or display_surface
+
+
+# Run in its own short lived spawned process for the same reason the window is: the browser process
+# must not start a video subsystem (macOS allows that only on the main thread, which gradio owns).
+# Reports one desktop size per display in SDL's order, or None when there is no display to ask
+def probe_displays(result_queue : Any) -> None:
+	import os
+
+	os.environ.setdefault('PYGAME_HIDE_SUPPORT_PROMPT', '1')
+	display_sizes = None
+
+	try:
+		import pygame
+
+		pygame.display.init()
+		if hasattr(pygame.display, 'get_desktop_sizes'):
+			display_sizes = [ (int(display_width), int(display_height)) for display_width, display_height in pygame.display.get_desktop_sizes() ]
+		else:
+			display_sizes = [ (0, 0) ] * pygame.display.get_num_displays()
+		pygame.quit()
+	except BaseException:
+		display_sizes = None
+	result_queue.put(display_sizes)
 
 
 # The child reports raw intents and resolves nothing: the parent owns the index to face name mapping
@@ -160,9 +218,7 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 		pygame.display.set_caption(title)
 		# Asked for at set_mode rather than toggled after, so the window never shows a windowed
 		# frame first; SCALED keeps the logical size so F11 still switches back
-		display_flags = pygame.RESIZABLE | pygame.SCALED
-		if is_fullscreen:
-			display_flags = display_flags | pygame.FULLSCREEN
+		display_flags = resolve_display_flags(pygame, is_fullscreen)
 		display_index = resolve_display_index(pygame, window_display)
 		display_surface = set_display_mode(pygame, width, height, display_flags, display_index)
 		osd_font = pygame.font.SysFont(None, 24)
@@ -210,6 +266,13 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 				# A new title (the camera window after a camera switch) is not a status and shows no osd
 				if 'window_title' in received_status:
 					pygame.display.set_caption(str(received_status.get('window_title')))
+					continue
+				# The display dropdown changed while the window is open. Auto drops the pin and leaves
+				# the window where it is; a display that is not attached is ignored the same way
+				if 'window_display' in received_status:
+					display_index = resolve_display_index(pygame, int(received_status.get('window_display') or 0))
+					if display_index is not None:
+						display_surface = move_to_display(pygame, display_surface, width, height, display_index)
 					continue
 				status = received_status
 				osd_expires_at = time.monotonic() + OSD_DURATION

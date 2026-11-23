@@ -4,7 +4,7 @@ from typing import Any
 import cv2
 
 from facefusion import logger, state_manager
-from facefusion.camera_manager import CameraSwitch, clear_camera_pool, get_local_camera_capture, resolve_camera_window_title
+from facefusion.camera_manager import CameraSwitch, clear_camera_pool, resolve_camera_window_title
 from facefusion.common_helper import get_first
 from facefusion.frame_generator import StreamFrameGenerator, resolve_output_fps
 from facefusion.overlay import PERFORMANCE_OVERLAY
@@ -65,11 +65,13 @@ def run() -> int:
 		output_width, output_height = unpack_resolution(webcam_output_resolution)
 	if webcam_width * output_height != output_width * webcam_height:
 		logger.warn('webcam output resolution ' + output_resolution + ' does not match the aspect ratio of capture resolution ' + webcam_resolution + ', edges will be cropped', __name__)
-	camera_capture = get_local_camera_capture(webcam_device_id, webcam_width, webcam_height, webcam_fps, webcam_camera_backend)
+	# Same first open as the browser's, retried until the camera opens (Ctrl+C ends it)
+	camera_switch = CameraSwitch(webcam_device_id, webcam_width, webcam_height, webcam_fps, webcam_camera_backend)
+	camera_capture = camera_switch.open_selected_capture()
 	if not camera_capture or not camera_capture.isOpened():
 		logger.error('webcam device could not be opened', __name__)
 		return 1
-	camera_switch = CameraSwitch(webcam_device_id, webcam_width, webcam_height, webcam_fps, webcam_camera_backend)
+	webcam_device_id = camera_switch.camera_id
 
 	# The camera keeps its own rate; only the transport runs at the generated one. A generated stream
 	# is also paced by capture time, since uneven worker finishing is what makes doubled frames judder

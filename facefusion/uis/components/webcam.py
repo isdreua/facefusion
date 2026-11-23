@@ -5,7 +5,7 @@ import cv2
 import gradio
 
 from facefusion import logger, state_manager, translator
-from facefusion.camera_manager import CameraSwitch, cancel_camera_open, clear_camera_pool, get_active_camera_id, get_local_camera_capture, is_camera_open_cancelled, request_camera_switch, reset_camera_open, resolve_camera_window_title
+from facefusion.camera_manager import CameraSwitch, cancel_camera_open, clear_camera_pool, get_active_camera_id, is_camera_open_cancelled, request_camera_switch, reset_camera_open, resolve_camera_window_title
 from facefusion.filesystem import has_image
 from facefusion.frame_generator import StreamFrameGenerator, resolve_output_fps
 from facefusion.overlay import PERFORMANCE_OVERLAY
@@ -204,13 +204,20 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 		log_window_output_requirement()
 		return
 	# Tried every 100 ms until the camera opens; only the stop button gives up on it
+	# Active before the first attempt, so a camera picked in the dropdown while this start is still
+	# waiting is the one it goes on trying
 	reset_camera_open()
-	camera_capture = get_local_camera_capture(webcam_device_id, webcam_width, webcam_height, webcam_fps, webcam_camera_backend, is_camera_open_cancelled)
+	camera_switch = CameraSwitch(webcam_device_id, webcam_width, webcam_height, webcam_fps, webcam_camera_backend)
+	camera_switch.activate()
+	camera_capture = camera_switch.open_selected_capture(is_camera_open_cancelled)
+	if not camera_capture:
+		camera_switch.deactivate()
+	# The camera that actually opened, which may not be the one start() was given
+	webcam_device_id = camera_switch.camera_id
 	stream_writer = None
 	window_stream = None
 	window_transport = None
 	raw_camera_view = None
-	camera_switch = CameraSwitch(webcam_device_id, webcam_width, webcam_height, webcam_fps, webcam_camera_backend)
 	# The camera keeps its own rate; only the transport runs at the generated one. A generated stream
 	# is also paced by capture time, since uneven worker finishing is what makes doubled frames judder
 	output_fps = resolve_output_fps(webcam_fps)
@@ -220,7 +227,6 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 	if not camera_capture or not camera_capture.isOpened():
 		logger.error('webcam device could not be opened', __name__)
 	if camera_capture and camera_capture.isOpened():
-		camera_switch.activate()
 		try:
 			if webcam_mode in [ 'udp', 'v4l2' ]:
 				stream_writer = LatestFrameWriter(lambda: open_stream(webcam_mode, output_resolution, output_fps), output_width, output_height, webcam_mode == 'v4l2', output_fps, output_fps != webcam_fps) #type:ignore[arg-type]

@@ -263,6 +263,41 @@ class CameraSwitch:
 				return self.target_camera_id
 			return None
 
+	# The stream's first open, tried every 100 ms until it works. The camera is read again before
+	# every attempt, so a camera picked meanwhile (dropdown or Ctrl+0-9, which reach this switch
+	# while it is active) is the one tried next rather than the number the start began with
+	def open_selected_capture(self, is_cancelled : Optional[Callable[[], bool]] = None) -> Optional[cv2.VideoCapture]:
+		attempted_camera_id : Optional[int] = None
+		camera_open_attempt = 0
+
+		while True:
+			camera_id = self.get_selected_camera_id()
+			if camera_id != attempted_camera_id:
+				attempted_camera_id = camera_id
+				camera_open_attempt = 0
+			camera_open_attempt += 1
+			camera_capture = open_camera_capture_once(camera_id, self.width, self.height, self.fps, self.backend, camera_open_attempt > 1)
+			if camera_capture:
+				if camera_open_attempt > 1:
+					logger.info('camera ' + str(camera_id) + ' opened after ' + str(camera_open_attempt) + ' attempts', __name__)
+				self.settle_first(camera_id)
+				return camera_capture
+			if is_cancelled and is_cancelled():
+				return None
+			log_camera_retry(camera_id, camera_open_attempt)
+			time.sleep(CAMERA_RETRY_DELAY)
+
+	# The camera the first open landed on becomes the running one. A camera asked for after that
+	# attempt began stays the target, and the capture thread switches to it
+	def settle_first(self, camera_id : int) -> None:
+		with self.lock:
+			self.camera_id = camera_id
+			if self.target_camera_id == camera_id:
+				self.target_camera_id = None
+			self.open_attempt = 0
+			self.next_attempt_time = 0.0
+		self.publish_label()
+
 	def try_open(self, camera_id : int) -> Optional[cv2.VideoCapture]:
 		try:
 			camera_capture = open_camera_capture_once(camera_id, self.width, self.height, self.fps, self.backend, self.open_attempt > 0)

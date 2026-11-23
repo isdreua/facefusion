@@ -29,6 +29,7 @@ DEFAULT_WEBCAM_CONFIG : Dict[str, Any] =\
 	'webcam_camera_backend': 'auto',
 	'webcam_output_resolution': 'copy',
 	'webcam_window_fullscreen': False,
+	'webcam_raw_window': False,
 	'webcam_frame_generation': 'none',
 	'webcam_source_faces': {},
 	'webcam_source_faces_directory': None,
@@ -81,6 +82,7 @@ WEBCAM_CONFIG_OPTIONS =\
 	'webcam_camera_backend': WEBCAM_CAMERA_BACKENDS,
 	'webcam_output_resolution': WEBCAM_OUTPUT_RESOLUTIONS,
 	'webcam_window_fullscreen': [ True, False ],
+	'webcam_raw_window': [ True, False ],
 	'webcam_frame_generation': WEBCAM_FRAME_GENERATION_MODES
 }
 # These settings reach code that needs a fixed length tuple, and create_box_mask is lru_cached so a
@@ -149,6 +151,8 @@ def load_webcam_config(config_path : str) -> Dict[str, Any]:
 		webcam_config['webcam_output_resolution'] = content.get('webcam_output_resolution')
 	if isinstance(content.get('webcam_window_fullscreen'), bool):
 		webcam_config['webcam_window_fullscreen'] = content.get('webcam_window_fullscreen')
+	if isinstance(content.get('webcam_raw_window'), bool):
+		webcam_config['webcam_raw_window'] = content.get('webcam_raw_window')
 	if content.get('webcam_frame_generation') in WEBCAM_FRAME_GENERATION_MODES:
 		webcam_config['webcam_frame_generation'] = content.get('webcam_frame_generation')
 	if isinstance(content.get('webcam_source_faces_directory'), str):

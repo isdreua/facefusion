@@ -97,6 +97,8 @@
     "webcam_inline_preview_resolution_options": ["native", "320x240", "640x480", "960x540", "240x320", "480x640", "540x960"],
     "webcam_execution_thread_count": 2,
     "webcam_execution_thread_count_options": [1, 2, 3, 4, 5, 6, 7, 8],
+    "webcam_face_enhancer_worker_count": 0,
+    "webcam_face_enhancer_worker_count_options": [0, 1, 2, 3, 4, 5, 6, 7, 8],
     "webcam_camera_backend": "auto",
     "webcam_camera_backend_options": ["auto", "msmf", "dshow"],
     "webcam_source_faces": {
@@ -107,6 +109,10 @@
     "webcam_source_face": "alice",
     "webcam_window_fullscreen": false,
     "webcam_window_fullscreen_options": [true, false],
+    "webcam_raw_window": false,
+    "webcam_raw_window_options": [true, false],
+    "webcam_frame_generation": "none",
+    "webcam_frame_generation_options": ["none", "low", "medium", "high"],
     "webcam_output_resolution": "copy",
     "webcam_output_resolution_options": ["copy", "x2", "x3", "x4", "320x240", "640x480", "800x600", "1024x768", "1280x720", "1280x960", "1920x1080", "240x320", "480x640", "600x800", "768x1024", "720x1280", "960x1280", "1080x1920"]
 }

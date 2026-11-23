@@ -5,7 +5,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from types import ModuleType
-from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
 
 import cv2
 import numpy
@@ -63,6 +63,7 @@ class CameraCaptureThread(threading.Thread):
 	def __init__(self, camera_capture: cv2.VideoCapture):
 		super().__init__()
 		self.camera_capture = camera_capture
+		self.raw_frame_listener : Optional[Callable[[VisionFrame], None]] = None
 		self.frame_queue = queue.Queue(maxsize=1)
 		self.running = True
 		self.daemon = True
@@ -81,6 +82,10 @@ class CameraCaptureThread(threading.Thread):
 					time.sleep(self.READ_FAILURE_RETRY_DELAY)
 					continue
 				consecutive_read_failures = 0
+				# Every frame the camera delivers, before any processing or skipping decides its fate,
+				# so the raw view runs at the camera's own rate. The listener only stores a reference
+				if self.raw_frame_listener:
+					self.raw_frame_listener(frame)
 				try:
 					self.frame_queue.put_nowait((capture_time, capture_read_end, frame))
 				except queue.Full:
@@ -299,7 +304,7 @@ def has_stream_capacity(pending_total : int, buffered_total : int, max_queue_siz
 	return pending_total < max_queue_size and buffered_total < max_queue_size
 
 
-def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, webcam_execution_thread_count : Optional[int] = None, capture_resolution : Optional[Resolution] = None) -> Iterator[Tuple[VisionFrame, float, bool, Dict[str, Any]]]:
+def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, webcam_execution_thread_count : Optional[int] = None, capture_resolution : Optional[Resolution] = None, raw_frame_listener : Optional[Callable[[VisionFrame], None]] = None) -> Iterator[Tuple[VisionFrame, float, bool, Dict[str, Any]]]:
 	webcam_execution_thread_count = webcam_execution_thread_count or state_manager.get_item('execution_thread_count')
 	# Published so the overlay can name the count the stream actually runs on instead of the global
 	# execution thread count, which no webcam frame is processed with
@@ -332,6 +337,8 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 		# Add +1 to max_workers to accommodate the background NSFW analysis without stalling frame processing
 		executor = ThreadPoolExecutor(max_workers = webcam_execution_thread_count + 1)
 		capture_thread = CameraCaptureThread(camera_capture)
+		# Assigned rather than passed, so the thread keeps its one argument constructor
+		capture_thread.raw_frame_listener = raw_frame_listener
 		capture_thread.start()
 		stop_event = threading.Event()
 		

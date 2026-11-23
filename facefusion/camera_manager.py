@@ -115,6 +115,22 @@ def resolve_camera_id_range(id_start : int, id_end : int) -> List[int]:
 	return sorted(set(device_camera_ids).intersection(candidate_camera_ids))
 
 
+# Only linux names its devices somewhere readable without another dependency: the v4l2 driver puts the
+# card name next to the device node. Index N under the auto backend is /dev/videoN there, so the name
+# read is the device the capture opened. Elsewhere, or when the file is missing, there is no name
+def resolve_camera_name(camera_id : int) -> Optional[str]:
+	try:
+		with open('/sys/class/video4linux/video' + str(int(camera_id)) + '/name') as name_file:
+			camera_name = name_file.read().strip()
+	except (OSError, ValueError):
+		return None
+	return camera_name or None
+
+
+def resolve_camera_window_title(camera_id : int) -> str:
+	return 'CAMERA (' + (resolve_camera_name(camera_id) or str(camera_id)) + ')'
+
+
 def detect_local_camera_ids(id_start : int, id_end : int, backend : str = 'auto') -> List[int]:
 	local_camera_ids = []
 	previous_log_level = suppress_camera_log_level()

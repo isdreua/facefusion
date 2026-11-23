@@ -4,7 +4,7 @@ from typing import Any
 import cv2
 
 from facefusion import logger, state_manager
-from facefusion.camera_manager import clear_camera_pool, get_local_camera_capture
+from facefusion.camera_manager import clear_camera_pool, get_local_camera_capture, resolve_camera_window_title
 from facefusion.common_helper import get_first
 from facefusion.frame_generator import StreamFrameGenerator, resolve_output_fps
 from facefusion.overlay import PERFORMANCE_OVERLAY
@@ -12,7 +12,7 @@ from facefusion.streamer import apply_stream_face_selector_mode, apply_stream_so
 from facefusion.stream_writer import LatestFrameWriter
 from facefusion.vision import fit_cover_frame, pack_resolution, unpack_resolution
 from facefusion.webcam_config import DEFAULT_SOURCE_FACE_NAME, WEBCAM_HEADLESS_MODES, get_source_faces, load_webcam_config
-from facefusion.window_output import WindowStream, apply_window_intents, has_window_output, log_window_output_requirement
+from facefusion.window_output import OUTPUT_WINDOW_TITLE, WindowStream, apply_window_intents, open_raw_camera_view, has_window_output, log_window_output_requirement
 
 
 def run() -> int:
@@ -27,6 +27,7 @@ def run() -> int:
 	source_face_groups = get_source_faces(webcam_config)
 	stream_writer : Any = None
 	window_stream = None
+	raw_camera_view = None
 
 	if webcam_mode not in WEBCAM_HEADLESS_MODES:
 		logger.error('headless webcam mode requires one of ' + ', '.join(WEBCAM_HEADLESS_MODES) + ' output', __name__)
@@ -78,12 +79,14 @@ def run() -> int:
 		# The window is the control channel headless never had: it carries the hotkeys that switch
 		# the source face mid run, which no config file can do
 		if webcam_mode == 'window':
-			window_stream = WindowStream(output_width, output_height, output_fps, 'FaceFusion', webcam_config.get('webcam_window_fullscreen'))
+			window_stream = WindowStream(output_width, output_height, output_fps, OUTPUT_WINDOW_TITLE, webcam_config.get('webcam_window_fullscreen'))
 			stream_writer = LatestFrameWriter(lambda: window_stream, output_width, output_height, False, output_fps, output_fps != webcam_fps)
 		else:
 			stream_writer = LatestFrameWriter(lambda: open_stream(webcam_mode, output_resolution, output_fps), output_width, output_height, webcam_mode == 'v4l2', output_fps, output_fps != webcam_fps)
 		stream_writer.start()
-		for capture_vision_frame, capture_time, is_duplicate, timing in multi_process_capture(camera_capture, webcam_fps, webcam_execution_thread_count, (webcam_width, webcam_height)):
+		if webcam_config.get('webcam_raw_window'):
+			raw_camera_view = open_raw_camera_view(resolve_camera_window_title(webcam_device_id), webcam_fps)
+		for capture_vision_frame, capture_time, is_duplicate, timing in multi_process_capture(camera_capture, webcam_fps, webcam_execution_thread_count, (webcam_width, webcam_height), raw_camera_view.submit if raw_camera_view else None):
 			capture_vision_frame = cv2.cvtColor(capture_vision_frame, cv2.COLOR_BGR2RGB)
 			capture_vision_frame = fit_cover_frame(capture_vision_frame, (output_width, output_height))
 			# Here and not in the workers: this loop sees the frames one at a time in delivery order,
@@ -105,6 +108,8 @@ def run() -> int:
 			stream_writer.close()
 		if window_stream:
 			window_stream.close()
+		if raw_camera_view:
+			raw_camera_view.close()
 		clear_camera_pool()
 
 	return 0

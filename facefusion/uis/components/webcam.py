@@ -5,7 +5,7 @@ import cv2
 import gradio
 
 from facefusion import logger, state_manager, translator
-from facefusion.camera_manager import clear_camera_pool, get_local_camera_capture
+from facefusion.camera_manager import clear_camera_pool, get_local_camera_capture, resolve_camera_window_title
 from facefusion.filesystem import has_image
 from facefusion.frame_generator import StreamFrameGenerator, resolve_output_fps
 from facefusion.overlay import PERFORMANCE_OVERLAY
@@ -17,7 +17,7 @@ from facefusion.uis.core import get_ui_component
 from facefusion.uis.types import File
 from facefusion.vision import fit_cover_frame, pack_resolution, restrict_frame, unpack_resolution
 from facefusion.webcam_config import append_source_face_uploads, load_webcam_config, normalize_webcam_resolution
-from facefusion.window_output import SharedWindowTransport, acquire_shared_window_stream, apply_window_intents, has_window_output, log_window_output_requirement, release_shared_window_stream
+from facefusion.window_output import SharedWindowTransport, acquire_shared_window_stream, open_raw_camera_view, apply_window_intents, has_window_output, log_window_output_requirement, release_shared_window_stream
 
 SOURCE_FILE : Optional[gradio.File] = None
 WEBCAM_IMAGE : Optional[gradio.Image] = None
@@ -172,6 +172,7 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 	stream_writer = None
 	window_stream = None
 	window_transport = None
+	raw_camera_view = None
 	# The camera keeps its own rate; only the transport runs at the generated one. A generated stream
 	# is also paced by capture time, since uneven worker finishing is what makes doubled frames judder
 	output_fps = resolve_output_fps(webcam_fps)
@@ -194,7 +195,9 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 				window_transport = SharedWindowTransport(window_stream)
 				stream_writer = LatestFrameWriter(lambda: window_transport, output_width, output_height, False, output_fps, output_fps != webcam_fps)
 				stream_writer.start()
-			for capture_vision_frame, capture_time, is_duplicate, timing in multi_process_capture(camera_capture, webcam_fps, webcam_execution_thread_count, (webcam_width, webcam_height)):
+			if state_manager.get_item('webcam_raw_window'):
+				raw_camera_view = open_raw_camera_view(resolve_camera_window_title(webcam_device_id), webcam_fps)
+			for capture_vision_frame, capture_time, is_duplicate, timing in multi_process_capture(camera_capture, webcam_fps, webcam_execution_thread_count, (webcam_width, webcam_height), raw_camera_view.submit if raw_camera_view else None):
 				capture_vision_frame = cv2.cvtColor(capture_vision_frame, cv2.COLOR_BGR2RGB)
 				capture_vision_frame = fit_cover_frame(capture_vision_frame, (output_width, output_height))
 				# Here and not in the workers: this loop sees the frames one at a time in delivery
@@ -225,6 +228,8 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 			# Also closed by the writer when its thread finishes; this covers one that did not
 			if window_transport:
 				window_transport.close()
+			if raw_camera_view:
+				raw_camera_view.close()
 			clear_camera_pool()
 
 

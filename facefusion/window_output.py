@@ -137,6 +137,87 @@ class WindowStream:
 		self.close()
 
 
+# The title of the processed output window, so it can be told apart from the raw camera window
+# beside it and picked by title in capture software
+OUTPUT_WINDOW_TITLE = 'FaceFusion OUTPUT'
+
+
+# A second, plain window showing what the camera delivers before any processor touches it. It is
+# fed from the capture thread through submit, which converts and stores only the newest frame, and
+# draws on its own thread so neither the capture nor the processing waits on the window. The window is
+# opened on the first frame at that frame's size, because the camera may not have granted the
+# resolution that was asked for. It has no controls: its keys are ignored, and closing it ends only
+# this view, never the stream
+class RawCameraView:
+	def __init__(self, title : str, fps : Fps):
+		self.title = title
+		self.fps = fps
+		self.latest_frame : Any = None
+		self.frame_lock = threading.Lock()
+		self.frame_event = threading.Event()
+		self.is_running = True
+		self.window_stream : Optional[WindowStream] = None
+		self.thread = threading.Thread(target = self._run, daemon = True)
+		self.thread.start()
+
+	# Converted here on the capture thread rather than later on the view's own: the conversion is the
+	# copy, and the camera frame it reads goes on to the processors, which may write into it
+	def submit(self, vision_frame : Any) -> None:
+		import cv2
+
+		if not self.is_running:
+			return
+		vision_frame = cv2.cvtColor(vision_frame, cv2.COLOR_BGR2RGB)
+		with self.frame_lock:
+			self.latest_frame = vision_frame
+		self.frame_event.set()
+
+	def _run(self) -> None:
+		import cv2
+
+		try:
+			while self.is_running:
+				if not self.frame_event.wait(0.1):
+					continue
+				self.frame_event.clear()
+				with self.frame_lock:
+					vision_frame = self.latest_frame
+					self.latest_frame = None
+				if vision_frame is None:
+					continue
+				frame_height, frame_width = vision_frame.shape[:2]
+				if not self.window_stream:
+					self.window_stream = WindowStream(frame_width, frame_height, self.fps, self.title)
+				# The window's shared memory is sized at creation, so a camera that switches size mid
+				# stream is scaled into it rather than reopening the window
+				if (frame_width, frame_height) != (self.window_stream.width, self.window_stream.height):
+					vision_frame = cv2.resize(vision_frame, (self.window_stream.width, self.window_stream.height))
+				self.window_stream.write(vision_frame.tobytes())
+				self.window_stream.poll_events()
+				if self.window_stream.has_window_closed():
+					self.is_running = False
+		except Exception as exception:
+			logger.warn('the raw camera window stopped: ' + str(exception), __name__)
+			self.is_running = False
+
+	def close(self) -> None:
+		self.is_running = False
+		self.frame_event.set()
+		self.thread.join(1.0)
+		if self.window_stream:
+			self.window_stream.close()
+			self.window_stream = None
+
+
+# Started next to any output mode, the native window or not. Without pygame it is skipped with a
+# warning rather than refusing the stream, since the processed output does not depend on it
+def open_raw_camera_view(camera_title : str, fps : Fps) -> Optional[RawCameraView]:
+	if not has_window_output():
+		log_window_output_requirement()
+		return None
+	return RawCameraView(camera_title, fps)
+
+
 # The browser layout keeps one window open across streams while the window mode is selected, so
 # starting and stopping does not make it flash away and come back at another place. Handlers run on
 # gradio's worker threads, hence the lock
@@ -160,7 +241,7 @@ def acquire_shared_window_stream(width : int, height : int, fps : Fps, is_fullsc
 				SHARED_WINDOW_STREAM.close()
 				SHARED_WINDOW_STREAM = None
 		if not SHARED_WINDOW_STREAM:
-			SHARED_WINDOW_STREAM = WindowStream(width, height, fps, 'FaceFusion', is_fullscreen)
+			SHARED_WINDOW_STREAM = WindowStream(width, height, fps, OUTPUT_WINDOW_TITLE, is_fullscreen)
 			SHARED_WINDOW_STREAM.clear()
 		SHARED_WINDOW_STATE['close_pending'] = False
 		return SHARED_WINDOW_STREAM

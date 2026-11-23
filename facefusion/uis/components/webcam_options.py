@@ -11,7 +11,7 @@ from facefusion.streamer import apply_stream_source_paths, resolve_source_face_g
 from facefusion.types import WebcamMode
 from facefusion.uis.core import get_ui_component, register_ui_component
 from facefusion.webcam_config import DEFAULT_SOURCE_FACE_NAME, NO_SOURCE_FACE_NAME, WEBCAM_BYPASSED_PROCESSORS, WEBCAM_CAMERA_BACKENDS, WEBCAM_CONTENT_ANALYSIS_INTERVALS, WEBCAM_FRAME_GENERATION_MODES, WEBCAM_FRAME_SKIPPING_MODES, WEBCAM_INLINE_PREVIEW_RESOLUTIONS, WEBCAM_OUTPUT_RESOLUTIONS, WEBCAM_PERFORMANCE_OVERLAYS, WEBCAM_STATE_KEYS, WEBCAM_WINDOW_DISPLAYS, format_webcam_config, normalize_webcam_resolution, get_source_faces, load_webcam_config, resolve_source_face_directory
-from facefusion.window_output import detect_window_displays, has_window_output, log_window_output_requirement, move_raw_camera_view, move_shared_window_stream
+from facefusion.window_output import detect_window_displays, has_window_output, log_window_output_requirement, move_raw_camera_view, move_shared_window_stream, set_camera_window_fullscreen, set_shared_window_fullscreen
 
 WEBCAM_DEVICE_ID_DROPDOWN : Optional[gradio.Dropdown] = None
 # The camera choices the dropdown was last given, so the camera sync can add one it lacks
@@ -108,8 +108,8 @@ def render() -> None:
 		choices = webcam_modes,
 		value = webcam_mode
 	)
-	# Read from state at window creation like frame skipping and the overlay are, which keeps it off
-	# start()'s signature and out of both of its inputs lists
+	# Read from state rather than passed to start(), which keeps it off start()'s signature; a change
+	# also switches an open output window in place (update_window_fullscreen)
 	WEBCAM_WINDOW_FULLSCREEN_CHECKBOX = gradio.Checkbox(
 		label = translator.get('uis.webcam_window_fullscreen_checkbox'),
 		value = webcam_config.get('webcam_window_fullscreen'),
@@ -314,10 +314,11 @@ def listen() -> None:
 		WEBCAM_CAMERA_BACKEND_DROPDOWN.change(update_camera_backend, inputs = WEBCAM_CAMERA_BACKEND_DROPDOWN, outputs = WEBCAM_DEVICE_ID_DROPDOWN)
 
 
-# Applied when the window opens, so a change while one is already running takes effect on the next
-# start rather than resizing it underneath the viewer
+# Switches the open output window in place (on its pinned display) as well as setting it for the next
+# one, so the same window stays and a capture bound to it keeps working
 def update_window_fullscreen(window_fullscreen : bool) -> None:
 	state_manager.set_item('webcam_window_fullscreen', window_fullscreen)
+	set_shared_window_fullscreen(bool(window_fullscreen))
 
 
 def get_local_camera_ids() -> List[int]:
@@ -337,6 +338,7 @@ def update_raw_window(raw_window : bool) -> None:
 
 def update_raw_window_fullscreen(raw_window_fullscreen : bool) -> None:
 	state_manager.set_item('webcam_raw_window_fullscreen', raw_window_fullscreen)
+	set_camera_window_fullscreen(bool(raw_window_fullscreen))
 
 
 def update_raw_window_display(raw_window_display : int) -> None:

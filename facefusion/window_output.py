@@ -141,6 +141,16 @@ class WindowStream:
 		except Exception:
 			pass
 
+	# Switches the open window in place: a new window would lose a capture bound to this one
+	def set_fullscreen(self, is_fullscreen : bool) -> None:
+		self.is_fullscreen = bool(is_fullscreen)
+		if self.is_closed or self.is_window_closed:
+			return
+		try:
+			self.status_queue.put_nowait({ 'window_fullscreen': self.is_fullscreen })
+		except Exception:
+			pass
+
 	def set_title(self, title : str) -> None:
 		if self.is_closed or self.is_window_closed:
 			return
@@ -329,22 +339,24 @@ SHARED_CAMERA_WINDOW : Optional[WindowStream] = None
 SHARED_CAMERA_LOCK = threading.RLock()
 
 
-# Reused while open at the same size and fullscreen choice, retitled for the camera it now belongs
-# to. Keys pressed while no stream was reading them are dropped
+# Reused while open at the same size; retitled, moved and switched to or from fullscreen in place, so
+# a capture bound to it survives. Keys pressed while no stream was reading them are dropped
 def acquire_shared_camera_window(width : int, height : int, fps : Fps, title : str, is_fullscreen : bool, window_display : int = 0) -> WindowStream:
 	global SHARED_CAMERA_WINDOW
 
 	with SHARED_CAMERA_LOCK:
 		if SHARED_CAMERA_WINDOW:
 			SHARED_CAMERA_WINDOW.poll_events()
-			is_changed = (SHARED_CAMERA_WINDOW.width, SHARED_CAMERA_WINDOW.height) != (width, height) or SHARED_CAMERA_WINDOW.is_fullscreen != bool(is_fullscreen)
-			if SHARED_CAMERA_WINDOW.has_window_closed() or SHARED_CAMERA_WINDOW.is_closed or is_changed:
+			is_resized = (SHARED_CAMERA_WINDOW.width, SHARED_CAMERA_WINDOW.height) != (width, height)
+			if SHARED_CAMERA_WINDOW.has_window_closed() or SHARED_CAMERA_WINDOW.is_closed or is_resized:
 				SHARED_CAMERA_WINDOW.close()
 				SHARED_CAMERA_WINDOW = None
 		if SHARED_CAMERA_WINDOW:
 			SHARED_CAMERA_WINDOW.set_title(title)
 			if SHARED_CAMERA_WINDOW.window_display != int(window_display or 0):
 				SHARED_CAMERA_WINDOW.set_display(window_display)
+			if SHARED_CAMERA_WINDOW.is_fullscreen != bool(is_fullscreen):
+				SHARED_CAMERA_WINDOW.set_fullscreen(is_fullscreen)
 		else:
 			SHARED_CAMERA_WINDOW = WindowStream(width, height, fps, title, is_fullscreen, window_display)
 			SHARED_CAMERA_WINDOW.clear()
@@ -357,6 +369,19 @@ def acquire_idle_camera_window(width : int, height : int, fps : Fps, title : str
 	if ACTIVE_RAW_CAMERA_VIEW:
 		return
 	acquire_shared_camera_window(width, height, fps, title, is_fullscreen, window_display)
+
+
+# The camera fullscreen checkbox: the running view keeps the choice for a window it reopens at
+# another size, and the open window switches in place
+def set_camera_window_fullscreen(is_fullscreen : bool) -> None:
+	raw_camera_view = ACTIVE_RAW_CAMERA_VIEW
+	if raw_camera_view:
+		raw_camera_view.is_fullscreen = bool(is_fullscreen)
+	with SHARED_CAMERA_LOCK:
+		if SHARED_CAMERA_WINDOW and not SHARED_CAMERA_WINDOW.has_window_closed():
+			SHARED_CAMERA_WINDOW.set_fullscreen(is_fullscreen)
+	if raw_camera_view and raw_camera_view.window_stream and raw_camera_view.window_stream is not SHARED_CAMERA_WINDOW:
+		raw_camera_view.window_stream.set_fullscreen(is_fullscreen)
 
 
 def move_shared_camera_window(window_display : int) -> None:
@@ -400,16 +425,27 @@ def acquire_shared_window_stream(width : int, height : int, fps : Fps, is_fullsc
 			SHARED_WINDOW_STREAM.poll_events()
 			# A stream still writing keeps its window; the new size is picked up by the next start
 			is_resized = (SHARED_WINDOW_STREAM.width, SHARED_WINDOW_STREAM.height) != (width, height) and not SHARED_WINDOW_STATE.get('in_use')
-			# Another display is handled like another size: the idle window is reopened where it belongs
-			is_moved = SHARED_WINDOW_STREAM.window_display != int(window_display or 0) and not SHARED_WINDOW_STATE.get('in_use')
-			if SHARED_WINDOW_STREAM.has_window_closed() or is_resized or is_moved:
+			if SHARED_WINDOW_STREAM.has_window_closed() or is_resized:
 				SHARED_WINDOW_STREAM.close()
 				SHARED_WINDOW_STREAM = None
+		# Another display or fullscreen choice is applied to the open window, never by reopening it
+		if SHARED_WINDOW_STREAM:
+			if SHARED_WINDOW_STREAM.window_display != int(window_display or 0):
+				SHARED_WINDOW_STREAM.set_display(window_display)
+			if SHARED_WINDOW_STREAM.is_fullscreen != bool(is_fullscreen):
+				SHARED_WINDOW_STREAM.set_fullscreen(is_fullscreen)
 		if not SHARED_WINDOW_STREAM:
 			SHARED_WINDOW_STREAM = WindowStream(width, height, fps, OUTPUT_WINDOW_TITLE, is_fullscreen, window_display)
 			SHARED_WINDOW_STREAM.clear()
 		SHARED_WINDOW_STATE['close_pending'] = False
 		return SHARED_WINDOW_STREAM
+
+
+# The fullscreen checkbox switches the open shared window right away, whether or not a stream runs
+def set_shared_window_fullscreen(is_fullscreen : bool) -> None:
+	with SHARED_WINDOW_LOCK:
+		if SHARED_WINDOW_STREAM and not SHARED_WINDOW_STREAM.has_window_closed():
+			SHARED_WINDOW_STREAM.set_fullscreen(is_fullscreen)
 
 
 # The display dropdown moves the open shared window right away, whether or not a stream is running

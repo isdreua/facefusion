@@ -187,6 +187,8 @@ class SdlWindowOutput:
 		self.window.title = title
 
 	def set_fullscreen(self, is_fullscreen : bool) -> None:
+		if is_fullscreen == self.is_fullscreen:
+			return
 		if is_fullscreen:
 			self.window.set_fullscreen(desktop = True)
 		else:
@@ -401,6 +403,15 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 					if display_index is not None:
 						window_output.move_to_display(display_index)
 						last_sequence = -1
+					continue
+				# The fullscreen checkbox changed while the window is open. Entering goes to the pinned
+				# display, in case the window was dragged off it
+				if 'window_fullscreen' in received_status:
+					is_fullscreen_wanted = bool(received_status.get('window_fullscreen'))
+					if is_fullscreen_wanted and not window_output.is_fullscreen and display_index is not None:
+						window_output.move_to_display(display_index)
+					window_output.set_fullscreen(is_fullscreen_wanted)
+					last_sequence = -1
 					continue
 				status = received_status
 				osd_expires_at = time.monotonic() + OSD_DURATION

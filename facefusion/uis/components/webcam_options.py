@@ -119,14 +119,14 @@ def render() -> None:
 		visible = has_window_output()
 	)
 	# Works next to every output mode, not just the window one, so it is not tied to the mode radio.
-	# Read from state on start like the fullscreen checkbox
+	# Opens the camera window at once and keeps it while ticked (webcam.update_camera_window)
 	WEBCAM_RAW_WINDOW_CHECKBOX = gradio.Checkbox(
 		label = translator.get('uis.webcam_raw_window_checkbox'),
 		value = state_manager.get_item('webcam_raw_window'),
 		visible = has_window_output()
 	)
 	# The camera window has its own fullscreen and display, so the two windows can sit fullscreen on
-	# different displays. Both are read when the camera window opens on start
+	# different displays. A change reopens or moves an idle camera window; a running stream keeps its own
 	WEBCAM_RAW_WINDOW_FULLSCREEN_CHECKBOX = gradio.Checkbox(
 		label = translator.get('uis.webcam_raw_window_fullscreen_checkbox'),
 		value = state_manager.get_item('webcam_raw_window_fullscreen'),
@@ -319,7 +319,7 @@ def update_window_fullscreen(window_fullscreen : bool) -> None:
 def update_window_display(window_display : int) -> None:
 	state_manager.set_item('webcam_window_display', int(window_display or 0))
 	move_shared_window_stream(int(window_display or 0))
-
+# The window itself is opened and closed by webcam.update_camera_window on the same change
 
 # Read when a stream starts, so a change takes effect on the next start
 def update_raw_window(raw_window : bool) -> None:

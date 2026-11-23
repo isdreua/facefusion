@@ -17,7 +17,7 @@ from facefusion.uis.core import get_ui_component
 from facefusion.uis.types import File
 from facefusion.vision import fit_cover_frame, pack_resolution, restrict_frame, unpack_resolution
 from facefusion.webcam_config import append_source_face_uploads, load_webcam_config, normalize_webcam_resolution
-from facefusion.window_output import SharedWindowTransport, acquire_shared_window_stream, open_raw_camera_view, apply_window_intents, has_window_output, log_window_output_requirement, release_shared_window_stream
+from facefusion.window_output import SharedWindowTransport, acquire_idle_camera_window, acquire_shared_camera_window, acquire_shared_window_stream, open_raw_camera_view, release_shared_camera_window, apply_window_intents, has_window_output, log_window_output_requirement, release_shared_window_stream
 
 SOURCE_FILE : Optional[gradio.File] = None
 WEBCAM_IMAGE : Optional[gradio.Image] = None
@@ -81,6 +81,27 @@ def listen() -> None:
 	if webcam_mode_radio and webcam_resolution_dropdown and webcam_fps_slider and webcam_output_resolution_dropdown:
 		for window_component in [ webcam_mode_radio, webcam_resolution_dropdown, webcam_output_resolution_dropdown ]:
 			window_component.change(update_window_output, inputs = [ webcam_mode_radio, webcam_resolution_dropdown, webcam_fps_slider, webcam_output_resolution_dropdown ])
+	camera_window_inputs = resolve_camera_window_inputs()
+	if camera_window_inputs:
+		for camera_window_component in camera_window_inputs[:4]:
+			camera_window_component.change(update_camera_window, inputs = camera_window_inputs)
+
+
+# The checkbox values are passed in rather than read from state: their own change handlers write the
+# state, and gradio does not order two handlers of the same event
+def resolve_camera_window_inputs() -> Optional[List[gradio.components.Component]]:
+	camera_window_inputs =\
+	[
+		get_ui_component('webcam_raw_window_checkbox'),
+		get_ui_component('webcam_raw_window_fullscreen_checkbox'),
+		get_ui_component('webcam_device_id_dropdown'),
+		get_ui_component('webcam_resolution_dropdown'),
+		get_ui_component('webcam_fps_slider')
+	]
+
+	if all(camera_window_inputs):
+		return camera_window_inputs #type:ignore[return-value]
+	return None
 
 
 def listen_auto_start(ui : gradio.Blocks) -> None:
@@ -97,6 +118,10 @@ def listen_auto_start(ui : gradio.Blocks) -> None:
 	# Whether or not the stream starts by itself, a page opened with window mode selected has its window
 	if webcam_mode_radio and webcam_resolution_dropdown and webcam_fps_slider and webcam_output_resolution_dropdown:
 		ui.load(update_window_output, inputs = [ webcam_mode_radio, webcam_resolution_dropdown, webcam_fps_slider, webcam_output_resolution_dropdown ])
+	# Likewise the camera window, whenever its option is on
+	camera_window_inputs = resolve_camera_window_inputs()
+	if camera_window_inputs:
+		ui.load(update_camera_window, inputs = camera_window_inputs)
 	if webcam_config.get('auto_start') and webcam_device_id_dropdown and webcam_mode_radio and webcam_resolution_dropdown and webcam_fps_slider and webcam_inline_preview_resolution_dropdown and webcam_execution_thread_count_slider and webcam_camera_backend_dropdown and webcam_output_resolution_dropdown:
 		load_event = ui.load(pre_start, outputs = [ SOURCE_FILE, WEBCAM_IMAGE, WEBCAM_START_BUTTON, WEBCAM_STOP_BUTTON ])
 		start_event = load_event.then(start, inputs = [ webcam_device_id_dropdown, webcam_mode_radio, webcam_resolution_dropdown, webcam_fps_slider, webcam_inline_preview_resolution_dropdown, webcam_execution_thread_count_slider, webcam_camera_backend_dropdown, webcam_output_resolution_dropdown ], outputs = WEBCAM_IMAGE)
@@ -196,8 +221,12 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 				window_transport = SharedWindowTransport(window_stream)
 				stream_writer = LatestFrameWriter(lambda: window_transport, output_width, output_height, False, output_fps, output_fps != webcam_fps)
 				stream_writer.start()
+			# The shared camera window, open already while the option is on; acquired here too in case
+			# it was closed, so it is up before the camera delivers its first frame
+			if state_manager.get_item('webcam_raw_window') and has_window_output():
+				acquire_shared_camera_window(webcam_width, webcam_height, webcam_fps, resolve_camera_window_title(webcam_device_id), bool(state_manager.get_item('webcam_raw_window_fullscreen')), state_manager.get_item('webcam_raw_window_display') or 0)
 			if state_manager.get_item('webcam_raw_window'):
-				raw_camera_view = open_raw_camera_view(resolve_camera_window_title(webcam_device_id), webcam_fps, bool(state_manager.get_item('webcam_raw_window_fullscreen')), state_manager.get_item('webcam_raw_window_display') or 0, camera_switch)
+				raw_camera_view = open_raw_camera_view(resolve_camera_window_title(webcam_device_id), webcam_fps, bool(state_manager.get_item('webcam_raw_window_fullscreen')), state_manager.get_item('webcam_raw_window_display') or 0, camera_switch, True)
 			for capture_vision_frame, capture_time, is_duplicate, timing in multi_process_capture(camera_capture, webcam_fps, webcam_execution_thread_count, (webcam_width, webcam_height), raw_camera_view.submit if raw_camera_view else None, camera_switch):
 				capture_vision_frame = cv2.cvtColor(capture_vision_frame, cv2.COLOR_BGR2RGB)
 				capture_vision_frame = fit_cover_frame(capture_vision_frame, (output_width, output_height))
@@ -258,6 +287,20 @@ def update_window_output(webcam_mode : WebcamMode, webcam_resolution : str, webc
 	if webcam_resolution:
 		_, output_width, output_height = resolve_output_resolution(webcam_resolution, webcam_output_resolution)
 		acquire_shared_window_stream(output_width, output_height, resolve_output_fps(webcam_fps), state_manager.get_item('webcam_window_fullscreen'), state_manager.get_item('webcam_window_display') or 0)
+
+
+# The camera window stays open while its option is on, black until a stream feeds it, the same way
+# the output window does in window mode. Opened at the capture resolution asked for, under the name
+# of the selected camera; a stream reopens it if the camera grants another size
+def update_camera_window(raw_window : bool, raw_window_fullscreen : bool, webcam_device_id : int, webcam_resolution : str, webcam_fps : Fps) -> None:
+	if not raw_window or not has_window_output():
+		release_shared_camera_window()
+		return
+	webcam_resolution = normalize_webcam_resolution(webcam_resolution)
+	if webcam_resolution:
+		webcam_width, webcam_height = unpack_resolution(webcam_resolution)
+		camera_title = resolve_camera_window_title(int(webcam_device_id)) if str(webcam_device_id).isdigit() else 'CAMERA'
+		acquire_idle_camera_window(webcam_width, webcam_height, webcam_fps, camera_title, bool(raw_window_fullscreen), state_manager.get_item('webcam_raw_window_display') or 0)
 
 
 def stop() -> gradio.Image:

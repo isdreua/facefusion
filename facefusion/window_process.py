@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 # This module is the target of a spawned process, so spawn re-imports it in the child. Every heavy
 # import therefore lives inside run_window: the parent imports this module only to name the target,
@@ -77,7 +77,7 @@ def resolve_osd_preview_size(width : int, height : int) -> int:
 # take up the same amount of the frame rather than one of them running off it.
 #
 # Scaled once per path and kept, because the osd redraws on every frame it is visible for and the
-# box never changes: the window is created at a fixed logical size and SCALED fullscreen keeps it.
+# box never changes: it is sized from the frame, which is fixed for the life of the window.
 # A path that fails to load caches None so a broken or unreadable image is not retried sixty times
 # a second; the parent has already filtered the path by extension, but it may still be gone by now
 def resolve_osd_preview(pygame : Any, osd_previews : Dict[str, Any], source_face_path : Optional[str], preview_size : int) -> Any:
@@ -138,36 +138,84 @@ def resolve_display_flags(pygame : Any, is_fullscreen : bool) -> int:
 	return display_flags
 
 
+# Windowed, the surface is the frame size and SCALED scales the window. Fullscreen it is the size of
+# the display itself: with the frame as the logical size, SDL's renderer could draw a frame larger
+# than the display (a bigger output resolution, or a desktop shrunk by Windows display scaling) at
+# 1:1 and crop it. So fullscreen is opened once to learn the window's real size, then again at that
+# size, and the frame is fitted into it by draw_frame. Without a display index pygame keeps the
+# display the window is on, so an unpinned window stays where it is
+def open_display(pygame : Any, width : int, height : int, is_fullscreen : bool, display_index : Optional[int]) -> Any:
+	display_flags = resolve_display_flags(pygame, is_fullscreen)
+	display_surface = set_display_mode(pygame, width, height, display_flags, display_index)
+
+	if is_fullscreen:
+		window_size = resolve_window_size(pygame)
+		if window_size and window_size != display_surface.get_size():
+			display_surface = set_display_mode(pygame, window_size[0], window_size[1], display_flags, display_index)
+	return display_surface
+
+
+def resolve_window_size(pygame : Any) -> Optional[Tuple[int, int]]:
+	try:
+		window_width, window_height = pygame.display.get_window_size()
+	except Exception:
+		return None
+	if window_width > 0 and window_height > 0:
+		return int(window_width), int(window_height)
+	return None
+
+
+def is_display_fullscreen(pygame : Any, display_surface : Any) -> bool:
+	return bool(display_surface.get_flags() & pygame.FULLSCREEN)
+
+
 # Fullscreen is left first and entered again from a window centred on the target display: a
 # fullscreen window keeps its display through set_mode, so going there directly would not move it
 def move_to_display(pygame : Any, display_surface : Any, width : int, height : int, display_index : int) -> Any:
-	is_fullscreen = bool(display_surface.get_flags() & pygame.FULLSCREEN)
+	is_fullscreen = is_display_fullscreen(pygame, display_surface)
 
 	try:
-		display_surface = set_display_mode(pygame, width, height, resolve_display_flags(pygame, False), display_index)
+		display_surface = open_display(pygame, width, height, False, display_index)
 		if is_fullscreen:
-			display_surface = set_display_mode(pygame, width, height, resolve_display_flags(pygame, True), display_index)
+			display_surface = open_display(pygame, width, height, True, display_index)
 	except Exception:
 		pass
 	return pygame.display.get_surface() or display_surface
 
 
-# toggle_fullscreen goes fullscreen on whichever display the window sits on, so a window dragged
-# elsewhere would leave its pin behind. A pinned window is moved back to its display first, and only
-# falls back to the plain toggle when that is refused
+# Done with set_mode rather than toggle_fullscreen, which keeps the frame as the logical size and so
+# brings back the crop. A pinned window is moved back to its display first, since it may have been
+# dragged away. The plain toggle is only the fallback when set_mode is refused
 def switch_fullscreen(pygame : Any, display_surface : Any, width : int, height : int, display_index : Optional[int]) -> Any:
-	is_fullscreen = bool(display_surface.get_flags() & pygame.FULLSCREEN)
+	is_fullscreen = is_display_fullscreen(pygame, display_surface)
 
-	if display_index is not None:
-		try:
-			display_surface = set_display_mode(pygame, width, height, resolve_display_flags(pygame, False), display_index)
-			if not is_fullscreen:
-				display_surface = set_display_mode(pygame, width, height, resolve_display_flags(pygame, True), display_index)
-			return display_surface
-		except Exception:
-			pass
+	try:
+		if display_index is not None:
+			display_surface = open_display(pygame, width, height, False, display_index)
+		return open_display(pygame, width, height, not is_fullscreen, display_index)
+	except Exception:
+		pass
 	pygame.display.toggle_fullscreen()
 	return pygame.display.get_surface() or display_surface
+
+
+# The frame scaled to fit the surface with its aspect kept, centred on black. A surface of the
+# frame's own size (always the case windowed) is a plain blit with no scaling cost
+def draw_frame(pygame : Any, display_surface : Any, frame_surface : Any) -> None:
+	surface_width, surface_height = display_surface.get_size()
+	frame_width, frame_height = frame_surface.get_size()
+
+	if (surface_width, surface_height) == (frame_width, frame_height):
+		display_surface.blit(frame_surface, (0, 0))
+		return
+	frame_scale = min(surface_width / frame_width, surface_height / frame_height)
+	fitted_size = (max(1, round(frame_width * frame_scale)), max(1, round(frame_height * frame_scale)))
+	try:
+		fitted_surface = pygame.transform.smoothscale(frame_surface, fitted_size)
+	except Exception:
+		fitted_surface = pygame.transform.scale(frame_surface, fitted_size)
+	display_surface.fill((0, 0, 0))
+	display_surface.blit(fitted_surface, ((surface_width - fitted_size[0]) // 2, (surface_height - fitted_size[1]) // 2))
 
 
 # Run in its own short lived spawned process for the same reason the window is: the browser process
@@ -217,12 +265,13 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 		pygame.init()
 		pygame.display.set_caption(title)
 		# Asked for at set_mode rather than toggled after, so the window never shows a windowed
-		# frame first; SCALED keeps the logical size so F11 still switches back
-		display_flags = resolve_display_flags(pygame, is_fullscreen)
+		# frame first
 		display_index = resolve_display_index(pygame, window_display)
-		display_surface = set_display_mode(pygame, width, height, display_flags, display_index)
+		display_surface = open_display(pygame, width, height, is_fullscreen, display_index)
 		osd_font = pygame.font.SysFont(None, 24)
 		last_sequence = -1
+		drawn_surface_size = display_surface.get_size()
+		drawn_fullscreen = is_display_fullscreen(pygame, display_surface)
 
 		while not is_closing and not stop_event.is_set():
 			for event in pygame.event.get():
@@ -241,7 +290,7 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 						intent_queue.put(('camera_id', camera_id))
 					elif event.key == pygame.K_ESCAPE:
 						# Escape leaves fullscreen first, so it cannot close the window by surprise
-						if display_surface.get_flags() & pygame.FULLSCREEN:
+						if is_display_fullscreen(pygame, display_surface):
 							display_surface = switch_fullscreen(pygame, display_surface, width, height, display_index)
 						else:
 							is_closing = True
@@ -277,6 +326,12 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 				status = received_status
 				osd_expires_at = time.monotonic() + OSD_DURATION
 
+			# A mode change (F11, Esc, a display move) leaves a new surface with nothing on it, so the
+			# current frame is drawn again rather than waiting for the next one
+			if display_surface.get_size() != drawn_surface_size or is_display_fullscreen(pygame, display_surface) != drawn_fullscreen:
+				drawn_surface_size = display_surface.get_size()
+				drawn_fullscreen = is_display_fullscreen(pygame, display_surface)
+				last_sequence = -1
 			current_sequence = int(sequence.value)
 			if current_sequence != last_sequence and current_sequence > 0:
 				last_sequence = current_sequence
@@ -286,7 +341,7 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 				# meanwhile cannot tear the one on screen
 				frame_bytes = bytes(shared_frames.buf[frame_offset:frame_offset + frame_size])
 				frame_surface = pygame.image.frombuffer(frame_bytes, (width, height), 'RGB')
-				display_surface.blit(frame_surface, (0, 0))
+				draw_frame(pygame, display_surface, frame_surface)
 				osd_text = resolve_osd_text(status)
 				if osd_text and time.monotonic() < osd_expires_at:
 					text_surface = osd_font.render(osd_text, True, (255, 255, 255), (0, 0, 0))

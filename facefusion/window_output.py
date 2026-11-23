@@ -67,6 +67,7 @@ class WindowStream:
 	def __init__(self, width : int, height : int, fps : Fps, title : str = 'FaceFusion', is_fullscreen : bool = False, window_display : int = 0):
 		self.width = width
 		self.window_display = int(window_display or 0)
+		self.is_fullscreen = bool(is_fullscreen)
 		self.height = height
 		self.frame_size = width * height * 3
 		# LatestFrameWriter writes to transport.stdin, the same shim WindowsVirtualCameraStream uses
@@ -187,17 +188,18 @@ OUTPUT_WINDOW_TITLE = 'FaceFusion OUTPUT'
 
 # A second, plain window showing what the camera delivers before any processor touches it. It is
 # fed from the capture thread through submit, which converts and stores only the newest frame, and
-# draws on its own thread so neither the capture nor the processing waits on the window. The window is
-# opened on the first frame at that frame's size, because the camera may not have granted the
-# resolution that was asked for. Only F11 and Esc (fullscreen) work in it, the face keys are ignored,
+# draws on its own thread so neither the capture nor the processing waits on the window. The window
+# matches the first frame's size, because the camera may not have granted the resolution that was
+# asked for. Only F11 and Esc (fullscreen) work in it, the face keys are ignored,
 # and closing it ends only this view, never the stream
 class RawCameraView:
-	def __init__(self, title : str, fps : Fps, is_fullscreen : bool = False, window_display : int = 0, camera_switch : Any = None):
+	def __init__(self, title : str, fps : Fps, is_fullscreen : bool = False, window_display : int = 0, camera_switch : Any = None, is_shared : bool = False):
 		self.title = title
 		self.fps = fps
 		self.is_fullscreen = is_fullscreen
 		self.window_display = window_display
 		self.camera_switch = camera_switch
+		self.is_shared = is_shared
 		self.latest_frame : Any = None
 		self.frame_lock = threading.Lock()
 		self.frame_event = threading.Event()
@@ -234,9 +236,17 @@ class RawCameraView:
 			self.latest_frame = vision_frame
 		self.frame_event.set()
 
-	def _run(self) -> None:
-		import cv2
+	# The browser layout's camera window is the shared one, already open while the option is on, and
+	# reopened here only if the camera delivers another size than it was opened at. Headless owns its
+	# window. Either way a window always matches the frame, so the picture is never stretched
+	def acquire_window(self, frame_width : int, frame_height : int) -> WindowStream:
+		if self.is_shared:
+			return acquire_shared_camera_window(frame_width, frame_height, self.fps, self.title, self.is_fullscreen, self.window_display)
+		if self.window_stream:
+			self.window_stream.close()
+		return WindowStream(frame_width, frame_height, self.fps, self.title, self.is_fullscreen, self.window_display)
 
+	def _run(self) -> None:
 		try:
 			while self.is_running:
 				if not self.frame_event.wait(0.1):
@@ -248,12 +258,8 @@ class RawCameraView:
 				if vision_frame is None:
 					continue
 				frame_height, frame_width = vision_frame.shape[:2]
-				if not self.window_stream:
-					self.window_stream = WindowStream(frame_width, frame_height, self.fps, self.title, self.is_fullscreen, self.window_display)
-				# The window's shared memory is sized at creation, so a camera that switches size mid
-				# stream is scaled into it rather than reopening the window
-				if (frame_width, frame_height) != (self.window_stream.width, self.window_stream.height):
-					vision_frame = cv2.resize(vision_frame, (self.window_stream.width, self.window_stream.height))
+				if not self.window_stream or (frame_width, frame_height) != (self.window_stream.width, self.window_stream.height):
+					self.window_stream = self.acquire_window(frame_width, frame_height)
 				self.window_stream.write(vision_frame.tobytes())
 				# Ctrl+0-9 works here too, since with any output mode but window this is the only window
 				for intent_name, intent_value in self.window_stream.poll_events():
@@ -265,6 +271,7 @@ class RawCameraView:
 			logger.warn('the raw camera window stopped: ' + str(exception), __name__)
 			self.is_running = False
 
+	# The shared window goes black and stays while the option is on; an owned one closes
 	def close(self) -> None:
 		global ACTIVE_RAW_CAMERA_VIEW
 
@@ -275,9 +282,12 @@ class RawCameraView:
 			self.camera_switch.listeners.remove(self.on_camera_switched)
 		self.frame_event.set()
 		self.thread.join(1.0)
-		if self.window_stream:
+		if self.window_stream and self.is_shared:
+			if not self.window_stream.is_closed and not self.window_stream.has_window_closed():
+				self.window_stream.clear()
+		elif self.window_stream:
 			self.window_stream.close()
-			self.window_stream = None
+		self.window_stream = None
 
 
 # The one camera window of the running stream, so the display dropdown can move it while it is open
@@ -286,13 +296,13 @@ ACTIVE_RAW_CAMERA_VIEW : Optional[RawCameraView] = None
 
 # Started next to any output mode, the native window or not. Without pygame it is skipped with a
 # warning rather than refusing the stream, since the processed output does not depend on it
-def open_raw_camera_view(camera_title : str, fps : Fps, is_fullscreen : bool = False, window_display : int = 0, camera_switch : Any = None) -> Optional[RawCameraView]:
+def open_raw_camera_view(camera_title : str, fps : Fps, is_fullscreen : bool = False, window_display : int = 0, camera_switch : Any = None, is_shared : bool = False) -> Optional[RawCameraView]:
 	if not has_window_output():
 		log_window_output_requirement()
 		return None
 	global ACTIVE_RAW_CAMERA_VIEW
 
-	ACTIVE_RAW_CAMERA_VIEW = RawCameraView(camera_title, fps, is_fullscreen, window_display, camera_switch)
+	ACTIVE_RAW_CAMERA_VIEW = RawCameraView(camera_title, fps, is_fullscreen, window_display, camera_switch, is_shared)
 	return ACTIVE_RAW_CAMERA_VIEW
 
 
@@ -300,6 +310,66 @@ def move_raw_camera_view(window_display : int) -> None:
 	raw_camera_view = ACTIVE_RAW_CAMERA_VIEW
 	if raw_camera_view:
 		raw_camera_view.set_display(window_display)
+	move_shared_camera_window(window_display)
+
+
+# The browser layout keeps the camera window open for as long as its option is on, like the output
+# window, black while no stream feeds it. Opened at the capture resolution that was asked for; the
+# first frame of a stream reopens it if the camera granted another size
+SHARED_CAMERA_WINDOW : Optional[WindowStream] = None
+SHARED_CAMERA_LOCK = threading.RLock()
+
+
+# Reused while open at the same size and fullscreen choice, retitled for the camera it now belongs
+# to. Keys pressed while no stream was reading them are dropped
+def acquire_shared_camera_window(width : int, height : int, fps : Fps, title : str, is_fullscreen : bool, window_display : int = 0) -> WindowStream:
+	global SHARED_CAMERA_WINDOW
+
+	with SHARED_CAMERA_LOCK:
+		if SHARED_CAMERA_WINDOW:
+			SHARED_CAMERA_WINDOW.poll_events()
+			is_changed = (SHARED_CAMERA_WINDOW.width, SHARED_CAMERA_WINDOW.height) != (width, height) or SHARED_CAMERA_WINDOW.is_fullscreen != bool(is_fullscreen)
+			if SHARED_CAMERA_WINDOW.has_window_closed() or SHARED_CAMERA_WINDOW.is_closed or is_changed:
+				SHARED_CAMERA_WINDOW.close()
+				SHARED_CAMERA_WINDOW = None
+		if SHARED_CAMERA_WINDOW:
+			SHARED_CAMERA_WINDOW.set_title(title)
+			if SHARED_CAMERA_WINDOW.window_display != int(window_display or 0):
+				SHARED_CAMERA_WINDOW.set_display(window_display)
+		else:
+			SHARED_CAMERA_WINDOW = WindowStream(width, height, fps, title, is_fullscreen, window_display)
+			SHARED_CAMERA_WINDOW.clear()
+		return SHARED_CAMERA_WINDOW
+
+
+# For the option and the settings changing while no stream runs. A running stream's view owns the
+# window's size and title until it stops, so it is left alone then
+def acquire_idle_camera_window(width : int, height : int, fps : Fps, title : str, is_fullscreen : bool, window_display : int = 0) -> None:
+	if ACTIVE_RAW_CAMERA_VIEW:
+		return
+	acquire_shared_camera_window(width, height, fps, title, is_fullscreen, window_display)
+
+
+def move_shared_camera_window(window_display : int) -> None:
+	with SHARED_CAMERA_LOCK:
+		if SHARED_CAMERA_WINDOW and not SHARED_CAMERA_WINDOW.has_window_closed():
+			SHARED_CAMERA_WINDOW.set_display(window_display)
+
+
+# Turning the option off closes it at once, also under a running stream, whose view then stops
+# drawing: it only writes into a closed window
+def release_shared_camera_window() -> None:
+	global SHARED_CAMERA_WINDOW
+
+	with SHARED_CAMERA_LOCK:
+		if SHARED_CAMERA_WINDOW:
+			SHARED_CAMERA_WINDOW.close()
+			SHARED_CAMERA_WINDOW = None
+
+
+@atexit.register
+def close_shared_camera_window() -> None:
+	release_shared_camera_window()
 
 
 # The browser layout keeps one window open across streams while the window mode is selected, so

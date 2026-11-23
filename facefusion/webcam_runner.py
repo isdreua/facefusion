@@ -7,7 +7,7 @@ from facefusion import logger, state_manager
 from facefusion.camera_manager import CameraSwitch, clear_camera_pool, resolve_camera_window_title
 from facefusion.common_helper import get_first
 from facefusion.frame_generator import StreamFrameGenerator, resolve_output_fps
-from facefusion.overlay import PERFORMANCE_OVERLAY
+from facefusion.overlay import PERFORMANCE_OVERLAY, ControlOverlay
 from facefusion.streamer import apply_stream_face_selector_mode, apply_stream_source_paths, multi_process_capture, open_stream
 from facefusion.stream_writer import LatestFrameWriter
 from facefusion.vision import fit_cover_frame, pack_resolution, unpack_resolution
@@ -27,6 +27,7 @@ def run() -> int:
 	source_face_groups = get_source_faces(webcam_config)
 	stream_writer : Any = None
 	window_stream = None
+	control_overlay = None
 	raw_camera_view = None
 
 	if webcam_mode not in WEBCAM_HEADLESS_MODES:
@@ -83,8 +84,9 @@ def run() -> int:
 		# the source face mid run, which no config file can do
 		if webcam_mode == 'window':
 			window_stream = WindowStream(output_width, output_height, output_fps, OUTPUT_WINDOW_TITLE, webcam_config.get('webcam_window_fullscreen'), webcam_config.get('webcam_window_display'))
-			if webcam_config.get('webcam_window_copy'):
-				window_stream.open_copy()
+			if webcam_config.get('webcam_control_window'):
+				window_stream.open_control()
+			control_overlay = ControlOverlay(window_stream, output_width, output_height)
 			stream_writer = LatestFrameWriter(lambda: window_stream, output_width, output_height, False, output_fps, output_fps != webcam_fps)
 		else:
 			stream_writer = LatestFrameWriter(lambda: open_stream(webcam_mode, output_resolution, output_fps), output_width, output_height, webcam_mode == 'v4l2', output_fps, output_fps != webcam_fps)
@@ -99,16 +101,24 @@ def run() -> int:
 			generated_vision_frame = frame_generator.generate(capture_vision_frame, is_duplicate)
 			timing['post_processing_finished'] = time.perf_counter()
 			overlay_mode = state_manager.get_item('webcam_performance_overlay')
-			if overlay_mode in [ 'simple', 'advanced' ]:
+			is_control_open = bool(window_stream and window_stream.has_control())
+			if overlay_mode in [ 'simple', 'advanced' ] or is_control_open:
 				timing['frame_generation'] = frame_generator.get_stats()
 				timing['writer_stats'] = stream_writer.get_stats()
+			if overlay_mode in [ 'simple', 'advanced' ]:
 				if generated_vision_frame is not None:
 					generated_vision_frame = PERFORMANCE_OVERLAY.render(generated_vision_frame, capture_time, overlay_mode, is_duplicate, timing, True)
 				capture_vision_frame = PERFORMANCE_OVERLAY.render(capture_vision_frame, capture_time, overlay_mode, is_duplicate, timing)
+			# The control window shows the output's own frames; only the readings go to its overlay
+			# thread, which draws the boxes the output leaves out
+			if control_overlay and is_control_open:
+				control_overlay.submit(capture_time, overlay_mode, is_duplicate, timing)
 			stream_writer.submit(capture_vision_frame, timing, generated_vision_frame)
 			if window_stream and not apply_window_intents(window_stream, camera_switch):
 				break
 	finally:
+		if control_overlay:
+			control_overlay.close()
 		if stream_writer:
 			stream_writer.close()
 		if window_stream:

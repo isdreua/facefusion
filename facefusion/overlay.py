@@ -1,3 +1,4 @@
+import threading
 import time
 from collections import deque
 from typing import Any, Deque, Dict, List, Optional, Tuple
@@ -22,6 +23,8 @@ class PerformanceOverlay:
 		self.last_processed_time = time.perf_counter()
 		self.last_instant_fps = 0.0
 		self.last_latency = 0.0
+		# The stream loop counts and draws, the control overlay thread draws from the same readings
+		self.stats_lock = threading.RLock()
 
 	# Frames re-delivered by frame skipping carry an already processed frame, so counting them
 	# would report the delivery rate as if it were the rate at which frames actually get processed
@@ -50,6 +53,15 @@ class PerformanceOverlay:
 
 		return instant_fps, average_fps, latency_ms, average_latency, output_fps
 
+	# The readings as they stand, without counting a frame. For a second drawing of a frame that was
+	# already counted (the control window beside an output with the overlay on)
+	def peek(self) -> Tuple[float, float, float, float, float]:
+		current_time = time.perf_counter()
+		average_fps = self.calculate_rate(self.processed_timestamps, current_time, self.last_instant_fps)
+		output_fps = self.calculate_rate(self.timestamps, current_time, self.last_instant_fps)
+		average_latency = sum(self.latencies) / len(self.latencies) if self.latencies else self.last_latency
+		return self.last_instant_fps, average_fps, self.last_latency, average_latency, output_fps
+
 	# Measures against the current time so a stalled pipeline decays towards zero instead of freezing
 	def calculate_rate(self, timestamps : Deque[float], current_time : float, fallback_rate : float) -> float:
 		if len(timestamps) > 1:
@@ -62,18 +74,69 @@ class PerformanceOverlay:
 	# the output rate the same way a re-delivered duplicate does and leaves the processed rate alone
 	def render(self, vision_frame : VisionFrame, capture_time : float, mode : str = 'simple', is_duplicate : bool = False, timing : Optional[Dict[str, Any]] = None, is_generated : bool = False) -> VisionFrame:
 		# The caller must pass an exclusively owned frame because overlays are rendered in place.
+		with self.stats_lock:
+			# 1. Render Top-Left Performance HUD
+			vision_frame = self._render_performance_hud(vision_frame, capture_time, is_duplicate or is_generated, timing)
 
-		# 1. Render Top-Left Performance HUD
-		vision_frame = self._render_performance_hud(vision_frame, capture_time, is_duplicate or is_generated, timing)
-
-		# 2. Render Top-Right Pipeline Inspector HUD if advanced mode is enabled
-		if mode == 'advanced':
-			vision_frame = self._render_pipeline_inspector(vision_frame, timing)
+			# 2. Render Top-Right Pipeline Inspector HUD if advanced mode is enabled
+			if mode == 'advanced':
+				vision_frame = self._render_pipeline_inspector(vision_frame, timing)
 
 		return vision_frame
 
-	def _render_performance_hud(self, vision_frame : VisionFrame, capture_time : float, is_duplicate : bool = False, timing : Optional[Dict[str, Any]] = None) -> VisionFrame:
-		instant_fps, avg_fps, instant_lat, avg_lat, output_fps = self.update(capture_time, is_duplicate)
+	# Counts a frame without drawing it, for a stream whose output draws no overlay while the control
+	# window shows one
+	def count(self, capture_time : float, is_duplicate : bool = False) -> None:
+		with self.stats_lock:
+			self.update(capture_time, is_duplicate)
+
+	# The overlay boxes the output leaves out, for the control window to lay over the output's own
+	# frame: the HUD when the output draws nothing, the inspector unless the output is advanced. Each
+	# comes marked (a thicker red and black border), so the control window never passes for what the
+	# output looks like. Drawn from the readings as they stand, never counting a frame.
+	#
+	# Each box is drawn twice, on black and on white, at the place it has on the output frame. Where
+	# the two agree the pixel is opaque, and how far they differ is how much of the frame shows
+	# through, so the semi-transparent box background and the antialiased text come out as they would
+	# on the frame. Returns (x, y, width, height, RGBA bytes) in frame coordinates
+	def render_control_patches(self, frame_width : int, frame_height : int, output_mode : str, timing : Optional[Dict[str, Any]], canvases : Dict[str, Any]) -> List[Tuple[int, int, int, int, bytes]]:
+		is_hud_missing = output_mode not in [ 'simple', 'advanced' ]
+		is_inspector_missing = output_mode != 'advanced'
+		overlay_patches : List[Tuple[int, int, int, int, bytes]] = []
+
+		if not is_hud_missing and not is_inspector_missing:
+			return overlay_patches
+		black_canvas, white_canvas = resolve_control_canvases(canvases, frame_width, frame_height)
+		box_rects : List[Tuple[int, int, int, int]] = []
+		with self.stats_lock:
+			# Read once for both drawings: peek measures against the current time, and two different
+			# readings would not cancel out between black and white
+			stats_readings = self.peek()
+			for canvas in [ black_canvas, white_canvas ]:
+				box_rects.clear()
+				if is_hud_missing:
+					self._render_performance_hud(canvas, 0.0, False, timing, False, True, box_rects, stats_readings)
+				if is_inspector_missing:
+					self._render_pipeline_inspector(canvas, timing, True, box_rects)
+		for box_x, box_y, box_w, box_h in box_rects:
+			patch_x, patch_y = max(0, box_x - CONTROL_PATCH_PAD), max(0, box_y - CONTROL_PATCH_PAD)
+			patch_end_x, patch_end_y = min(frame_width, box_x + box_w + CONTROL_PATCH_PAD + 1), min(frame_height, box_y + box_h + CONTROL_PATCH_PAD + 1)
+			black_patch = black_canvas[patch_y:patch_end_y, patch_x:patch_end_x].astype(numpy.float32)
+			white_patch = white_canvas[patch_y:patch_end_y, patch_x:patch_end_x].astype(numpy.float32)
+			patch_alpha = numpy.clip(255.0 - (white_patch - black_patch).mean(axis = 2), 0.0, 255.0)
+			patch_color = numpy.clip(black_patch * 255.0 / numpy.maximum(patch_alpha, 1.0)[:, :, None], 0.0, 255.0)
+			patch_rgba = numpy.dstack([ patch_color, patch_alpha ]).astype(numpy.uint8)
+			overlay_patches.append((patch_x, patch_y, patch_end_x - patch_x, patch_end_y - patch_y, patch_rgba.tobytes()))
+			# Cleared again, so the next drawing starts from a clean canvas without allocating one
+			black_canvas[patch_y:patch_end_y, patch_x:patch_end_x] = 0
+			white_canvas[patch_y:patch_end_y, patch_x:patch_end_x] = 255
+		return overlay_patches
+
+	def _render_performance_hud(self, vision_frame : VisionFrame, capture_time : float, is_duplicate : bool = False, timing : Optional[Dict[str, Any]] = None, is_counted : bool = True, is_marked : bool = False, box_rects : Optional[List[Tuple[int, int, int, int]]] = None, stats_readings : Optional[Tuple[float, float, float, float, float]] = None) -> VisionFrame:
+		if stats_readings is not None:
+			instant_fps, avg_fps, instant_lat, avg_lat, output_fps = stats_readings
+		else:
+			instant_fps, avg_fps, instant_lat, avg_lat, output_fps = self.update(capture_time, is_duplicate) if is_counted else self.peek()
 		writer_stats = (timing or {}).get('writer_stats') or {}
 		frame_generation_stats = (timing or {}).get('frame_generation') or {}
 		# What the transport actually wrote, repeats excluded, is the rate that reaches the screen; the
@@ -95,7 +158,9 @@ class PerformanceOverlay:
 		res = cv2.addWeighted(sub_img, 0.35, dark_rect, 0.65, 0)
 		overlay[box_y:box_y + box_h, box_x:box_x + box_w] = res
 
-		cv2.rectangle(overlay, (box_x, box_y), (box_x + box_w, box_y + box_h), (60, 80, 110), 1, cv2.LINE_AA)
+		draw_box_border(overlay, box_x, box_y, box_w, box_h, is_marked)
+		if box_rects is not None:
+			box_rects.append((box_x, box_y, box_w, box_h))
 
 		font = cv2.FONT_HERSHEY_SIMPLEX
 		font_scale = 0.42
@@ -278,7 +343,7 @@ class PerformanceOverlay:
 		return inspector_lines
 
 
-	def _render_pipeline_inspector(self, vision_frame : VisionFrame, timing : Optional[Dict[str, Any]] = None) -> VisionFrame:
+	def _render_pipeline_inspector(self, vision_frame : VisionFrame, timing : Optional[Dict[str, Any]] = None, is_marked : bool = False, box_rects : Optional[List[Tuple[int, int, int, int]]] = None) -> VisionFrame:
 		frame_height, frame_width = vision_frame.shape[:2]
 
 		font = cv2.FONT_HERSHEY_SIMPLEX
@@ -300,7 +365,9 @@ class PerformanceOverlay:
 		res = cv2.addWeighted(sub_img, 0.35, dark_rect, 0.65, 0)
 		overlay[box_y:box_y + box_h, box_x:box_x + box_w] = res
 
-		cv2.rectangle(overlay, (box_x, box_y), (box_x + box_w, box_y + box_h), (60, 80, 110), 1, cv2.LINE_AA)
+		draw_box_border(overlay, box_x, box_y, box_w, box_h, is_marked)
+		if box_rects is not None:
+			box_rects.append((box_x, box_y, box_w, box_h))
 
 		# Header
 		cv2.putText(overlay, 'PIPELINE & MODEL INSPECTOR', (box_x + 10, box_y + 18), font, 0.42, (0, 210, 255), 1, cv2.LINE_AA)
@@ -339,3 +406,90 @@ class PerformanceOverlay:
 
 
 PERFORMANCE_OVERLAY = PerformanceOverlay()
+
+
+# Frames reach the overlay as RGB
+CONTROL_MARK_COLOR = (255, 0, 0)
+CONTROL_MARK_THICKNESS = 3
+CONTROL_MARK_DASH = 10
+
+
+# The plain thin border, or for a box the output does not show, a thicker one dashed red and black
+def draw_box_border(vision_frame : VisionFrame, box_x : int, box_y : int, box_w : int, box_h : int, is_marked : bool) -> None:
+	if not is_marked:
+		cv2.rectangle(vision_frame, (box_x, box_y), (box_x + box_w, box_y + box_h), (60, 80, 110), 1, cv2.LINE_AA)
+		return
+	cv2.rectangle(vision_frame, (box_x, box_y), (box_x + box_w, box_y + box_h), (0, 0, 0), CONTROL_MARK_THICKNESS)
+	for dash_x in range(box_x, box_x + box_w, CONTROL_MARK_DASH * 2):
+		dash_end_x = min(dash_x + CONTROL_MARK_DASH, box_x + box_w)
+		cv2.line(vision_frame, (dash_x, box_y), (dash_end_x, box_y), CONTROL_MARK_COLOR, CONTROL_MARK_THICKNESS)
+		cv2.line(vision_frame, (dash_x, box_y + box_h), (dash_end_x, box_y + box_h), CONTROL_MARK_COLOR, CONTROL_MARK_THICKNESS)
+	for dash_y in range(box_y, box_y + box_h, CONTROL_MARK_DASH * 2):
+		dash_end_y = min(dash_y + CONTROL_MARK_DASH, box_y + box_h)
+		cv2.line(vision_frame, (box_x, dash_y), (box_x, dash_end_y), CONTROL_MARK_COLOR, CONTROL_MARK_THICKNESS)
+		cv2.line(vision_frame, (box_x + box_w, dash_y), (box_x + box_w, dash_end_y), CONTROL_MARK_COLOR, CONTROL_MARK_THICKNESS)
+
+# Wider than the marked border reaches outside its box
+CONTROL_PATCH_PAD = 3
+# The readings change every frame, but nobody reads them that fast; the boxes are redrawn this often
+CONTROL_OVERLAY_INTERVAL = 1.0 / 15
+
+
+# One black and one white canvas at the frame's size, allocated once and kept clean between drawings
+def resolve_control_canvases(canvases : Dict[str, Any], frame_width : int, frame_height : int) -> Tuple[VisionFrame, VisionFrame]:
+	if canvases.get('size') != (frame_width, frame_height):
+		canvases['size'] = (frame_width, frame_height)
+		canvases['black'] = numpy.zeros((frame_height, frame_width, 3), dtype = numpy.uint8)
+		canvases['white'] = numpy.full((frame_height, frame_width, 3), 255, dtype = numpy.uint8)
+	return canvases['black'], canvases['white']
+
+
+# Draws the control window's extra overlay boxes on a thread of its own, so the stream loop only
+# hands over the latest readings (submit) and never waits on the drawing. Lives as long as one stream
+class ControlOverlay:
+	def __init__(self, window_stream : Any, frame_width : int, frame_height : int, performance_overlay : Optional[PerformanceOverlay] = None):
+		self.window_stream = window_stream
+		self.frame_width = frame_width
+		self.frame_height = frame_height
+		self.performance_overlay = performance_overlay or PERFORMANCE_OVERLAY
+		self.latest_reading : Optional[Tuple[str, Dict[str, Any]]] = None
+		self.reading_lock = threading.Lock()
+		self.stop_event = threading.Event()
+		self.canvases : Dict[str, Any] = {}
+		self.has_patches = False
+		self.thread = threading.Thread(target = self._run, daemon = True)
+		self.thread.start()
+
+	# Called on the stream loop for every frame while the control window is open. The timing is copied
+	# (shallowly) because the writer thread goes on adding to it. With no overlay on the output,
+	# nothing else counts the frame for the readings, so it is counted here
+	def submit(self, capture_time : float, output_mode : str, is_duplicate : bool, timing : Dict[str, Any]) -> None:
+		if output_mode not in [ 'simple', 'advanced' ]:
+			self.performance_overlay.count(capture_time, is_duplicate)
+		with self.reading_lock:
+			self.latest_reading = (output_mode, dict(timing))
+
+	def _run(self) -> None:
+		while not self.stop_event.wait(CONTROL_OVERLAY_INTERVAL):
+			with self.reading_lock:
+				latest_reading = self.latest_reading
+				self.latest_reading = None
+			if latest_reading is None:
+				continue
+			output_mode, timing = latest_reading
+			try:
+				overlay_patches = self.performance_overlay.render_control_patches(self.frame_width, self.frame_height, output_mode, timing, self.canvases)
+			except Exception:
+				continue
+			# Nothing to send while the output shows everything and nothing was sent before
+			if overlay_patches or self.has_patches:
+				self.window_stream.push_overlay_patches(overlay_patches)
+				self.has_patches = bool(overlay_patches)
+
+	# The boxes go with the stream, so a stopped stream's black frame is not left with readings on it
+	def close(self) -> None:
+		self.stop_event.set()
+		self.thread.join(1.0)
+		if self.has_patches:
+			self.window_stream.push_overlay_patches([])
+			self.has_patches = False

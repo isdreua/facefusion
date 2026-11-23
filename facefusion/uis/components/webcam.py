@@ -8,7 +8,7 @@ from facefusion import logger, state_manager, translator
 from facefusion.camera_manager import CameraSwitch, cancel_camera_open, clear_camera_pool, get_active_camera_id, is_camera_open_cancelled, request_camera_switch, reset_camera_open, resolve_camera_window_title
 from facefusion.filesystem import has_image
 from facefusion.frame_generator import StreamFrameGenerator, resolve_output_fps
-from facefusion.overlay import PERFORMANCE_OVERLAY
+from facefusion.overlay import PERFORMANCE_OVERLAY, ControlOverlay
 from facefusion.streamer import apply_stream_face_selector_mode, multi_process_capture, open_stream, resolve_source_face_groups
 from facefusion.stream_writer import LatestFrameWriter
 from facefusion.types import Fps, VisionFrame, WebcamMode
@@ -217,6 +217,7 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 	stream_writer = None
 	window_stream = None
 	window_transport = None
+	control_overlay = None
 	raw_camera_view = None
 	# The camera keeps its own rate; only the transport runs at the generated one. A generated stream
 	# is also paced by capture time, since uneven worker finishing is what makes doubled frames judder
@@ -236,8 +237,9 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 			# Acquired here rather than inside the factory so that poll_events stays reachable from this
 			# loop. repeat_latest is off because the window goes on showing the last frame by itself
 			if webcam_mode == 'window':
-				window_stream = acquire_shared_window_stream(output_width, output_height, output_fps, state_manager.get_item('webcam_window_fullscreen'), state_manager.get_item('webcam_window_display') or 0, bool(state_manager.get_item('webcam_window_copy')))
+				window_stream = acquire_shared_window_stream(output_width, output_height, output_fps, state_manager.get_item('webcam_window_fullscreen'), state_manager.get_item('webcam_window_display') or 0, bool(state_manager.get_item('webcam_control_window')))
 				window_transport = SharedWindowTransport(window_stream)
+				control_overlay = ControlOverlay(window_stream, output_width, output_height)
 				stream_writer = LatestFrameWriter(lambda: window_transport, output_width, output_height, False, output_fps, output_fps != webcam_fps)
 				stream_writer.start()
 			# The shared camera window, open already while the option is on; acquired here too in case
@@ -256,12 +258,18 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 				timing['post_processing_finished'] = time.perf_counter()
 
 				overlay_mode = state_manager.get_item('webcam_performance_overlay')
-				if overlay_mode in [ 'simple', 'advanced' ]:
+				is_control_open = bool(window_stream and window_stream.has_control())
+				if overlay_mode in [ 'simple', 'advanced' ] or is_control_open:
 					timing['frame_generation'] = frame_generator.get_stats()
 					timing['writer_stats'] = stream_writer.get_stats() if stream_writer else None
+				if overlay_mode in [ 'simple', 'advanced' ]:
 					if generated_vision_frame is not None:
 						generated_vision_frame = PERFORMANCE_OVERLAY.render(generated_vision_frame, capture_time, overlay_mode, is_duplicate, timing, True)
 					capture_vision_frame = PERFORMANCE_OVERLAY.render(capture_vision_frame, capture_time, overlay_mode, is_duplicate, timing)
+				# The control window shows the output's own frames; only the readings go to its overlay
+				# thread, which draws the boxes the output leaves out
+				if control_overlay and is_control_open:
+					control_overlay.submit(capture_time, overlay_mode, is_duplicate, timing)
 
 				if webcam_mode == 'inline':
 					if inline_preview_resolution != 'native':
@@ -272,6 +280,8 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 				if window_stream and not apply_window_intents(window_stream, camera_switch):
 					break
 		finally:
+			if control_overlay:
+				control_overlay.close()
 			if stream_writer:
 				stream_writer.close()
 			# Also closed by the writer when its thread finishes; this covers one that did not
@@ -306,7 +316,7 @@ def update_window_output(webcam_mode : WebcamMode, webcam_resolution : str, webc
 	webcam_resolution = normalize_webcam_resolution(webcam_resolution)
 	if webcam_resolution:
 		_, output_width, output_height = resolve_output_resolution(webcam_resolution, webcam_output_resolution)
-		acquire_shared_window_stream(output_width, output_height, resolve_output_fps(webcam_fps), state_manager.get_item('webcam_window_fullscreen'), state_manager.get_item('webcam_window_display') or 0, bool(state_manager.get_item('webcam_window_copy')))
+		acquire_shared_window_stream(output_width, output_height, resolve_output_fps(webcam_fps), state_manager.get_item('webcam_window_fullscreen'), state_manager.get_item('webcam_window_display') or 0, bool(state_manager.get_item('webcam_control_window')))
 
 
 # The camera window stays open while its option is on, black until a stream feeds it, the same way

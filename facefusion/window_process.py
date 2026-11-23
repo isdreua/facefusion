@@ -1,9 +1,11 @@
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 # This module is the target of a spawned process, so spawn re-imports it in the child. Every heavy
 # import therefore lives inside run_window: the parent imports this module only to name the target,
 # and must not drag pygame in, while the child must not drag onnxruntime in
-FRAME_SLOT_COUNT = 2
+# Three, since the window draws straight from its slot without copying it first: the parent would
+# have to write three frames during one draw to reach the slot being read
+FRAME_SLOT_COUNT = 3
 OSD_DURATION = 1.5
 OSD_MARGIN = 12
 # The preview is sized against the frame's shorter side - the height of a landscape window, the
@@ -67,6 +69,44 @@ def resolve_osd_text(status : Dict[str, Any]) -> str:
 	return ''
 
 
+# pygame reads BGR directly from 2.1.3 on. An older one is given the channels swapped (the slow path,
+# taken only there and only for the camera window)
+def resolve_frame_format(pygame : Any, pixel_format : str) -> Tuple[str, bool]:
+	if pixel_format != 'BGR':
+		return 'RGB', False
+	try:
+		pygame.image.frombuffer(bytes(3), (1, 1), 'BGR')
+		return 'BGR', False
+	except Exception:
+		return 'RGB', True
+
+
+def resolve_frame_surface(pygame : Any, frame_view : Any, width : int, height : int, frame_format : str, is_frame_swapped : bool) -> Any:
+	if is_frame_swapped:
+		frame_bytes = bytes(frame_view)
+		swapped_bytes = bytearray(len(frame_bytes))
+		swapped_bytes[0::3] = frame_bytes[2::3]
+		swapped_bytes[1::3] = frame_bytes[1::3]
+		swapped_bytes[2::3] = frame_bytes[0::3]
+		return pygame.image.frombuffer(swapped_bytes, (width, height), 'RGB')
+	return pygame.image.frombuffer(frame_view, (width, height), frame_format)
+
+
+# Each patch arrives as (x, y, width, height, RGBA bytes) in frame coordinates. A malformed one is
+# skipped rather than ending the window
+def resolve_overlay_patches(pygame : Any, received_patches : List[Any]) -> List[Tuple[int, int, Any]]:
+	overlay_patches = []
+
+	for received_patch in received_patches:
+		try:
+			patch_x, patch_y, patch_width, patch_height, patch_bytes = received_patch
+			patch_surface = pygame.image.frombuffer(bytes(patch_bytes), (int(patch_width), int(patch_height)), 'RGBA')
+			overlay_patches.append((int(patch_x), int(patch_y), patch_surface))
+		except Exception:
+			continue
+	return overlay_patches
+
+
 # A third of the frame's shorter side, which is the height of a landscape window and the width of a
 # portrait one
 def resolve_osd_preview_size(width : int, height : int) -> int:
@@ -119,10 +159,10 @@ WINDOW_POSITION_CENTERED_DISPLAY = 0x2FFF0000
 WINDOW_SETTLE_TIMEOUT = 1.0
 WINDOW_SETTLE_MINIMUM = 0.05
 WINDOW_SETTLE_STABLE = 0.1
-# The most of a display a window opens at. The copy of the output window opens smaller, since it sits
+# The most of a display a window opens at. The control window opens smaller, since it sits
 # beside other things on a working display rather than being the thing on it
 WINDOW_FRACTION = 0.9
-COPY_WINDOW_FRACTION = 0.5
+CONTROL_WINDOW_FRACTION = 0.5
 
 
 def resolve_centered_position(display_index : int) -> Tuple[int, int]:
@@ -321,10 +361,11 @@ def probe_displays(result_queue : Any) -> None:
 
 # The child reports raw intents and resolves nothing: the parent owns the index to face name mapping
 # so that the window and the browser gallery cannot disagree about what is selected
-# A copy (is_copy) reads the same shared frames as the window it copies but is never fullscreen and
-# never pinned: it ignores F11 and the display and fullscreen settings, and Esc simply closes it.
+# A control window (is_control) is never fullscreen and never pinned: it ignores F11 and the display and fullscreen settings, and Esc simply closes it.
 # Every other key works the same, so the stream can be controlled from either window
-def run_window(shared_name : str, width : int, height : int, fps : float, title : str, is_fullscreen : bool, window_display : int, sequence : Any, frame_event : Any, stop_event : Any, intent_queue : Any, status_queue : Any, is_copy : bool = False) -> None:
+# The frames are RGB, or BGR (pixel_format) for the camera window, which is handed the camera's own
+# frame as captured rather than a converted copy of it
+def run_window(shared_name : str, width : int, height : int, fps : float, title : str, is_fullscreen : bool, window_display : int, sequence : Any, frame_event : Any, stop_event : Any, intent_queue : Any, status_queue : Any, is_control : bool = False, pixel_format : str = 'RGB') -> None:
 	import os
 	import time
 	from multiprocessing import shared_memory
@@ -339,17 +380,19 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 	osd_previews : Dict[str, Any] = {}
 	osd_preview_size = resolve_osd_preview_size(width, height)
 	osd_expires_at = 0.0
+	overlay_patches : List[Tuple[int, int, Any]] = []
 	is_closing = False
 
 	try:
 		shared_frames = shared_memory.SharedMemory(name = shared_name)
 		pygame.init()
-		display_index = None if is_copy else resolve_display_index(pygame, window_display)
-		window_output = create_window_output(pygame, width, height, title, bool(is_fullscreen) and not is_copy, display_index, COPY_WINDOW_FRACTION if is_copy else WINDOW_FRACTION)
+		display_index = None if is_control else resolve_display_index(pygame, window_display)
+		window_output = create_window_output(pygame, width, height, title, bool(is_fullscreen) and not is_control, display_index, CONTROL_WINDOW_FRACTION if is_control else WINDOW_FRACTION)
 		# The frame and the osd are composed here at the frame's own size, and the window output
 		# scales the result to the window
 		canvas_surface = pygame.Surface((width, height), 0, 32)
 		osd_font = pygame.font.SysFont(None, 24)
+		frame_format, is_frame_swapped = resolve_frame_format(pygame, pixel_format)
 		last_sequence = -1
 
 		while not is_closing and not stop_event.is_set():
@@ -364,7 +407,7 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 					camera_id = resolve_camera_id(pygame, event.key) if event.mod & pygame.KMOD_CTRL else None
 					face_index = resolve_face_index(pygame, event.key)
 					overlay_mode = resolve_overlay_mode(pygame, event.key)
-					if event.key == pygame.K_F11 and is_copy:
+					if event.key == pygame.K_F11 and is_control:
 						pass
 					elif event.key == pygame.K_F11:
 						# A pinned window that was dragged away goes back to its display first
@@ -408,7 +451,13 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 					continue
 				# The display dropdown changed while the window is open. Auto drops the pin and leaves
 				# the window where it is; a display that is not attached is ignored the same way
-				if is_copy and ('window_display' in received_status or 'window_fullscreen' in received_status):
+				if is_control and ('window_display' in received_status or 'window_fullscreen' in received_status):
+					continue
+				# The overlay boxes the output does not show, drawn by the parent and laid over the
+				# shared frame here. They stay until the next set replaces them; an empty set clears
+				if 'overlay_patches' in received_status:
+					overlay_patches = resolve_overlay_patches(pygame, received_status.get('overlay_patches') or [])
+					last_sequence = -1
 					continue
 				if 'window_display' in received_status:
 					display_index = resolve_display_index(pygame, int(received_status.get('window_display') or 0))
@@ -435,21 +484,33 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 				last_sequence = current_sequence
 				frame_slot = (current_sequence - 1) % FRAME_SLOT_COUNT
 				frame_offset = frame_slot * frame_size
-				# Copied out of the shared slot before it is drawn, so a frame the parent writes
-				# meanwhile cannot tear the one on screen
-				frame_bytes = bytes(shared_frames.buf[frame_offset:frame_offset + frame_size])
-				frame_surface = pygame.image.frombuffer(frame_bytes, (width, height), 'RGB')
-				canvas_surface.blit(frame_surface, (0, 0))
-				osd_text = resolve_osd_text(status)
-				if osd_text and time.monotonic() < osd_expires_at:
-					text_surface = osd_font.render(osd_text, True, (255, 255, 255), (0, 0, 0))
-					canvas_surface.blit(text_surface, (OSD_MARGIN, OSD_MARGIN))
-					# Under the text, and only while the text is up, so switching faces shows what
-					# was switched to rather than leaving a thumbnail sitting on the frame
-					preview_surface = resolve_osd_preview(pygame, osd_previews, status.get('source_face_path'), osd_preview_size)
-					if preview_surface:
-						canvas_surface.blit(preview_surface, (OSD_MARGIN, OSD_MARGIN + text_surface.get_height() + OSD_PREVIEW_GAP))
-				window_output.present(canvas_surface)
+				# Drawn straight from the shared slot, with no copy taken first: the parent writes the
+				# other slots meanwhile (see FRAME_SLOT_COUNT)
+				frame_view = shared_frames.buf[frame_offset:frame_offset + frame_size]
+				try:
+					frame_surface = resolve_frame_surface(pygame, frame_view, width, height, frame_format, is_frame_swapped)
+					# The blit is also the conversion to the 32-bit canvas the texture takes, so it is
+					# needed even with nothing to draw over the frame
+					canvas_surface.blit(frame_surface, (0, 0))
+					for patch_x, patch_y, patch_surface in overlay_patches:
+						canvas_surface.blit(patch_surface, (patch_x, patch_y))
+					osd_text = resolve_osd_text(status)
+					if osd_text and time.monotonic() < osd_expires_at:
+						text_surface = osd_font.render(osd_text, True, (255, 255, 255), (0, 0, 0))
+						canvas_surface.blit(text_surface, (OSD_MARGIN, OSD_MARGIN))
+						# Under the text, and only while the text is up, so switching faces shows what
+						# was switched to rather than leaving a thumbnail sitting on the frame
+						preview_surface = resolve_osd_preview(pygame, osd_previews, status.get('source_face_path'), osd_preview_size)
+						if preview_surface:
+							canvas_surface.blit(preview_surface, (OSD_MARGIN, OSD_MARGIN + text_surface.get_height() + OSD_PREVIEW_GAP))
+					window_output.present(canvas_surface)
+				finally:
+					# The surface holds the shared buffer, which cannot be closed while it is exported
+					frame_surface = None
+					try:
+						frame_view.release()
+					except BufferError:
+						pass
 			else:
 				# Nothing new to draw, so wait on the parent instead of spinning; the sequence above
 				# is the real source of truth, which makes a missed event harmless

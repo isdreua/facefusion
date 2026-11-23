@@ -129,7 +129,8 @@ class LatestFrameWriter:
 
 	def _write(self, frame : VisionFrame, timing : Optional[Dict[str, Any]], is_repeat : bool = False, is_generated : bool = False) -> Tuple[float, float]:
 		write_started = time.perf_counter()
-		self.transport.stdin.write(frame.tobytes())
+		# A window copies the array straight into its shared memory; a pipe needs bytes
+		self.transport.stdin.write(frame if getattr(self.transport.stdin, 'accepts_frames', False) else frame.tobytes())
 		write_finished = time.perf_counter()
 		if timing is not None:
 			timing['output_written'] = write_finished

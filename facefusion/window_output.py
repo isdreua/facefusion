@@ -84,6 +84,10 @@ class WindowStream:
 		self.status_queue = context.Queue()
 		self.process = context.Process(target = run_window, args = (self.shared_frames.name, width, height, float(fps), title, bool(is_fullscreen), self.window_display, self.sequence, self.frame_event, self.stop_event, self.intent_queue, self.status_queue), daemon = True)
 		self.process.start()
+		self.fps = fps
+		self.title = title
+		self.window_copy : Optional[WindowCopy] = None
+		self.copy_lock = threading.Lock()
 
 	# One writer, one reader, and the reader only ever draws the slot of an already bumped sequence,
 	# so the frame on screen is never the one being written and no lock is needed on the hot path
@@ -98,6 +102,10 @@ class WindowStream:
 		with self.sequence.get_lock():
 			self.sequence.value += 1
 		self.frame_event.set()
+		# Read once: a handler thread may close the copy meanwhile, and a stale event is harmless
+		window_copy = self.window_copy
+		if window_copy:
+			window_copy.frame_event.set()
 
 	def poll_events(self) -> List[Tuple[str, Any]]:
 		window_intents : List[Tuple[str, Any]] = []
@@ -113,7 +121,43 @@ class WindowStream:
 
 		if not self.process.is_alive():
 			self.is_window_closed = True
-		return window_intents
+		return window_intents + self.poll_copy_events()
+
+	# The copy's keys count as if pressed in this window. Closing the copy closes only the copy, so it
+	# is not passed on as a 'closed' that would end the stream
+	def poll_copy_events(self) -> List[Tuple[str, Any]]:
+		with self.copy_lock:
+			if not self.window_copy:
+				return []
+			window_intents, is_copy_closed = self.window_copy.poll_events()
+			if is_copy_closed:
+				self.window_copy.close()
+				self.window_copy = None
+			return window_intents
+
+	# A second window onto this one's frames: always windowed, never pinned to a display, and opened
+	# at half the display. It reads the same shared memory and sequence, so feeding it costs no extra
+	# frame copy, and it shows the current frame as soon as it opens
+	def open_copy(self) -> None:
+		with self.copy_lock:
+			if self.window_copy and self.window_copy.is_open():
+				return
+			if self.window_copy:
+				self.window_copy.close()
+				self.window_copy = None
+			if self.is_closed or self.is_window_closed:
+				return
+			self.window_copy = WindowCopy(self, self.title + COPY_WINDOW_TITLE_SUFFIX)
+
+	def close_copy(self) -> None:
+		with self.copy_lock:
+			if self.window_copy:
+				self.window_copy.close()
+				self.window_copy = None
+
+	def has_copy(self) -> bool:
+		with self.copy_lock:
+			return bool(self.window_copy and self.window_copy.is_open())
 
 	# Only sent when something actually changed, so the window's on screen display appears on a
 	# switch rather than being redrawn for every frame
@@ -127,6 +171,9 @@ class WindowStream:
 			self.status_queue.put_nowait(status)
 		except Exception:
 			pass
+		window_copy = self.window_copy
+		if window_copy:
+			window_copy.push_status(status)
 
 	def has_window_closed(self) -> bool:
 		return self.is_window_closed
@@ -170,6 +217,8 @@ class WindowStream:
 		if self.is_closed:
 			return
 		self.is_closed = True
+		# Before the shared memory goes, since the copy reads from it
+		self.close_copy()
 		self.stop_event.set()
 		self.frame_event.set()
 		self.process.join(2.0)
@@ -194,6 +243,62 @@ class WindowStream:
 # The title of the processed output window, so it can be told apart from the raw camera window
 # beside it and picked by title in capture software
 OUTPUT_WINDOW_TITLE = 'FaceFusion OUTPUT'
+COPY_WINDOW_TITLE_SUFFIX = ' COPY'
+
+
+# The process behind WindowStream.open_copy. It shares the frames and the sequence of the window it
+# copies and has its own events and queues, so each window wakes on its own and the two never race
+# for one event
+class WindowCopy:
+	def __init__(self, window_stream : WindowStream, title : str):
+		context = multiprocessing.get_context('spawn')
+		self.frame_event = context.Event()
+		self.stop_event = context.Event()
+		self.intent_queue = context.Queue()
+		self.status_queue = context.Queue()
+		self.is_closed = False
+		self.process = context.Process(target = run_window, args = (window_stream.shared_frames.name, window_stream.width, window_stream.height, float(window_stream.fps), title, False, 0, window_stream.sequence, self.frame_event, self.stop_event, self.intent_queue, self.status_queue, True), daemon = True)
+		self.process.start()
+
+	def is_open(self) -> bool:
+		return not self.is_closed and self.process.is_alive()
+
+	def poll_events(self) -> Tuple[List[Tuple[str, Any]], bool]:
+		window_intents : List[Tuple[str, Any]] = []
+		is_copy_closed = not self.process.is_alive()
+
+		while True:
+			try:
+				window_intent = self.intent_queue.get_nowait()
+			except Exception:
+				break
+			if window_intent[0] == 'closed':
+				is_copy_closed = True
+			else:
+				window_intents.append(window_intent)
+		return window_intents, is_copy_closed
+
+	def push_status(self, status : Dict[str, Any]) -> None:
+		if self.is_closed:
+			return
+		try:
+			self.status_queue.put_nowait(status)
+		except Exception:
+			pass
+
+	def close(self) -> None:
+		if self.is_closed:
+			return
+		self.is_closed = True
+		self.stop_event.set()
+		self.frame_event.set()
+		self.process.join(2.0)
+		if self.process.is_alive():
+			self.process.terminate()
+			self.process.join(1.0)
+		for window_queue in [ self.intent_queue, self.status_queue ]:
+			window_queue.close()
+			window_queue.cancel_join_thread()
 
 
 # A second, plain window showing what the camera delivers before any processor touches it. It is
@@ -417,7 +522,7 @@ SHARED_WINDOW_STATE : Dict[str, bool] = { 'in_use': False, 'close_pending': Fals
 # Reused when it is still open at the size asked for. The shared memory is sized at creation, so
 # another output size needs another window. Keys pressed while no stream was reading them are
 # dropped, or the next start would replay them as face switches
-def acquire_shared_window_stream(width : int, height : int, fps : Fps, is_fullscreen : bool, window_display : int = 0) -> WindowStream:
+def acquire_shared_window_stream(width : int, height : int, fps : Fps, is_fullscreen : bool, window_display : int = 0, is_copy : bool = False) -> WindowStream:
 	global SHARED_WINDOW_STREAM
 
 	with SHARED_WINDOW_LOCK:
@@ -437,8 +542,23 @@ def acquire_shared_window_stream(width : int, height : int, fps : Fps, is_fullsc
 		if not SHARED_WINDOW_STREAM:
 			SHARED_WINDOW_STREAM = WindowStream(width, height, fps, OUTPUT_WINDOW_TITLE, is_fullscreen, window_display)
 			SHARED_WINDOW_STREAM.clear()
+		# Reopened here when it was closed by hand, so the option stays what the copy follows
+		if is_copy:
+			SHARED_WINDOW_STREAM.open_copy()
+		else:
+			SHARED_WINDOW_STREAM.close_copy()
 		SHARED_WINDOW_STATE['close_pending'] = False
 		return SHARED_WINDOW_STREAM
+
+
+# The copy checkbox opens or closes the copy of the open shared window right away
+def set_shared_window_copy(is_copy : bool) -> None:
+	with SHARED_WINDOW_LOCK:
+		if SHARED_WINDOW_STREAM and not SHARED_WINDOW_STREAM.has_window_closed():
+			if is_copy:
+				SHARED_WINDOW_STREAM.open_copy()
+			else:
+				SHARED_WINDOW_STREAM.close_copy()
 
 
 # The fullscreen checkbox switches the open shared window right away, whether or not a stream runs

@@ -11,7 +11,7 @@ from facefusion.streamer import apply_stream_source_paths, resolve_source_face_g
 from facefusion.types import WebcamMode
 from facefusion.uis.core import get_ui_component, register_ui_component
 from facefusion.webcam_config import DEFAULT_SOURCE_FACE_NAME, NO_SOURCE_FACE_NAME, WEBCAM_BYPASSED_PROCESSORS, WEBCAM_CAMERA_BACKENDS, WEBCAM_CONTENT_ANALYSIS_INTERVALS, WEBCAM_FRAME_GENERATION_MODES, WEBCAM_FRAME_SKIPPING_MODES, WEBCAM_INLINE_PREVIEW_RESOLUTIONS, WEBCAM_OUTPUT_RESOLUTIONS, WEBCAM_PERFORMANCE_OVERLAYS, WEBCAM_STATE_KEYS, WEBCAM_WINDOW_DISPLAYS, format_webcam_config, normalize_webcam_resolution, get_source_faces, load_webcam_config, resolve_source_face_directory
-from facefusion.window_output import detect_window_displays, has_window_output, log_window_output_requirement, move_raw_camera_view, move_shared_window_stream, set_camera_window_fullscreen, set_shared_window_fullscreen
+from facefusion.window_output import detect_window_displays, has_window_output, log_window_output_requirement, move_raw_camera_view, move_shared_window_stream, set_camera_window_fullscreen, set_shared_window_copy, set_shared_window_fullscreen
 
 WEBCAM_DEVICE_ID_DROPDOWN : Optional[gradio.Dropdown] = None
 # The camera choices the dropdown was last given, so the camera sync can add one it lacks
@@ -30,6 +30,7 @@ WEBCAM_FACE_ENHANCER_WORKER_COUNT_SLIDER : Optional[gradio.Slider] = None
 WEBCAM_CAMERA_BACKEND_DROPDOWN : Optional[gradio.Dropdown] = None
 WEBCAM_OUTPUT_RESOLUTION_DROPDOWN : Optional[gradio.Dropdown] = None
 WEBCAM_WINDOW_FULLSCREEN_CHECKBOX : Optional[gradio.Checkbox] = None
+WEBCAM_WINDOW_COPY_CHECKBOX : Optional[gradio.Checkbox] = None
 WEBCAM_WINDOW_DISPLAY_DROPDOWN : Optional[gradio.Dropdown] = None
 WEBCAM_RAW_WINDOW_CHECKBOX : Optional[gradio.Checkbox] = None
 WEBCAM_RAW_WINDOW_FULLSCREEN_CHECKBOX : Optional[gradio.Checkbox] = None
@@ -58,6 +59,7 @@ def render() -> None:
 	global WEBCAM_CAMERA_BACKEND_DROPDOWN
 	global WEBCAM_OUTPUT_RESOLUTION_DROPDOWN
 	global WEBCAM_WINDOW_FULLSCREEN_CHECKBOX
+	global WEBCAM_WINDOW_COPY_CHECKBOX
 	global WEBCAM_WINDOW_DISPLAY_DROPDOWN
 	global WEBCAM_RAW_WINDOW_CHECKBOX
 	global WEBCAM_RAW_WINDOW_FULLSCREEN_CHECKBOX
@@ -90,6 +92,7 @@ def render() -> None:
 	state_manager.init_item('webcam_stream_bypass', False)
 	state_manager.init_item('webcam_window_fullscreen', webcam_config.get('webcam_window_fullscreen'))
 	state_manager.init_item('webcam_window_display', webcam_config.get('webcam_window_display'))
+	state_manager.init_item('webcam_window_copy', webcam_config.get('webcam_window_copy'))
 	state_manager.init_item('webcam_raw_window', webcam_config.get('webcam_raw_window'))
 	state_manager.init_item('webcam_raw_window_fullscreen', webcam_config.get('webcam_raw_window_fullscreen'))
 	state_manager.init_item('webcam_raw_window_display', webcam_config.get('webcam_raw_window_display'))
@@ -121,6 +124,14 @@ def render() -> None:
 		label = translator.get('uis.webcam_window_display_dropdown'),
 		choices = resolve_window_display_choices(window_displays, state_manager.get_item('webcam_window_display')),
 		value = state_manager.get_item('webcam_window_display'),
+		visible = has_window_output()
+	)
+	# A second, plain window showing the output window's picture, for watching and controlling the
+	# stream on a working display while the output window is captured or fullscreen elsewhere. Opened
+	# and closed with the output window, and at once on a change (update_window_copy)
+	WEBCAM_WINDOW_COPY_CHECKBOX = gradio.Checkbox(
+		label = translator.get('uis.webcam_window_copy_checkbox'),
+		value = state_manager.get_item('webcam_window_copy'),
 		visible = has_window_output()
 	)
 	# Works next to every output mode, not just the window one, so it is not tied to the mode radio.
@@ -263,6 +274,7 @@ def render() -> None:
 	register_ui_component('webcam_output_resolution_dropdown', WEBCAM_OUTPUT_RESOLUTION_DROPDOWN)
 	register_ui_component('webcam_window_fullscreen_checkbox', WEBCAM_WINDOW_FULLSCREEN_CHECKBOX)
 	register_ui_component('webcam_window_display_dropdown', WEBCAM_WINDOW_DISPLAY_DROPDOWN)
+	register_ui_component('webcam_window_copy_checkbox', WEBCAM_WINDOW_COPY_CHECKBOX)
 	register_ui_component('webcam_raw_window_checkbox', WEBCAM_RAW_WINDOW_CHECKBOX)
 	register_ui_component('webcam_raw_window_fullscreen_checkbox', WEBCAM_RAW_WINDOW_FULLSCREEN_CHECKBOX)
 	register_ui_component('webcam_raw_window_display_dropdown', WEBCAM_RAW_WINDOW_DISPLAY_DROPDOWN)
@@ -294,6 +306,8 @@ def listen() -> None:
 		WEBCAM_WINDOW_FULLSCREEN_CHECKBOX.change(update_window_fullscreen, inputs = WEBCAM_WINDOW_FULLSCREEN_CHECKBOX)
 	if WEBCAM_WINDOW_DISPLAY_DROPDOWN:
 		WEBCAM_WINDOW_DISPLAY_DROPDOWN.change(update_window_display, inputs = WEBCAM_WINDOW_DISPLAY_DROPDOWN)
+	if WEBCAM_WINDOW_COPY_CHECKBOX:
+		WEBCAM_WINDOW_COPY_CHECKBOX.change(update_window_copy, inputs = WEBCAM_WINDOW_COPY_CHECKBOX)
 	if WEBCAM_RAW_WINDOW_CHECKBOX:
 		WEBCAM_RAW_WINDOW_CHECKBOX.change(update_raw_window, inputs = WEBCAM_RAW_WINDOW_CHECKBOX)
 	if WEBCAM_RAW_WINDOW_FULLSCREEN_CHECKBOX:
@@ -329,6 +343,12 @@ def get_local_camera_ids() -> List[int]:
 def update_window_display(window_display : int) -> None:
 	state_manager.set_item('webcam_window_display', int(window_display or 0))
 	move_shared_window_stream(int(window_display or 0))
+
+
+# Opens or closes the copy beside the open output window; without one open, the next one follows it
+def update_window_copy(window_copy : bool) -> None:
+	state_manager.set_item('webcam_window_copy', bool(window_copy))
+	set_shared_window_copy(bool(window_copy))
 # The window itself is opened and closed by webcam.update_camera_window on the same change
 
 # Read when a stream starts, so a change takes effect on the next start
@@ -456,6 +476,7 @@ def generate_config(webcam_device_id : str, webcam_mode : str, webcam_resolution
 		'webcam_output_resolution': webcam_output_resolution,
 		'webcam_window_fullscreen': bool(state_manager.get_item('webcam_window_fullscreen')),
 		'webcam_window_display': int(state_manager.get_item('webcam_window_display') or 0),
+		'webcam_window_copy': bool(state_manager.get_item('webcam_window_copy')),
 		'webcam_raw_window': bool(state_manager.get_item('webcam_raw_window')),
 		'webcam_raw_window_fullscreen': bool(state_manager.get_item('webcam_raw_window_fullscreen')),
 		'webcam_raw_window_display': int(state_manager.get_item('webcam_raw_window_display') or 0),

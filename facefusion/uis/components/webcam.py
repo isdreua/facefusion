@@ -236,7 +236,7 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 			# Acquired here rather than inside the factory so that poll_events stays reachable from this
 			# loop. repeat_latest is off because the window goes on showing the last frame by itself
 			if webcam_mode == 'window':
-				window_stream = acquire_shared_window_stream(output_width, output_height, output_fps, state_manager.get_item('webcam_window_fullscreen'), state_manager.get_item('webcam_window_display') or 0)
+				window_stream = acquire_shared_window_stream(output_width, output_height, output_fps, state_manager.get_item('webcam_window_fullscreen'), state_manager.get_item('webcam_window_display') or 0, bool(state_manager.get_item('webcam_window_copy')))
 				window_transport = SharedWindowTransport(window_stream)
 				stream_writer = LatestFrameWriter(lambda: window_transport, output_width, output_height, False, output_fps, output_fps != webcam_fps)
 				stream_writer.start()
@@ -306,7 +306,7 @@ def update_window_output(webcam_mode : WebcamMode, webcam_resolution : str, webc
 	webcam_resolution = normalize_webcam_resolution(webcam_resolution)
 	if webcam_resolution:
 		_, output_width, output_height = resolve_output_resolution(webcam_resolution, webcam_output_resolution)
-		acquire_shared_window_stream(output_width, output_height, resolve_output_fps(webcam_fps), state_manager.get_item('webcam_window_fullscreen'), state_manager.get_item('webcam_window_display') or 0)
+		acquire_shared_window_stream(output_width, output_height, resolve_output_fps(webcam_fps), state_manager.get_item('webcam_window_fullscreen'), state_manager.get_item('webcam_window_display') or 0, bool(state_manager.get_item('webcam_window_copy')))
 
 
 # The camera window stays open while its option is on, black until a stream feeds it, the same way

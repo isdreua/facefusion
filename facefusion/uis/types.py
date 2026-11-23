@@ -94,6 +94,7 @@ ComponentName = Literal\
 	'webcam_resolution_dropdown',
 	'webcam_window_fullscreen_checkbox',
 	'webcam_window_display_dropdown',
+	'webcam_window_copy_checkbox',
 	'webcam_raw_window_checkbox',
 	'webcam_raw_window_fullscreen_checkbox',
 	'webcam_raw_window_display_dropdown',

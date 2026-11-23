@@ -83,6 +83,8 @@ def run() -> int:
 		# the source face mid run, which no config file can do
 		if webcam_mode == 'window':
 			window_stream = WindowStream(output_width, output_height, output_fps, OUTPUT_WINDOW_TITLE, webcam_config.get('webcam_window_fullscreen'), webcam_config.get('webcam_window_display'))
+			if webcam_config.get('webcam_window_copy'):
+				window_stream.open_copy()
 			stream_writer = LatestFrameWriter(lambda: window_stream, output_width, output_height, False, output_fps, output_fps != webcam_fps)
 		else:
 			stream_writer = LatestFrameWriter(lambda: open_stream(webcam_mode, output_resolution, output_fps), output_width, output_height, webcam_mode == 'v4l2', output_fps, output_fps != webcam_fps)

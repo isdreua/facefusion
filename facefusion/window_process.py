@@ -115,6 +115,10 @@ def resolve_display_index(pygame : Any, window_display : int) -> Optional[int]:
 # SDL's "centred on display N" position. SDL resolves it against that display's bounds, so the window
 # lands inside it whatever the window manager would otherwise choose
 WINDOW_POSITION_CENTERED_DISPLAY = 0x2FFF0000
+# How long a window move or fullscreen change is given to land (see SdlWindowOutput.wait_for_window)
+WINDOW_SETTLE_TIMEOUT = 1.0
+WINDOW_SETTLE_MINIMUM = 0.05
+WINDOW_SETTLE_STABLE = 0.1
 
 
 def resolve_centered_position(display_index : int) -> Tuple[int, int]:
@@ -188,17 +192,44 @@ class SdlWindowOutput:
 		else:
 			self.window.set_windowed()
 		self.is_fullscreen = is_fullscreen
+		self.wait_for_window()
 
-	# Fullscreen follows the display the window is on, so it is left, the window centred on the
-	# target display, and entered again
+	# Fullscreen goes to the display the window manager thinks the window is on, and on X11 a move or
+	# a fullscreen change only takes effect once the window manager has handled it. Going fullscreen
+	# straight after the move therefore took the old display's size and put it on the new one, where
+	# it stuck out across both. So every step waits for the window to settle before the next: leave
+	# fullscreen, size the window for the target display, centre it there, then fullscreen again
 	def move_to_display(self, display_index : int) -> None:
 		is_fullscreen = self.is_fullscreen
 
 		if is_fullscreen:
 			self.set_fullscreen(False)
+		self.window.size = resolve_windowed_size(self.pygame, self.width, self.height, display_index)
+		self.wait_for_window()
 		self.window.position = resolve_centered_position(display_index)
+		self.wait_for_window()
 		if is_fullscreen:
 			self.set_fullscreen(True)
+
+	# Pumps events (they stay queued for the main loop) until the window's position and size have
+	# stopped changing for a moment, or a second has passed. The first moment is always waited, since
+	# the window manager may not have started on the change yet
+	def wait_for_window(self) -> None:
+		import time
+
+		started_at = time.perf_counter()
+		window_state = None
+		stable_since = started_at
+
+		while time.perf_counter() - started_at < WINDOW_SETTLE_TIMEOUT:
+			self.pygame.event.pump()
+			current_window_state = (tuple(self.window.position), tuple(self.window.size))
+			if current_window_state != window_state:
+				window_state = current_window_state
+				stable_since = time.perf_counter()
+			elif time.perf_counter() - started_at > WINDOW_SETTLE_MINIMUM and time.perf_counter() - stable_since > WINDOW_SETTLE_STABLE:
+				return
+			time.sleep(0.01)
 
 	def present(self, canvas_surface : Any) -> None:
 		try:
@@ -315,6 +346,10 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 			for event in pygame.event.get():
 				if event.type in [ pygame.QUIT, getattr(pygame, 'WINDOWCLOSE', pygame.QUIT) ]:
 					is_closing = True
+				# The window manager may resize the window after the call that asked for it returned
+				# (fullscreen on X11 among them), so the frame is drawn again at the size it got
+				elif event.type in [ getattr(pygame, 'WINDOWSIZECHANGED', -1), getattr(pygame, 'WINDOWRESIZED', -1), pygame.VIDEORESIZE ]:
+					last_sequence = -1
 				elif event.type == pygame.KEYDOWN:
 					camera_id = resolve_camera_id(pygame, event.key) if event.mod & pygame.KMOD_CTRL else None
 					face_index = resolve_face_index(pygame, event.key)

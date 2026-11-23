@@ -317,7 +317,9 @@ def move_raw_camera_view(window_display : int) -> None:
 	raw_camera_view = ACTIVE_RAW_CAMERA_VIEW
 	if raw_camera_view:
 		raw_camera_view.set_display(window_display)
-	move_shared_camera_window(window_display)
+	# The shared window is moved once: through the view when it draws into it, directly when idle
+	if not raw_camera_view or raw_camera_view.window_stream is not SHARED_CAMERA_WINDOW:
+		move_shared_camera_window(window_display)
 
 
 # The browser layout keeps the camera window open for as long as its option is on, like the output

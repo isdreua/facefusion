@@ -83,7 +83,7 @@ class PerformanceOverlay:
 		frame_height, frame_width = vision_frame.shape[:2]
 
 		box_x, box_y = 12, 12
-		box_w, box_h = 320, 174
+		box_w, box_h = 320, 190
 
 		if frame_width < box_w + 24 or frame_height < box_h + 24:
 			return vision_frame
@@ -132,9 +132,18 @@ class PerformanceOverlay:
 
 		# Which identity is being swapped in, so a face switched mid-stream is confirmable without
 		# looking away from the stream
+		cv2.putText(overlay, self._resolve_camera_text(), (box_x + 10, box_y + box_h - 25), font, font_scale, (220, 230, 240), 1, cv2.LINE_AA)
 		cv2.putText(overlay, self._resolve_source_face_text(), (box_x + 10, box_y + box_h - 9), font, font_scale, (120, 220, 255), 1, cv2.LINE_AA)
 
 		return overlay
+
+	# Above the face, so a camera switched with Ctrl+0-9 is confirmable the same way a face is
+	def _resolve_camera_text(self) -> str:
+		camera_name = state_manager.get_item('webcam_camera_name') or '-'
+
+		if len(camera_name) > 36:
+			camera_name = camera_name[:33] + '...'
+		return 'CAMERA: ' + camera_name
 
 	def _resolve_source_face_text(self) -> str:
 		source_face_name = state_manager.get_item('source_face_name') or '-'

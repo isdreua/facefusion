@@ -29,7 +29,10 @@ DEFAULT_WEBCAM_CONFIG : Dict[str, Any] =\
 	'webcam_camera_backend': 'auto',
 	'webcam_output_resolution': 'copy',
 	'webcam_window_fullscreen': False,
+	'webcam_window_display': 0,
 	'webcam_raw_window': False,
+	'webcam_raw_window_fullscreen': False,
+	'webcam_raw_window_display': 0,
 	'webcam_frame_generation': 'none',
 	'webcam_source_faces': {},
 	'webcam_source_faces_directory': None,
@@ -53,6 +56,9 @@ WEBCAM_PERFORMANCE_OVERLAYS = [ 'none', 'simple', 'advanced' ]
 # NVIDIA frame generation quality, or none. It needs an ada or blackwell gpu and the nvidia-vfx
 # bindings, and it only reaches the outputs that have a writer, so the inline preview never gets it
 WEBCAM_FRAME_GENERATION_MODES = [ 'none', 'low', 'medium', 'high' ]
+# 0 leaves the placement to the window manager; 1 and up pin the window, windowed and fullscreen
+# alike, to that display, counted from 1 in the order SDL lists them
+WEBCAM_WINDOW_DISPLAYS = [ 0, 1, 2, 3, 4, 5, 6, 7, 8 ]
 # Processors skipped for the frame while staying loaded on the device, so a comparison costs a
 # click rather than a model reload. Read off the modules directory the same way the processors
 # checkbox group does, so the two lists cannot disagree; a name that is not in the running chain is
@@ -82,7 +88,10 @@ WEBCAM_CONFIG_OPTIONS =\
 	'webcam_camera_backend': WEBCAM_CAMERA_BACKENDS,
 	'webcam_output_resolution': WEBCAM_OUTPUT_RESOLUTIONS,
 	'webcam_window_fullscreen': [ True, False ],
+	'webcam_window_display': WEBCAM_WINDOW_DISPLAYS,
 	'webcam_raw_window': [ True, False ],
+	'webcam_raw_window_fullscreen': [ True, False ],
+	'webcam_raw_window_display': WEBCAM_WINDOW_DISPLAYS,
 	'webcam_frame_generation': WEBCAM_FRAME_GENERATION_MODES
 }
 # These settings reach code that needs a fixed length tuple, and create_box_mask is lru_cached so a
@@ -151,8 +160,14 @@ def load_webcam_config(config_path : str) -> Dict[str, Any]:
 		webcam_config['webcam_output_resolution'] = content.get('webcam_output_resolution')
 	if isinstance(content.get('webcam_window_fullscreen'), bool):
 		webcam_config['webcam_window_fullscreen'] = content.get('webcam_window_fullscreen')
+	if isinstance(content.get('webcam_window_display'), int) and not isinstance(content.get('webcam_window_display'), bool) and content.get('webcam_window_display') in WEBCAM_WINDOW_DISPLAYS:
+		webcam_config['webcam_window_display'] = content.get('webcam_window_display')
 	if isinstance(content.get('webcam_raw_window'), bool):
 		webcam_config['webcam_raw_window'] = content.get('webcam_raw_window')
+	if isinstance(content.get('webcam_raw_window_fullscreen'), bool):
+		webcam_config['webcam_raw_window_fullscreen'] = content.get('webcam_raw_window_fullscreen')
+	if isinstance(content.get('webcam_raw_window_display'), int) and not isinstance(content.get('webcam_raw_window_display'), bool) and content.get('webcam_raw_window_display') in WEBCAM_WINDOW_DISPLAYS:
+		webcam_config['webcam_raw_window_display'] = content.get('webcam_raw_window_display')
 	if content.get('webcam_frame_generation') in WEBCAM_FRAME_GENERATION_MODES:
 		webcam_config['webcam_frame_generation'] = content.get('webcam_frame_generation')
 	if isinstance(content.get('webcam_source_faces_directory'), str):

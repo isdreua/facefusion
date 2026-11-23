@@ -1,9 +1,10 @@
 import glob
-from typing import List, Optional
+import threading
+from typing import Callable, List, Optional
 
 import cv2
 
-from facefusion import logger
+from facefusion import logger, state_manager
 from facefusion.common_helper import is_windows
 from facefusion.types import CameraPoolSet
 
@@ -11,6 +12,9 @@ CAMERA_POOL_SET : CameraPoolSet =\
 {
 	'capture': {}
 }
+# A camera switched mid stream is opened and released on the capture thread while the stream's start
+# and stop run on another, so the pool is only ever changed under this lock
+CAMERA_POOL_LOCK = threading.RLock()
 
 
 def configure_camera_capture(camera_capture : cv2.VideoCapture, width : Optional[int] = None, height : Optional[int] = None, fps : Optional[int] = None) -> None:
@@ -38,6 +42,11 @@ def get_camera_backend_flag(backend : str) -> int:
 
 
 def get_local_camera_capture(camera_id : int, width : Optional[int] = None, height : Optional[int] = None, fps : Optional[int] = None, backend : str = 'auto') -> cv2.VideoCapture:
+	with CAMERA_POOL_LOCK:
+		return open_local_camera_capture(camera_id, width, height, fps, backend)
+
+
+def open_local_camera_capture(camera_id : int, width : Optional[int] = None, height : Optional[int] = None, fps : Optional[int] = None, backend : str = 'auto') -> cv2.VideoCapture:
 	camera_key = ':'.join(map(str, [ 'local', camera_id, backend, width, height, fps ]))
 
 	if camera_key not in CAMERA_POOL_SET.get('capture'):
@@ -70,10 +79,21 @@ def get_remote_camera_capture(camera_url : str) -> cv2.VideoCapture:
 
 
 def clear_camera_pool() -> None:
-	for camera_capture in CAMERA_POOL_SET.get('capture').values():
-		camera_capture.release()
+	with CAMERA_POOL_LOCK:
+		for camera_capture in CAMERA_POOL_SET.get('capture').values():
+			camera_capture.release()
 
-	CAMERA_POOL_SET['capture'].clear()
+		CAMERA_POOL_SET['capture'].clear()
+
+
+# Dropped from the pool as well, so switching back to this camera opens it again instead of being
+# handed the released capture
+def release_camera_capture(camera_capture : cv2.VideoCapture) -> None:
+	with CAMERA_POOL_LOCK:
+		for pooled_key, pooled_capture in list(CAMERA_POOL_SET.get('capture').items()):
+			if pooled_capture is camera_capture:
+				del CAMERA_POOL_SET['capture'][pooled_key]
+		camera_capture.release()
 
 
 # Probing absent camera indices makes opencv log an error per index, so discovery silences it. The
@@ -129,6 +149,62 @@ def resolve_camera_name(camera_id : int) -> Optional[str]:
 
 def resolve_camera_window_title(camera_id : int) -> str:
 	return 'CAMERA (' + (resolve_camera_name(camera_id) or str(camera_id)) + ')'
+
+
+def resolve_camera_label(camera_id : int) -> str:
+	camera_name = resolve_camera_name(camera_id)
+
+	if camera_name:
+		return camera_name + ' (' + str(camera_id) + ')'
+	return str(camera_id)
+
+
+# Carries a camera switch asked for from a window (Ctrl+0-9) to the capture thread, which opens the
+# new camera itself: opening takes a moment, and on that thread it stalls only the capture, while the
+# processing loop and the windows stay responsive. The new camera is opened at the same resolution,
+# rate and backend as the first. The current camera is published to state for the overlay
+class CameraSwitch:
+	def __init__(self, camera_id : int, width : Optional[int] = None, height : Optional[int] = None, fps : Optional[int] = None, backend : str = 'auto'):
+		self.camera_id = camera_id
+		self.width = width
+		self.height = height
+		self.fps = fps
+		self.backend = backend
+		self.pending_camera_id : Optional[int] = None
+		self.lock = threading.Lock()
+		self.listeners : List[Callable[[int, str], None]] = []
+		state_manager.set_item('webcam_camera_name', resolve_camera_label(camera_id))
+
+	# Asking for the camera already running, or asking twice before the switch, leaves one request
+	def request(self, camera_id : int) -> None:
+		with self.lock:
+			self.pending_camera_id = None if camera_id == self.camera_id else camera_id
+
+	def take_pending(self) -> Optional[int]:
+		with self.lock:
+			camera_id = self.pending_camera_id
+			self.pending_camera_id = None
+			return camera_id
+
+	def open_capture(self, camera_id : int) -> Optional[cv2.VideoCapture]:
+		return get_local_camera_capture(camera_id, self.width, self.height, self.fps, self.backend)
+
+	def release_capture(self, camera_capture : cv2.VideoCapture) -> None:
+		release_camera_capture(camera_capture)
+
+	def commit(self, camera_id : int) -> None:
+		with self.lock:
+			self.camera_id = camera_id
+		state_manager.set_item('webcam_camera_name', resolve_camera_label(camera_id))
+		logger.info('switched to camera ' + resolve_camera_label(camera_id), __name__)
+		for listener in list(self.listeners):
+			try:
+				listener(camera_id, resolve_camera_window_title(camera_id))
+			except Exception:
+				pass
+
+	def refuse(self, camera_id : int) -> None:
+		logger.warn('camera ' + str(camera_id) + ' could not be opened, staying on camera ' + resolve_camera_label(self.camera_id), __name__)
 
 
 def detect_local_camera_ids(id_start : int, id_end : int, backend : str = 'auto') -> List[int]:

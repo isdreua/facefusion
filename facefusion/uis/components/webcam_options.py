@@ -10,7 +10,7 @@ from facefusion.uis import choices as uis_choices
 from facefusion.streamer import apply_stream_source_paths, resolve_source_face_groups
 from facefusion.types import WebcamMode
 from facefusion.uis.core import get_ui_component, register_ui_component
-from facefusion.webcam_config import DEFAULT_SOURCE_FACE_NAME, NO_SOURCE_FACE_NAME, WEBCAM_BYPASSED_PROCESSORS, WEBCAM_CAMERA_BACKENDS, WEBCAM_CONTENT_ANALYSIS_INTERVALS, WEBCAM_FRAME_GENERATION_MODES, WEBCAM_FRAME_SKIPPING_MODES, WEBCAM_INLINE_PREVIEW_RESOLUTIONS, WEBCAM_OUTPUT_RESOLUTIONS, WEBCAM_PERFORMANCE_OVERLAYS, WEBCAM_STATE_KEYS, format_webcam_config, normalize_webcam_resolution, get_source_faces, load_webcam_config, resolve_source_face_directory
+from facefusion.webcam_config import DEFAULT_SOURCE_FACE_NAME, NO_SOURCE_FACE_NAME, WEBCAM_BYPASSED_PROCESSORS, WEBCAM_CAMERA_BACKENDS, WEBCAM_CONTENT_ANALYSIS_INTERVALS, WEBCAM_FRAME_GENERATION_MODES, WEBCAM_FRAME_SKIPPING_MODES, WEBCAM_INLINE_PREVIEW_RESOLUTIONS, WEBCAM_OUTPUT_RESOLUTIONS, WEBCAM_PERFORMANCE_OVERLAYS, WEBCAM_STATE_KEYS, WEBCAM_WINDOW_DISPLAYS, format_webcam_config, normalize_webcam_resolution, get_source_faces, load_webcam_config, resolve_source_face_directory
 from facefusion.window_output import has_window_output, log_window_output_requirement
 
 WEBCAM_DEVICE_ID_DROPDOWN : Optional[gradio.Dropdown] = None
@@ -28,7 +28,10 @@ WEBCAM_FACE_ENHANCER_WORKER_COUNT_SLIDER : Optional[gradio.Slider] = None
 WEBCAM_CAMERA_BACKEND_DROPDOWN : Optional[gradio.Dropdown] = None
 WEBCAM_OUTPUT_RESOLUTION_DROPDOWN : Optional[gradio.Dropdown] = None
 WEBCAM_WINDOW_FULLSCREEN_CHECKBOX : Optional[gradio.Checkbox] = None
+WEBCAM_WINDOW_DISPLAY_DROPDOWN : Optional[gradio.Dropdown] = None
 WEBCAM_RAW_WINDOW_CHECKBOX : Optional[gradio.Checkbox] = None
+WEBCAM_RAW_WINDOW_FULLSCREEN_CHECKBOX : Optional[gradio.Checkbox] = None
+WEBCAM_RAW_WINDOW_DISPLAY_DROPDOWN : Optional[gradio.Dropdown] = None
 WEBCAM_WINDOW_HINT_MARKDOWN : Optional[gradio.Markdown] = None
 SOURCE_FACE_SELECTED_MARKER = '\u25cf '
 WEBCAM_SOURCE_FACE_GALLERY : Optional[gradio.Gallery] = None
@@ -53,7 +56,10 @@ def render() -> None:
 	global WEBCAM_CAMERA_BACKEND_DROPDOWN
 	global WEBCAM_OUTPUT_RESOLUTION_DROPDOWN
 	global WEBCAM_WINDOW_FULLSCREEN_CHECKBOX
+	global WEBCAM_WINDOW_DISPLAY_DROPDOWN
 	global WEBCAM_RAW_WINDOW_CHECKBOX
+	global WEBCAM_RAW_WINDOW_FULLSCREEN_CHECKBOX
+	global WEBCAM_RAW_WINDOW_DISPLAY_DROPDOWN
 	global WEBCAM_WINDOW_HINT_MARKDOWN
 	global WEBCAM_SOURCE_FACE_GALLERY
 	global WEBCAM_SOURCE_FACE_CLEAR_BUTTON
@@ -78,7 +84,10 @@ def render() -> None:
 	state_manager.init_item('webcam_performance_overlay', webcam_config.get('performance_overlay'))
 	state_manager.init_item('webcam_stream_bypass', False)
 	state_manager.init_item('webcam_window_fullscreen', webcam_config.get('webcam_window_fullscreen'))
+	state_manager.init_item('webcam_window_display', webcam_config.get('webcam_window_display'))
 	state_manager.init_item('webcam_raw_window', webcam_config.get('webcam_raw_window'))
+	state_manager.init_item('webcam_raw_window_fullscreen', webcam_config.get('webcam_raw_window_fullscreen'))
+	state_manager.init_item('webcam_raw_window_display', webcam_config.get('webcam_raw_window_display'))
 	state_manager.init_item('webcam_frame_generation', webcam_config.get('webcam_frame_generation'))
 	state_manager.init_item('webcam_face_enhancer_worker_count', webcam_config.get('webcam_face_enhancer_worker_count'))
 	WEBCAM_DEVICE_ID_DROPDOWN = gradio.Dropdown(
@@ -101,11 +110,33 @@ def render() -> None:
 		value = webcam_config.get('webcam_window_fullscreen'),
 		visible = has_window_output()
 	)
+	# Listed as a fixed range instead of the displays actually attached: counting them needs a video
+	# subsystem in this process, which macOS only allows on the main thread gradio already owns. A
+	# number past the last display falls back to the default placement in the window process
+	WEBCAM_WINDOW_DISPLAY_DROPDOWN = gradio.Dropdown(
+		label = translator.get('uis.webcam_window_display_dropdown'),
+		choices = resolve_window_display_choices(),
+		value = state_manager.get_item('webcam_window_display'),
+		visible = has_window_output()
+	)
 	# Works next to every output mode, not just the window one, so it is not tied to the mode radio.
 	# Read from state on start like the fullscreen checkbox
 	WEBCAM_RAW_WINDOW_CHECKBOX = gradio.Checkbox(
 		label = translator.get('uis.webcam_raw_window_checkbox'),
 		value = state_manager.get_item('webcam_raw_window'),
+		visible = has_window_output()
+	)
+	# The camera window has its own fullscreen and display, so the two windows can sit fullscreen on
+	# different displays. Both are read when the camera window opens on start
+	WEBCAM_RAW_WINDOW_FULLSCREEN_CHECKBOX = gradio.Checkbox(
+		label = translator.get('uis.webcam_raw_window_fullscreen_checkbox'),
+		value = state_manager.get_item('webcam_raw_window_fullscreen'),
+		visible = has_window_output()
+	)
+	WEBCAM_RAW_WINDOW_DISPLAY_DROPDOWN = gradio.Dropdown(
+		label = translator.get('uis.webcam_raw_window_display_dropdown'),
+		choices = resolve_window_display_choices(),
+		value = state_manager.get_item('webcam_raw_window_display'),
 		visible = has_window_output()
 	)
 	WEBCAM_WINDOW_HINT_MARKDOWN = gradio.Markdown(
@@ -227,7 +258,10 @@ def render() -> None:
 	register_ui_component('webcam_camera_backend_dropdown', WEBCAM_CAMERA_BACKEND_DROPDOWN)
 	register_ui_component('webcam_output_resolution_dropdown', WEBCAM_OUTPUT_RESOLUTION_DROPDOWN)
 	register_ui_component('webcam_window_fullscreen_checkbox', WEBCAM_WINDOW_FULLSCREEN_CHECKBOX)
+	register_ui_component('webcam_window_display_dropdown', WEBCAM_WINDOW_DISPLAY_DROPDOWN)
 	register_ui_component('webcam_raw_window_checkbox', WEBCAM_RAW_WINDOW_CHECKBOX)
+	register_ui_component('webcam_raw_window_fullscreen_checkbox', WEBCAM_RAW_WINDOW_FULLSCREEN_CHECKBOX)
+	register_ui_component('webcam_raw_window_display_dropdown', WEBCAM_RAW_WINDOW_DISPLAY_DROPDOWN)
 	register_ui_component('webcam_window_hint_markdown', WEBCAM_WINDOW_HINT_MARKDOWN)
 	register_ui_component('webcam_source_face_gallery', WEBCAM_SOURCE_FACE_GALLERY)
 	register_ui_component('webcam_source_face_clear_button', WEBCAM_SOURCE_FACE_CLEAR_BUTTON)
@@ -254,8 +288,14 @@ def listen() -> None:
 			processors_checkbox_group.change(remote_update_bypassed_processors, inputs = processors_checkbox_group, outputs = WEBCAM_BYPASSED_PROCESSORS_CHECKBOX_GROUP)
 	if WEBCAM_WINDOW_FULLSCREEN_CHECKBOX:
 		WEBCAM_WINDOW_FULLSCREEN_CHECKBOX.change(update_window_fullscreen, inputs = WEBCAM_WINDOW_FULLSCREEN_CHECKBOX)
+	if WEBCAM_WINDOW_DISPLAY_DROPDOWN:
+		WEBCAM_WINDOW_DISPLAY_DROPDOWN.change(update_window_display, inputs = WEBCAM_WINDOW_DISPLAY_DROPDOWN)
 	if WEBCAM_RAW_WINDOW_CHECKBOX:
 		WEBCAM_RAW_WINDOW_CHECKBOX.change(update_raw_window, inputs = WEBCAM_RAW_WINDOW_CHECKBOX)
+	if WEBCAM_RAW_WINDOW_FULLSCREEN_CHECKBOX:
+		WEBCAM_RAW_WINDOW_FULLSCREEN_CHECKBOX.change(update_raw_window_fullscreen, inputs = WEBCAM_RAW_WINDOW_FULLSCREEN_CHECKBOX)
+	if WEBCAM_RAW_WINDOW_DISPLAY_DROPDOWN:
+		WEBCAM_RAW_WINDOW_DISPLAY_DROPDOWN.change(update_raw_window_display, inputs = WEBCAM_RAW_WINDOW_DISPLAY_DROPDOWN)
 	if WEBCAM_GENERATE_CONFIG_BUTTON and WEBCAM_GENERATE_CONFIG_TEXTBOX:
 		WEBCAM_GENERATE_CONFIG_BUTTON.click(generate_config, inputs =\
 		[
@@ -276,9 +316,26 @@ def update_window_fullscreen(window_fullscreen : bool) -> None:
 	state_manager.set_item('webcam_window_fullscreen', window_fullscreen)
 
 
+# Read when the window opens. An idle window on another display is reopened by the next start
+def update_window_display(window_display : int) -> None:
+	state_manager.set_item('webcam_window_display', int(window_display or 0))
+
+
 # Read when a stream starts, so a change takes effect on the next start
 def update_raw_window(raw_window : bool) -> None:
 	state_manager.set_item('webcam_raw_window', raw_window)
+
+
+def update_raw_window_fullscreen(raw_window_fullscreen : bool) -> None:
+	state_manager.set_item('webcam_raw_window_fullscreen', raw_window_fullscreen)
+
+
+def update_raw_window_display(raw_window_display : int) -> None:
+	state_manager.set_item('webcam_raw_window_display', int(raw_window_display or 0))
+
+
+def resolve_window_display_choices() -> List[Tuple[str, int]]:
+	return [ ('auto' if window_display == 0 else str(window_display), window_display) for window_display in WEBCAM_WINDOW_DISPLAYS ]
 
 
 def update_performance_overlay(performance_overlay : str) -> None:
@@ -371,7 +428,10 @@ def generate_config(webcam_device_id : str, webcam_mode : str, webcam_resolution
 		'webcam_camera_backend': webcam_camera_backend,
 		'webcam_output_resolution': webcam_output_resolution,
 		'webcam_window_fullscreen': bool(state_manager.get_item('webcam_window_fullscreen')),
+		'webcam_window_display': int(state_manager.get_item('webcam_window_display') or 0),
 		'webcam_raw_window': bool(state_manager.get_item('webcam_raw_window')),
+		'webcam_raw_window_fullscreen': bool(state_manager.get_item('webcam_raw_window_fullscreen')),
+		'webcam_raw_window_display': int(state_manager.get_item('webcam_raw_window_display') or 0),
 		'webcam_frame_generation': state_manager.get_item('webcam_frame_generation'),
 		'webcam_source_faces': { face_name: source_paths for face_name, source_paths in source_face_groups.items() if face_name not in directory_source_faces },
 		'webcam_source_faces_directory': source_face_directory,

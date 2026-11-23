@@ -40,8 +40,9 @@ def log_window_output_requirement() -> None:
 # the process main thread, which gradio already owns, and forking a process that holds live
 # onnxruntime or cuda contexts deadlocks
 class WindowStream:
-	def __init__(self, width : int, height : int, fps : Fps, title : str = 'FaceFusion', is_fullscreen : bool = False):
+	def __init__(self, width : int, height : int, fps : Fps, title : str = 'FaceFusion', is_fullscreen : bool = False, window_display : int = 0):
 		self.width = width
+		self.window_display = int(window_display or 0)
 		self.height = height
 		self.frame_size = width * height * 3
 		# LatestFrameWriter writes to transport.stdin, the same shim WindowsVirtualCameraStream uses
@@ -56,7 +57,7 @@ class WindowStream:
 		self.stop_event = context.Event()
 		self.intent_queue = context.Queue()
 		self.status_queue = context.Queue()
-		self.process = context.Process(target = run_window, args = (self.shared_frames.name, width, height, float(fps), title, bool(is_fullscreen), self.sequence, self.frame_event, self.stop_event, self.intent_queue, self.status_queue), daemon = True)
+		self.process = context.Process(target = run_window, args = (self.shared_frames.name, width, height, float(fps), title, bool(is_fullscreen), self.window_display, self.sequence, self.frame_event, self.stop_event, self.intent_queue, self.status_queue), daemon = True)
 		self.process.start()
 
 	# One writer, one reader, and the reader only ever draws the slot of an already bumped sequence,
@@ -105,6 +106,14 @@ class WindowStream:
 	def has_window_closed(self) -> bool:
 		return self.is_window_closed
 
+	def set_title(self, title : str) -> None:
+		if self.is_closed or self.is_window_closed:
+			return
+		try:
+			self.status_queue.put_nowait({ 'window_title': title })
+		except Exception:
+			pass
+
 	# Black rather than the last frame, so a stopped stream does not leave a swapped face standing on
 	# screen as if it were live
 	def clear(self) -> None:
@@ -146,12 +155,15 @@ OUTPUT_WINDOW_TITLE = 'FaceFusion OUTPUT'
 # fed from the capture thread through submit, which converts and stores only the newest frame, and
 # draws on its own thread so neither the capture nor the processing waits on the window. The window is
 # opened on the first frame at that frame's size, because the camera may not have granted the
-# resolution that was asked for. It has no controls: its keys are ignored, and closing it ends only
-# this view, never the stream
+# resolution that was asked for. Only F11 and Esc (fullscreen) work in it, the face keys are ignored,
+# and closing it ends only this view, never the stream
 class RawCameraView:
-	def __init__(self, title : str, fps : Fps):
+	def __init__(self, title : str, fps : Fps, is_fullscreen : bool = False, window_display : int = 0, camera_switch : Any = None):
 		self.title = title
 		self.fps = fps
+		self.is_fullscreen = is_fullscreen
+		self.window_display = window_display
+		self.camera_switch = camera_switch
 		self.latest_frame : Any = None
 		self.frame_lock = threading.Lock()
 		self.frame_event = threading.Event()
@@ -159,6 +171,15 @@ class RawCameraView:
 		self.window_stream : Optional[WindowStream] = None
 		self.thread = threading.Thread(target = self._run, daemon = True)
 		self.thread.start()
+		if camera_switch:
+			camera_switch.listeners.append(self.on_camera_switched)
+
+	# Called on the capture thread. A window not open yet takes the new title when it opens
+	def on_camera_switched(self, camera_id : int, camera_title : str) -> None:
+		self.title = camera_title
+		window_stream = self.window_stream
+		if window_stream:
+			window_stream.set_title(camera_title)
 
 	# Converted here on the capture thread rather than later on the view's own: the conversion is the
 	# copy, and the camera frame it reads goes on to the processors, which may write into it
@@ -187,13 +208,16 @@ class RawCameraView:
 					continue
 				frame_height, frame_width = vision_frame.shape[:2]
 				if not self.window_stream:
-					self.window_stream = WindowStream(frame_width, frame_height, self.fps, self.title)
+					self.window_stream = WindowStream(frame_width, frame_height, self.fps, self.title, self.is_fullscreen, self.window_display)
 				# The window's shared memory is sized at creation, so a camera that switches size mid
 				# stream is scaled into it rather than reopening the window
 				if (frame_width, frame_height) != (self.window_stream.width, self.window_stream.height):
 					vision_frame = cv2.resize(vision_frame, (self.window_stream.width, self.window_stream.height))
 				self.window_stream.write(vision_frame.tobytes())
-				self.window_stream.poll_events()
+				# Ctrl+0-9 works here too, since with any output mode but window this is the only window
+				for intent_name, intent_value in self.window_stream.poll_events():
+					if intent_name == 'camera_id' and self.camera_switch:
+						self.camera_switch.request(intent_value)
 				if self.window_stream.has_window_closed():
 					self.is_running = False
 		except Exception as exception:
@@ -202,6 +226,8 @@ class RawCameraView:
 
 	def close(self) -> None:
 		self.is_running = False
+		if self.camera_switch and self.on_camera_switched in self.camera_switch.listeners:
+			self.camera_switch.listeners.remove(self.on_camera_switched)
 		self.frame_event.set()
 		self.thread.join(1.0)
 		if self.window_stream:
@@ -211,11 +237,11 @@ class RawCameraView:
 
 # Started next to any output mode, the native window or not. Without pygame it is skipped with a
 # warning rather than refusing the stream, since the processed output does not depend on it
-def open_raw_camera_view(camera_title : str, fps : Fps) -> Optional[RawCameraView]:
+def open_raw_camera_view(camera_title : str, fps : Fps, is_fullscreen : bool = False, window_display : int = 0, camera_switch : Any = None) -> Optional[RawCameraView]:
 	if not has_window_output():
 		log_window_output_requirement()
 		return None
-	return RawCameraView(camera_title, fps)
+	return RawCameraView(camera_title, fps, is_fullscreen, window_display, camera_switch)
 
 
 # The browser layout keeps one window open across streams while the window mode is selected, so
@@ -229,7 +255,7 @@ SHARED_WINDOW_STATE : Dict[str, bool] = { 'in_use': False, 'close_pending': Fals
 # Reused when it is still open at the size asked for. The shared memory is sized at creation, so
 # another output size needs another window. Keys pressed while no stream was reading them are
 # dropped, or the next start would replay them as face switches
-def acquire_shared_window_stream(width : int, height : int, fps : Fps, is_fullscreen : bool) -> WindowStream:
+def acquire_shared_window_stream(width : int, height : int, fps : Fps, is_fullscreen : bool, window_display : int = 0) -> WindowStream:
 	global SHARED_WINDOW_STREAM
 
 	with SHARED_WINDOW_LOCK:
@@ -237,11 +263,13 @@ def acquire_shared_window_stream(width : int, height : int, fps : Fps, is_fullsc
 			SHARED_WINDOW_STREAM.poll_events()
 			# A stream still writing keeps its window; the new size is picked up by the next start
 			is_resized = (SHARED_WINDOW_STREAM.width, SHARED_WINDOW_STREAM.height) != (width, height) and not SHARED_WINDOW_STATE.get('in_use')
-			if SHARED_WINDOW_STREAM.has_window_closed() or is_resized:
+			# Another display is handled like another size: the idle window is reopened where it belongs
+			is_moved = SHARED_WINDOW_STREAM.window_display != int(window_display or 0) and not SHARED_WINDOW_STATE.get('in_use')
+			if SHARED_WINDOW_STREAM.has_window_closed() or is_resized or is_moved:
 				SHARED_WINDOW_STREAM.close()
 				SHARED_WINDOW_STREAM = None
 		if not SHARED_WINDOW_STREAM:
-			SHARED_WINDOW_STREAM = WindowStream(width, height, fps, OUTPUT_WINDOW_TITLE, is_fullscreen)
+			SHARED_WINDOW_STREAM = WindowStream(width, height, fps, OUTPUT_WINDOW_TITLE, is_fullscreen, window_display)
 			SHARED_WINDOW_STREAM.clear()
 		SHARED_WINDOW_STATE['close_pending'] = False
 		return SHARED_WINDOW_STREAM
@@ -331,7 +359,7 @@ def resolve_window_face_path(source_face_name : Optional[str]) -> Optional[str]:
 	return None
 
 
-def apply_window_intents(window_stream : WindowStream) -> bool:
+def apply_window_intents(window_stream : WindowStream, camera_switch : Any = None) -> bool:
 	is_running = True
 
 	for intent_name, intent_value in window_stream.poll_events():
@@ -369,6 +397,13 @@ def apply_window_intents(window_stream : WindowStream) -> bool:
 				logger.debug('no source faces are bound to the arrow keys', __name__)
 		elif intent_name == 'bypass_on':
 			state_manager.set_item('webcam_stream_bypass', True)
+		# Ctrl+0-9. Only a request: the capture thread opens the camera and stays on the old one if
+		# it cannot
+		elif intent_name == 'camera_id':
+			if camera_switch:
+				camera_switch.request(intent_value)
+			else:
+				logger.debug('camera switching is not available for this stream', __name__)
 		# A, S and D switch the overlay in place. The window is the one output with no browser
 		# beside it, so without these a headless run cannot be inspected and then cleaned up again.
 		# Checked against the list even though the child is ours, because the value crossed a

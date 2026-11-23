@@ -5,7 +5,7 @@ import cv2
 import gradio
 
 from facefusion import logger, state_manager, translator
-from facefusion.camera_manager import clear_camera_pool, get_local_camera_capture, resolve_camera_window_title
+from facefusion.camera_manager import CameraSwitch, clear_camera_pool, get_local_camera_capture, resolve_camera_window_title
 from facefusion.filesystem import has_image
 from facefusion.frame_generator import StreamFrameGenerator, resolve_output_fps
 from facefusion.overlay import PERFORMANCE_OVERLAY
@@ -173,6 +173,7 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 	window_stream = None
 	window_transport = None
 	raw_camera_view = None
+	camera_switch = CameraSwitch(webcam_device_id, webcam_width, webcam_height, webcam_fps, webcam_camera_backend)
 	# The camera keeps its own rate; only the transport runs at the generated one. A generated stream
 	# is also paced by capture time, since uneven worker finishing is what makes doubled frames judder
 	output_fps = resolve_output_fps(webcam_fps)
@@ -191,13 +192,13 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 			# Acquired here rather than inside the factory so that poll_events stays reachable from this
 			# loop. repeat_latest is off because the window goes on showing the last frame by itself
 			if webcam_mode == 'window':
-				window_stream = acquire_shared_window_stream(output_width, output_height, output_fps, state_manager.get_item('webcam_window_fullscreen'))
+				window_stream = acquire_shared_window_stream(output_width, output_height, output_fps, state_manager.get_item('webcam_window_fullscreen'), state_manager.get_item('webcam_window_display') or 0)
 				window_transport = SharedWindowTransport(window_stream)
 				stream_writer = LatestFrameWriter(lambda: window_transport, output_width, output_height, False, output_fps, output_fps != webcam_fps)
 				stream_writer.start()
 			if state_manager.get_item('webcam_raw_window'):
-				raw_camera_view = open_raw_camera_view(resolve_camera_window_title(webcam_device_id), webcam_fps)
-			for capture_vision_frame, capture_time, is_duplicate, timing in multi_process_capture(camera_capture, webcam_fps, webcam_execution_thread_count, (webcam_width, webcam_height), raw_camera_view.submit if raw_camera_view else None):
+				raw_camera_view = open_raw_camera_view(resolve_camera_window_title(webcam_device_id), webcam_fps, bool(state_manager.get_item('webcam_raw_window_fullscreen')), state_manager.get_item('webcam_raw_window_display') or 0, camera_switch)
+			for capture_vision_frame, capture_time, is_duplicate, timing in multi_process_capture(camera_capture, webcam_fps, webcam_execution_thread_count, (webcam_width, webcam_height), raw_camera_view.submit if raw_camera_view else None, camera_switch):
 				capture_vision_frame = cv2.cvtColor(capture_vision_frame, cv2.COLOR_BGR2RGB)
 				capture_vision_frame = fit_cover_frame(capture_vision_frame, (output_width, output_height))
 				# Here and not in the workers: this loop sees the frames one at a time in delivery
@@ -220,7 +221,7 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 					yield capture_vision_frame
 				if stream_writer:
 					stream_writer.submit(capture_vision_frame, timing, generated_vision_frame)
-				if window_stream and not apply_window_intents(window_stream):
+				if window_stream and not apply_window_intents(window_stream, camera_switch):
 					break
 		finally:
 			if stream_writer:
@@ -256,7 +257,7 @@ def update_window_output(webcam_mode : WebcamMode, webcam_resolution : str, webc
 	webcam_resolution = normalize_webcam_resolution(webcam_resolution)
 	if webcam_resolution:
 		_, output_width, output_height = resolve_output_resolution(webcam_resolution, webcam_output_resolution)
-		acquire_shared_window_stream(output_width, output_height, resolve_output_fps(webcam_fps), state_manager.get_item('webcam_window_fullscreen'))
+		acquire_shared_window_stream(output_width, output_height, resolve_output_fps(webcam_fps), state_manager.get_item('webcam_window_fullscreen'), state_manager.get_item('webcam_window_display') or 0)
 
 
 def stop() -> gradio.Image:

@@ -4,7 +4,7 @@ from typing import Any
 import cv2
 
 from facefusion import logger, state_manager
-from facefusion.camera_manager import clear_camera_pool, get_local_camera_capture, resolve_camera_window_title
+from facefusion.camera_manager import CameraSwitch, clear_camera_pool, get_local_camera_capture, resolve_camera_window_title
 from facefusion.common_helper import get_first
 from facefusion.frame_generator import StreamFrameGenerator, resolve_output_fps
 from facefusion.overlay import PERFORMANCE_OVERLAY
@@ -69,6 +69,7 @@ def run() -> int:
 	if not camera_capture or not camera_capture.isOpened():
 		logger.error('webcam device could not be opened', __name__)
 		return 1
+	camera_switch = CameraSwitch(webcam_device_id, webcam_width, webcam_height, webcam_fps, webcam_camera_backend)
 
 	# The camera keeps its own rate; only the transport runs at the generated one. A generated stream
 	# is also paced by capture time, since uneven worker finishing is what makes doubled frames judder
@@ -79,14 +80,14 @@ def run() -> int:
 		# The window is the control channel headless never had: it carries the hotkeys that switch
 		# the source face mid run, which no config file can do
 		if webcam_mode == 'window':
-			window_stream = WindowStream(output_width, output_height, output_fps, OUTPUT_WINDOW_TITLE, webcam_config.get('webcam_window_fullscreen'))
+			window_stream = WindowStream(output_width, output_height, output_fps, OUTPUT_WINDOW_TITLE, webcam_config.get('webcam_window_fullscreen'), webcam_config.get('webcam_window_display'))
 			stream_writer = LatestFrameWriter(lambda: window_stream, output_width, output_height, False, output_fps, output_fps != webcam_fps)
 		else:
 			stream_writer = LatestFrameWriter(lambda: open_stream(webcam_mode, output_resolution, output_fps), output_width, output_height, webcam_mode == 'v4l2', output_fps, output_fps != webcam_fps)
 		stream_writer.start()
 		if webcam_config.get('webcam_raw_window'):
-			raw_camera_view = open_raw_camera_view(resolve_camera_window_title(webcam_device_id), webcam_fps)
-		for capture_vision_frame, capture_time, is_duplicate, timing in multi_process_capture(camera_capture, webcam_fps, webcam_execution_thread_count, (webcam_width, webcam_height), raw_camera_view.submit if raw_camera_view else None):
+			raw_camera_view = open_raw_camera_view(resolve_camera_window_title(webcam_device_id), webcam_fps, webcam_config.get('webcam_raw_window_fullscreen'), webcam_config.get('webcam_raw_window_display'), camera_switch)
+		for capture_vision_frame, capture_time, is_duplicate, timing in multi_process_capture(camera_capture, webcam_fps, webcam_execution_thread_count, (webcam_width, webcam_height), raw_camera_view.submit if raw_camera_view else None, camera_switch):
 			capture_vision_frame = cv2.cvtColor(capture_vision_frame, cv2.COLOR_BGR2RGB)
 			capture_vision_frame = fit_cover_frame(capture_vision_frame, (output_width, output_height))
 			# Here and not in the workers: this loop sees the frames one at a time in delivery order,
@@ -101,7 +102,7 @@ def run() -> int:
 					generated_vision_frame = PERFORMANCE_OVERLAY.render(generated_vision_frame, capture_time, overlay_mode, is_duplicate, timing, True)
 				capture_vision_frame = PERFORMANCE_OVERLAY.render(capture_vision_frame, capture_time, overlay_mode, is_duplicate, timing)
 			stream_writer.submit(capture_vision_frame, timing, generated_vision_frame)
-			if window_stream and not apply_window_intents(window_stream):
+			if window_stream and not apply_window_intents(window_stream, camera_switch):
 				break
 	finally:
 		if stream_writer:

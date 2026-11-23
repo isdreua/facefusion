@@ -14,6 +14,7 @@ from tqdm import tqdm
 from facefusion import ffmpeg_builder, logger, state_manager, translator
 from facefusion.app_context import detect_app_context, set_app_context_override
 from facefusion.audio import create_empty_audio_frame
+from facefusion.camera_manager import CameraSwitch
 from facefusion.common_helper import get_first, is_windows
 from facefusion.content_analyser import analyse_frame
 from facefusion.device_memory import reset_device_memory_metrics, sample_device_memory
@@ -64,6 +65,7 @@ class CameraCaptureThread(threading.Thread):
 		super().__init__()
 		self.camera_capture = camera_capture
 		self.raw_frame_listener : Optional[Callable[[VisionFrame], None]] = None
+		self.camera_switch : Optional[CameraSwitch] = None
 		self.frame_queue = queue.Queue(maxsize=1)
 		self.running = True
 		self.daemon = True
@@ -72,6 +74,10 @@ class CameraCaptureThread(threading.Thread):
 		consecutive_read_failures = 0
 		try:
 			while self.running and self.camera_capture.isOpened():
+				switch_camera_id = self.camera_switch.take_pending() if self.camera_switch else None
+				if switch_camera_id is not None:
+					self.switch_camera(switch_camera_id)
+					consecutive_read_failures = 0
 				capture_time = time.perf_counter()
 				ret, frame = self.camera_capture.read()
 				capture_read_end = time.perf_counter()
@@ -99,6 +105,21 @@ class CameraCaptureThread(threading.Thread):
 						pass
 		finally:
 			self.running = False
+
+	# The previous camera keeps delivering until the new one is open, and stays on when the new one
+	# cannot be opened. Swapped here because this thread is the capture's only reader
+	def switch_camera(self, camera_id : int) -> None:
+		try:
+			next_capture = self.camera_switch.open_capture(camera_id)
+		except Exception:
+			next_capture = None
+		if not next_capture or not next_capture.isOpened():
+			self.camera_switch.refuse(camera_id)
+			return
+		previous_capture = self.camera_capture
+		self.camera_capture = next_capture
+		self.camera_switch.release_capture(previous_capture)
+		self.camera_switch.commit(camera_id)
 
 	def stop(self):
 		self.running = False
@@ -304,7 +325,7 @@ def has_stream_capacity(pending_total : int, buffered_total : int, max_queue_siz
 	return pending_total < max_queue_size and buffered_total < max_queue_size
 
 
-def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, webcam_execution_thread_count : Optional[int] = None, capture_resolution : Optional[Resolution] = None, raw_frame_listener : Optional[Callable[[VisionFrame], None]] = None) -> Iterator[Tuple[VisionFrame, float, bool, Dict[str, Any]]]:
+def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, webcam_execution_thread_count : Optional[int] = None, capture_resolution : Optional[Resolution] = None, raw_frame_listener : Optional[Callable[[VisionFrame], None]] = None, camera_switch : Optional[CameraSwitch] = None) -> Iterator[Tuple[VisionFrame, float, bool, Dict[str, Any]]]:
 	webcam_execution_thread_count = webcam_execution_thread_count or state_manager.get_item('execution_thread_count')
 	# Published so the overlay can name the count the stream actually runs on instead of the global
 	# execution thread count, which no webcam frame is processed with
@@ -339,6 +360,7 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 		capture_thread = CameraCaptureThread(camera_capture)
 		# Assigned rather than passed, so the thread keeps its one argument constructor
 		capture_thread.raw_frame_listener = raw_frame_listener
+		capture_thread.camera_switch = camera_switch
 		capture_thread.start()
 		stop_event = threading.Event()
 		
@@ -535,6 +557,10 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 			capture_thread.stop()
 			if hasattr(camera_capture, 'release'):
 				camera_capture.release()
+			# A camera switched to mid stream is the thread's capture now, not the one passed in
+			switched_capture = getattr(capture_thread, 'camera_capture', camera_capture)
+			if switched_capture is not camera_capture and hasattr(switched_capture, 'release'):
+				switched_capture.release()
 			capture_thread.join(timeout = 1.0)
 			if capture_thread.is_alive():
 				logger.warn(translator.get('stream_camera_capture_hung'), __name__)

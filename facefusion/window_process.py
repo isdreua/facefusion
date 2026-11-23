@@ -27,6 +27,23 @@ def resolve_face_index(pygame : Any, key : int) -> Optional[int]:
 	return None
 
 
+# Ctrl with a digit names a camera by its device number, 0 to 9, the numbers the camera dropdown lists
+def resolve_camera_id(pygame : Any, key : int) -> Optional[int]:
+	digit_keys =\
+	[
+		(pygame.K_0, pygame.K_KP0), (pygame.K_1, pygame.K_KP1), (pygame.K_2, pygame.K_KP2),
+		(pygame.K_3, pygame.K_KP3), (pygame.K_4, pygame.K_KP4), (pygame.K_5, pygame.K_KP5),
+		(pygame.K_6, pygame.K_KP6), (pygame.K_7, pygame.K_KP7), (pygame.K_8, pygame.K_KP8),
+		(pygame.K_9, pygame.K_KP9)
+	]
+
+	for camera_id, keys in enumerate(digit_keys):
+		if key in keys:
+			return camera_id
+
+	return None
+
+
 # The overlay modes the parent accepts, keyed the way they sit under the left hand: A is the fullest
 # one, S steps down to the summary, D turns it off. The value is a plain constant per key rather
 # than anything the child resolves against state, so the parent stays the only owner of the mode
@@ -78,9 +95,49 @@ def resolve_osd_preview(pygame : Any, osd_previews : Dict[str, Any], source_face
 	return osd_previews.get(source_face_path)
 
 
+# The setting counts displays from 1 and keeps 0 for no pin; SDL counts from 0. A display that is
+# not attached (unplugged since the config was written) drops the pin rather than failing the window
+def resolve_display_index(pygame : Any, window_display : int) -> Optional[int]:
+	if window_display < 1:
+		return None
+	try:
+		display_count = pygame.display.get_num_displays()
+	except Exception:
+		return None
+	if window_display > display_count:
+		return None
+	return window_display - 1
+
+
+# Synced to the display so a frame lands on a refresh instead of tearing across one; SCALED is what
+# makes vsync available without opengl. A driver that refuses it still gets a window
+def set_display_mode(pygame : Any, width : int, height : int, display_flags : int, display_index : Optional[int]) -> Any:
+	display_options : Dict[str, Any] = {}
+
+	if display_index is not None:
+		display_options['display'] = display_index
+	try:
+		return pygame.display.set_mode((width, height), display_flags, vsync = 1, **display_options)
+	except pygame.error:
+		return pygame.display.set_mode((width, height), display_flags, **display_options)
+
+
+# toggle_fullscreen goes fullscreen on whichever display the window sits on, so a window dragged
+# elsewhere would leave its pin behind. A pinned window is set up again on its own display instead,
+# and only falls back to the plain toggle when that is refused
+def switch_fullscreen(pygame : Any, display_surface : Any, width : int, height : int, display_index : Optional[int]) -> Any:
+	if display_index is not None:
+		try:
+			return set_display_mode(pygame, width, height, display_surface.get_flags() ^ pygame.FULLSCREEN, display_index)
+		except Exception:
+			pass
+	pygame.display.toggle_fullscreen()
+	return pygame.display.get_surface() or display_surface
+
+
 # The child reports raw intents and resolves nothing: the parent owns the index to face name mapping
 # so that the window and the browser gallery cannot disagree about what is selected
-def run_window(shared_name : str, width : int, height : int, fps : float, title : str, is_fullscreen : bool, sequence : Any, frame_event : Any, stop_event : Any, intent_queue : Any, status_queue : Any) -> None:
+def run_window(shared_name : str, width : int, height : int, fps : float, title : str, is_fullscreen : bool, window_display : int, sequence : Any, frame_event : Any, stop_event : Any, intent_queue : Any, status_queue : Any) -> None:
 	import os
 	import time
 	from multiprocessing import shared_memory
@@ -106,12 +163,8 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 		display_flags = pygame.RESIZABLE | pygame.SCALED
 		if is_fullscreen:
 			display_flags = display_flags | pygame.FULLSCREEN
-		# Synced to the display so a frame lands on a refresh instead of tearing across one; SCALED is
-		# what makes vsync available without opengl. A driver that refuses it still gets a window
-		try:
-			display_surface = pygame.display.set_mode((width, height), display_flags, vsync = 1)
-		except pygame.error:
-			display_surface = pygame.display.set_mode((width, height), display_flags)
+		display_index = resolve_display_index(pygame, window_display)
+		display_surface = set_display_mode(pygame, width, height, display_flags, display_index)
 		osd_font = pygame.font.SysFont(None, 24)
 		last_sequence = -1
 
@@ -120,16 +173,20 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 				if event.type == pygame.QUIT:
 					is_closing = True
 				elif event.type == pygame.KEYDOWN:
+					camera_id = resolve_camera_id(pygame, event.key) if event.mod & pygame.KMOD_CTRL else None
 					face_index = resolve_face_index(pygame, event.key)
 					overlay_mode = resolve_overlay_mode(pygame, event.key)
 					if event.key == pygame.K_F11:
-						pygame.display.toggle_fullscreen()
+						display_surface = switch_fullscreen(pygame, display_surface, width, height, display_index)
 					elif event.key == pygame.K_q and event.mod & pygame.KMOD_CTRL:
 						is_closing = True
+					# Before the face keys, which share the digits
+					elif camera_id is not None:
+						intent_queue.put(('camera_id', camera_id))
 					elif event.key == pygame.K_ESCAPE:
 						# Escape leaves fullscreen first, so it cannot close the window by surprise
 						if display_surface.get_flags() & pygame.FULLSCREEN:
-							pygame.display.toggle_fullscreen()
+							display_surface = switch_fullscreen(pygame, display_surface, width, height, display_index)
 						else:
 							is_closing = True
 					elif face_index is not None:
@@ -147,10 +204,15 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 
 			while True:
 				try:
-					status = status_queue.get_nowait()
-					osd_expires_at = time.monotonic() + OSD_DURATION
+					received_status = status_queue.get_nowait()
 				except Exception:
 					break
+				# A new title (the camera window after a camera switch) is not a status and shows no osd
+				if 'window_title' in received_status:
+					pygame.display.set_caption(str(received_status.get('window_title')))
+					continue
+				status = received_status
+				osd_expires_at = time.monotonic() + OSD_DURATION
 
 			current_sequence = int(sequence.value)
 			if current_sequence != last_sequence and current_sequence > 0:

@@ -286,6 +286,7 @@ LOCALES : Locales =\
 			'webcam_window_resolution_radio': 'OUTPUT WINDOW QUALITY (NATIVE DISPLAY PIXELS OR FORCED TO OUTPUT RESOLUTION)',
 			'webcam_control_window_checkbox': 'SHOW CONTROL WINDOW',
 			'webcam_face_preview_window_dropdown': 'FACE SWITCH PICTURE SHOWN IN',
+			'webcam_window_hidden_checkbox': 'HIDE OUTPUT WINDOW (H HIDES, J SHOWS)',
 			'webcam_raw_window_checkbox': 'SHOW RAW CAMERA IN SEPARATE WINDOW',
 			'webcam_raw_window_fullscreen_checkbox': 'CAMERA WINDOW FULLSCREEN',
 			'webcam_raw_window_display_dropdown': 'CAMERA WINDOW DISPLAY',

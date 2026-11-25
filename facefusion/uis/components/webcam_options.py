@@ -11,7 +11,7 @@ from facefusion.streamer import apply_stream_source_paths, resolve_source_face_g
 from facefusion.types import WebcamMode
 from facefusion.uis.core import get_ui_component, register_ui_component
 from facefusion.webcam_config import DEFAULT_SOURCE_FACE_NAME, NO_SOURCE_FACE_NAME, WEBCAM_BYPASSED_PROCESSORS, WEBCAM_CAMERA_BACKENDS, WEBCAM_CONTENT_ANALYSIS_INTERVALS, WEBCAM_FRAME_GENERATION_MODES, WEBCAM_FRAME_SKIPPING_MODES, WEBCAM_INLINE_PREVIEW_RESOLUTIONS, WEBCAM_OUTPUT_RESOLUTIONS, WEBCAM_PERFORMANCE_OVERLAYS, WEBCAM_STATE_KEYS, WEBCAM_FACE_PREVIEW_WINDOWS, WEBCAM_WINDOW_DISPLAYS, WEBCAM_WINDOW_RESOLUTIONS, format_webcam_config, normalize_webcam_resolution, get_source_faces, load_webcam_config, resolve_source_face_directory
-from facefusion.window_output import detect_window_displays, has_window_output, log_window_output_requirement, move_raw_camera_view, move_shared_window_stream, set_camera_window_fullscreen, set_shared_control_window, set_shared_window_fullscreen, set_shared_window_resolution
+from facefusion.window_output import detect_window_displays, has_window_output, log_window_output_requirement, move_raw_camera_view, move_shared_window_stream, set_camera_window_fullscreen, set_shared_control_window, set_shared_window_fullscreen, set_shared_window_hidden, set_shared_window_resolution
 
 WEBCAM_DEVICE_ID_DROPDOWN : Optional[gradio.Dropdown] = None
 # The camera choices the dropdown was last given, so the camera sync can add one it lacks
@@ -32,6 +32,8 @@ WEBCAM_OUTPUT_RESOLUTION_DROPDOWN : Optional[gradio.Dropdown] = None
 WEBCAM_WINDOW_FULLSCREEN_CHECKBOX : Optional[gradio.Checkbox] = None
 WEBCAM_CONTROL_WINDOW_CHECKBOX : Optional[gradio.Checkbox] = None
 WEBCAM_FACE_PREVIEW_WINDOW_DROPDOWN : Optional[gradio.Dropdown] = None
+WEBCAM_WINDOW_HIDDEN_CHECKBOX : Optional[gradio.Checkbox] = None
+WEBCAM_WINDOW_HIDDEN_TIMER : Optional[gradio.Timer] = None
 WEBCAM_WINDOW_DISPLAY_DROPDOWN : Optional[gradio.Dropdown] = None
 WEBCAM_WINDOW_RESOLUTION_RADIO : Optional[gradio.Radio] = None
 WEBCAM_WINDOW_HIGH_DPI_CHECKBOX : Optional[gradio.Checkbox] = None
@@ -64,6 +66,8 @@ def render() -> None:
 	global WEBCAM_WINDOW_FULLSCREEN_CHECKBOX
 	global WEBCAM_CONTROL_WINDOW_CHECKBOX
 	global WEBCAM_FACE_PREVIEW_WINDOW_DROPDOWN
+	global WEBCAM_WINDOW_HIDDEN_CHECKBOX
+	global WEBCAM_WINDOW_HIDDEN_TIMER
 	global WEBCAM_WINDOW_DISPLAY_DROPDOWN
 	global WEBCAM_WINDOW_RESOLUTION_RADIO
 	global WEBCAM_WINDOW_HIGH_DPI_CHECKBOX
@@ -102,6 +106,7 @@ def render() -> None:
 	state_manager.init_item('webcam_window_high_dpi', webcam_config.get('webcam_window_high_dpi'))
 	state_manager.init_item('webcam_control_window', webcam_config.get('webcam_control_window'))
 	state_manager.init_item('webcam_face_preview_window', webcam_config.get('webcam_face_preview_window'))
+	state_manager.init_item('webcam_window_hidden', False)
 	state_manager.init_item('webcam_raw_window', webcam_config.get('webcam_raw_window'))
 	state_manager.init_item('webcam_raw_window_fullscreen', webcam_config.get('webcam_raw_window_fullscreen'))
 	state_manager.init_item('webcam_raw_window_display', webcam_config.get('webcam_raw_window_display'))
@@ -171,6 +176,15 @@ def render() -> None:
 		value = state_manager.get_item('webcam_face_preview_window'),
 		visible = has_window_output()
 	)
+	# Hides the open output window and shows it again, the same window, with or without a stream. Shows
+	# what H and J did too: the page asks every half second, since the server cannot push to it
+	WEBCAM_WINDOW_HIDDEN_CHECKBOX = gradio.Checkbox(
+		label = translator.get('uis.webcam_window_hidden_checkbox'),
+		value = bool(state_manager.get_item('webcam_window_hidden')),
+		visible = has_window_output()
+	)
+	if has_window_output():
+		WEBCAM_WINDOW_HIDDEN_TIMER = gradio.Timer(0.5)
 	# Works next to every output mode, not just the window one, so it is not tied to the mode radio.
 	# Opens the camera window at once and keeps it while ticked (webcam.update_camera_window)
 	WEBCAM_RAW_WINDOW_CHECKBOX = gradio.Checkbox(
@@ -315,6 +329,7 @@ def render() -> None:
 	register_ui_component('webcam_window_high_dpi_checkbox', WEBCAM_WINDOW_HIGH_DPI_CHECKBOX)
 	register_ui_component('webcam_control_window_checkbox', WEBCAM_CONTROL_WINDOW_CHECKBOX)
 	register_ui_component('webcam_face_preview_window_dropdown', WEBCAM_FACE_PREVIEW_WINDOW_DROPDOWN)
+	register_ui_component('webcam_window_hidden_checkbox', WEBCAM_WINDOW_HIDDEN_CHECKBOX)
 	register_ui_component('webcam_raw_window_checkbox', WEBCAM_RAW_WINDOW_CHECKBOX)
 	register_ui_component('webcam_raw_window_fullscreen_checkbox', WEBCAM_RAW_WINDOW_FULLSCREEN_CHECKBOX)
 	register_ui_component('webcam_raw_window_display_dropdown', WEBCAM_RAW_WINDOW_DISPLAY_DROPDOWN)
@@ -355,6 +370,12 @@ def listen() -> None:
 		WEBCAM_CONTROL_WINDOW_CHECKBOX.change(update_control_window, inputs = WEBCAM_CONTROL_WINDOW_CHECKBOX)
 	if WEBCAM_FACE_PREVIEW_WINDOW_DROPDOWN:
 		WEBCAM_FACE_PREVIEW_WINDOW_DROPDOWN.change(update_face_preview_window, inputs = WEBCAM_FACE_PREVIEW_WINDOW_DROPDOWN)
+	# input, not change: only a click writes the state, so the sync setting the box cannot write back
+	# a value the keys have already changed again
+	if WEBCAM_WINDOW_HIDDEN_CHECKBOX:
+		WEBCAM_WINDOW_HIDDEN_CHECKBOX.input(update_window_hidden, inputs = WEBCAM_WINDOW_HIDDEN_CHECKBOX)
+		if WEBCAM_WINDOW_HIDDEN_TIMER:
+			WEBCAM_WINDOW_HIDDEN_TIMER.tick(sync_window_hidden_checkbox, inputs = WEBCAM_WINDOW_HIDDEN_CHECKBOX, outputs = WEBCAM_WINDOW_HIDDEN_CHECKBOX)
 	if WEBCAM_RAW_WINDOW_CHECKBOX:
 		WEBCAM_RAW_WINDOW_CHECKBOX.change(update_raw_window, inputs = WEBCAM_RAW_WINDOW_CHECKBOX)
 	if WEBCAM_RAW_WINDOW_FULLSCREEN_CHECKBOX:
@@ -433,6 +454,22 @@ def refresh_raw_window_display() -> gradio.Dropdown:
 def update_control_window(control_window : bool) -> None:
 	state_manager.set_item('webcam_control_window', bool(control_window))
 	set_shared_control_window(bool(control_window))
+
+
+# Applied to the open window here; a running stream's key thread follows the state as well
+def update_window_hidden(window_hidden : bool) -> None:
+	state_manager.set_item('webcam_window_hidden', bool(window_hidden))
+	set_shared_window_hidden()
+
+
+def sync_window_hidden_checkbox(window_hidden : bool) -> gradio.Checkbox:
+	is_hidden = bool(state_manager.get_item('webcam_window_hidden'))
+
+	if is_hidden == bool(window_hidden):
+		if hasattr(gradio, 'skip'):
+			return gradio.skip()
+		return gradio.Checkbox()
+	return gradio.Checkbox(value = is_hidden)
 
 
 # Read by the window loop on each frame, so it needs nothing but the state

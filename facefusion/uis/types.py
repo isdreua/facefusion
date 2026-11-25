@@ -98,6 +98,7 @@ ComponentName = Literal\
 	'webcam_window_high_dpi_checkbox',
 	'webcam_control_window_checkbox',
 	'webcam_face_preview_window_dropdown',
+	'webcam_window_hidden_checkbox',
 	'webcam_raw_window_checkbox',
 	'webcam_raw_window_fullscreen_checkbox',
 	'webcam_raw_window_display_dropdown',

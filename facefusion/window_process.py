@@ -60,6 +60,17 @@ def resolve_overlay_mode(pygame : Any, key : int) -> Optional[str]:
 	return overlay_mode_keys.get(key)
 
 
+# The output window's visibility: H hides it, J shows it. Two keys for two states, like A, S and D
+def resolve_window_hidden(pygame : Any, key : int) -> Optional[bool]:
+	window_hidden_keys =\
+	{
+		pygame.K_h: True,
+		pygame.K_j: False
+	}
+
+	return window_hidden_keys.get(key)
+
+
 def resolve_osd_text(status : Dict[str, Any]) -> str:
 	if status.get('is_bypassed'):
 		return 'RAW CAMERA'
@@ -283,6 +294,7 @@ class SdlWindowOutput:
 		self.window_fraction = window_fraction
 		self.window_resolution = window_resolution if window_resolution in WINDOW_RESOLUTIONS else 'native'
 		self.is_fullscreen = bool(is_fullscreen)
+		self.is_hidden = False
 		self.display_index = display_index
 		window_options : Dict[str, Any] = { 'resizable': True }
 		if is_high_dpi:
@@ -354,6 +366,14 @@ class SdlWindowOutput:
 		if tuple(self.window.size) != window_size:
 			self.window.size = window_size
 			self.wait_for_window()
+
+	# Off the screen and back, the same window; the window manager may keep it off the taskbar meanwhile
+	def set_hidden(self, is_hidden : bool) -> None:
+		self.is_hidden = bool(is_hidden)
+		if self.is_hidden:
+			self.window.hide()
+		else:
+			self.window.show()
 
 	def set_title(self, title : str) -> None:
 		self.window.title = title
@@ -466,6 +486,12 @@ class LegacyWindowOutput:
 		except pygame.error:
 			self.display_surface = pygame.display.set_mode((width, height), display_flags, **display_options)
 
+	# The display module can only minimize its window, and only the user brings it back, so it keeps
+	# drawing (no is_hidden) to be current whenever that happens
+	def set_hidden(self, is_hidden : bool) -> None:
+		if is_hidden:
+			self.pygame.display.iconify()
+
 	def set_title(self, title : str) -> None:
 		self.pygame.display.set_caption(title)
 
@@ -572,6 +598,7 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 					camera_id = resolve_camera_id(pygame, event.key) if event.mod & pygame.KMOD_CTRL else None
 					face_index = resolve_face_index(pygame, event.key)
 					overlay_mode = resolve_overlay_mode(pygame, event.key)
+					window_hidden = resolve_window_hidden(pygame, event.key)
 					if event.key == pygame.K_F11 and is_control:
 						pass
 					elif event.key == pygame.K_F11:
@@ -600,6 +627,8 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 						intent_queue.put(('bypass_on', None, time.monotonic()))
 					elif overlay_mode is not None:
 						intent_queue.put(('overlay_mode', overlay_mode, time.monotonic()))
+					elif window_hidden is not None:
+						intent_queue.put(('window_hidden', window_hidden, time.monotonic()))
 					elif event.key == pygame.K_LEFT:
 						intent_queue.put(('face_step', -1, time.monotonic()))
 					elif event.key == pygame.K_RIGHT:
@@ -623,6 +652,13 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 				if 'overlay_patches' in received_status:
 					overlay_patches = resolve_overlay_patches(pygame, received_status.get('overlay_patches') or [])
 					last_sequence = -1
+					continue
+				# H, J or the browser checkbox, through the parent. Shown again, it draws the current
+				# frame at once rather than waiting for the next one
+				if 'window_hidden' in received_status:
+					if not is_control:
+						window_output.set_hidden(bool(received_status.get('window_hidden')))
+						last_sequence = -1
 					continue
 				# The window resolution option changed while the window is open
 				if 'window_resolution' in received_status:
@@ -650,7 +686,11 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 			# A mode change above (F11, Esc, a display move) reset last_sequence, so the current frame
 			# is drawn again at the window's new size rather than waiting for the next one
 			current_sequence = int(sequence.value)
-			if current_sequence != last_sequence and current_sequence > 0:
+			# A hidden window draws nothing: a present on it could wait on a vsync that never comes
+			if getattr(window_output, 'is_hidden', False):
+				frame_event.wait(0.005)
+				frame_event.clear()
+			elif current_sequence != last_sequence and current_sequence > 0:
 				last_sequence = current_sequence
 				frame_slot = (current_sequence - 1) % FRAME_SLOT_COUNT
 				frame_offset = frame_slot * frame_size

@@ -7,6 +7,7 @@ from multiprocessing import shared_memory
 from typing import Any, Dict, List, Optional, Tuple
 
 from facefusion import logger, state_manager
+from facefusion.app_context import detect_app_context, set_app_context_override
 from facefusion.common_helper import get_first
 from facefusion.filesystem import is_image
 from facefusion.types import Fps
@@ -103,6 +104,8 @@ class WindowStream:
 		self.window_display = int(window_display or 0)
 		self.window_resolution = resolve_window_resolution(window_resolution)
 		self.is_fullscreen = bool(is_fullscreen)
+		# Shown when opened; hidden and shown again by sync_window_hidden from webcam_window_hidden
+		self.is_hidden = False
 		self.height = height
 		self.frame_size = width * height * 3
 		# LatestFrameWriter writes to transport.stdin, the same shim WindowsVirtualCameraStream uses.
@@ -249,6 +252,16 @@ class WindowStream:
 			return
 		try:
 			self.status_queue.put_nowait({ 'window_fullscreen': self.is_fullscreen })
+		except Exception:
+			pass
+
+	# Takes the window off the screen and back, the same window, so a capture bound to it survives
+	def set_hidden(self, is_hidden : bool) -> None:
+		self.is_hidden = bool(is_hidden)
+		if self.is_closed or self.is_window_closed:
+			return
+		try:
+			self.status_queue.put_nowait({ 'window_hidden': self.is_hidden })
 		except Exception:
 			pass
 
@@ -638,6 +651,7 @@ def acquire_shared_window_stream(width : int, height : int, fps : Fps, is_fullsc
 		if not SHARED_WINDOW_STREAM:
 			SHARED_WINDOW_STREAM = WindowStream(width, height, fps, OUTPUT_WINDOW_TITLE, is_fullscreen, window_display, window_resolution = window_resolution, is_high_dpi = is_high_dpi)
 			SHARED_WINDOW_STREAM.clear()
+		sync_window_hidden(SHARED_WINDOW_STREAM)
 		# Reopened here when it was closed by hand, so the option stays what the control window follows
 		if is_control:
 			SHARED_WINDOW_STREAM.open_control()
@@ -662,6 +676,13 @@ def set_shared_window_fullscreen(is_fullscreen : bool) -> None:
 	with SHARED_WINDOW_LOCK:
 		if SHARED_WINDOW_STREAM and not SHARED_WINDOW_STREAM.has_window_closed():
 			SHARED_WINDOW_STREAM.set_fullscreen(is_fullscreen)
+
+
+# The hide checkbox, whether or not a stream runs; a running stream's key thread follows the state too
+def set_shared_window_hidden() -> None:
+	with SHARED_WINDOW_LOCK:
+		if SHARED_WINDOW_STREAM and not SHARED_WINDOW_STREAM.has_window_closed():
+			sync_window_hidden(SHARED_WINDOW_STREAM)
 
 
 # The window resolution option resizes the open shared window right away, whether or not a stream runs
@@ -812,11 +833,18 @@ def apply_window_intents(window_stream : WindowStream, camera_switch : Any = Non
 		# beside it, so without these a headless run cannot be inspected and then cleaned up again.
 		# Checked against the list even though the child is ours, because the value crossed a
 		# process boundary to get here
+		# H hides the output window and J shows it again; J is pressed in the control window, since a
+		# hidden window has no focus. Two keys rather than one toggle, like A, S and D
+		elif intent_name == 'window_hidden':
+			state_manager.set_item('webcam_window_hidden', bool(intent_value))
 		elif intent_name == 'overlay_mode':
 			if intent_value in WEBCAM_PERFORMANCE_OVERLAYS:
 				state_manager.set_item('webcam_performance_overlay', intent_value)
 			else:
 				logger.debug('unknown overlay mode ' + str(intent_value) + ' was ignored', __name__)
+
+	# Also follows the browser checkbox, which only writes the state
+	sync_window_hidden(window_stream)
 
 	# The on screen display is part of the overlay, so a run with the overlay off keeps a clean frame
 	# and never names the face it switched to, unless the face picture was asked for on the output
@@ -833,6 +861,13 @@ def apply_window_intents(window_stream : WindowStream, camera_switch : Any = Non
 	return is_running and not window_stream.has_window_closed()
 
 
+# The state is what counts: the keys, the checkbox and a newly opened window all go through here
+def sync_window_hidden(window_stream : WindowStream) -> None:
+	is_hidden = bool(state_manager.get_item('webcam_window_hidden'))
+	if is_hidden != window_stream.is_hidden:
+		window_stream.set_hidden(is_hidden)
+
+
 # Reads and applies the stream's keys on a thread of its own. Read between delivered frames, as they
 # were, keys waited out every stall of the pipeline (camera frames still arriving, no processed frame
 # coming out) and then all applied in one burst. The delivery loop only checks is_running
@@ -841,11 +876,15 @@ class WindowIntentPump:
 		self.window_stream = window_stream
 		self.camera_switch = camera_switch
 		self.is_running = True
+		# The state is picked by the calling module's context (ui or cli), which a thread of its own
+		# cannot detect from its stack; without this the browser layout's keys would write the cli state
+		self.app_context = detect_app_context()
 		self.stop_event = threading.Event()
 		self.thread = threading.Thread(target = self._run, daemon = True)
 		self.thread.start()
 
 	def _run(self) -> None:
+		set_app_context_override(self.app_context)
 		try:
 			while not self.stop_event.is_set():
 				if not apply_window_intents(self.window_stream, self.camera_switch):

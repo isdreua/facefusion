@@ -165,10 +165,9 @@ WINDOW_FRACTION = 0.9
 CONTROL_WINDOW_FRACTION = 0.5
 
 
-# How the output window's drawing surface is sized. native draws at the display's real pixels, the
-# frame scaled to them on the gpu; output forces the surface to the output resolution itself, one
-# frame pixel per screen pixel: windowed at exactly that pixel size, fullscreen in a display mode of
-# that size, so the display itself switches to it
+# How the output window puts the frame on screen. native scales it smoothly to the display's real
+# pixels on the gpu; output keeps it at the output resolution, pixel exact: windowed at exactly that
+# pixel size, fullscreen at the largest whole multiple of it that fits, never changing the display mode
 WINDOW_RESOLUTIONS = [ 'native', 'output' ]
 
 
@@ -265,7 +264,11 @@ def resolve_fitted_rect(target_width : int, target_height : int, frame_width : i
 #
 # High dpi is allowed so the drawing surface has the display's real pixels where the desktop is
 # scaled; window sizes and positions stay in the desktop's own units, which the surface's pixel
-# scale (pixels per desktop unit) converts between
+# scale (pixels per desktop unit) converts between.
+#
+# The window resolution never touches the display mode: switching it took seconds on X11, hung the
+# window and left stale parts of the old mode on screen. It only changes how the frame is put on
+# the surface (resolve_frame_rect) and, windowed, the window's size
 class SdlWindowOutput:
 	def __init__(self, pygame : Any, width : int, height : int, title : str, is_fullscreen : bool, display_index : Optional[int], window_fraction : float = WINDOW_FRACTION, window_resolution : str = 'native'):
 		from pygame._sdl2.video import Renderer, Texture, Window
@@ -281,44 +284,53 @@ class SdlWindowOutput:
 		if display_index is not None:
 			window_options['position'] = resolve_centered_position(display_index)
 		# Created fullscreen rather than switched after, so it never shows a windowed frame first; SDL
-		# takes the display from the position, and the windowed size is kept for F11. Forced to the
-		# output resolution, fullscreen is the display mode of the frame's size instead of the desktop
-		if self.is_fullscreen and self.window_resolution == 'output':
-			window_options['fullscreen'] = True
-			window_size = (width, height)
-		else:
-			window_options['fullscreen_desktop'] = self.is_fullscreen
-			window_size = resolve_windowed_size(pygame, width, height, display_index, window_fraction)
+		# takes the display from the position, and the windowed size is kept for F11
+		window_size = resolve_windowed_size(pygame, width, height, display_index, window_fraction)
 		try:
-			self.window = Window(title, size = window_size, **window_options)
+			self.window = Window(title, size = window_size, fullscreen_desktop = self.is_fullscreen, **window_options)
 		except TypeError:
 			# A pygame that does not know the high dpi flag
 			window_options.pop('allow_high_dpi', None)
-			self.window = Window(title, size = window_size, **window_options)
+			self.window = Window(title, size = window_size, fullscreen_desktop = self.is_fullscreen, **window_options)
 		try:
 			self.renderer = Renderer(self.window, vsync = True)
 		except Exception:
 			self.renderer = Renderer(self.window)
-		self.texture = Texture(self.renderer, (width, height), streaming = True)
 		self.texture_class = Texture
+		self.texture = self.create_texture()
 		self.window.show()
 		# The pixel scale is only known once the window has its surface, so a window forced to the
 		# output resolution is given its exact pixel size right after
 		if not self.is_fullscreen and self.window_resolution == 'output':
-			self.window.size = self.resolve_windowed_size(display_index)
-			self.wait_for_window()
-			if display_index is not None:
-				self.window.position = resolve_centered_position(display_index)
-				self.wait_for_window()
+			self.resize_window()
+
+	# Smooth scaling for native, where the frame is stretched to the display; nearest for output,
+	# where it is only ever shown at whole multiples of its pixels and must stay pixel exact. SDL reads
+	# the scale quality when a texture is created, and falls back to the environment for it
+	def create_texture(self) -> Any:
+		import os
+
+		os.environ['SDL_RENDER_SCALE_QUALITY'] = '0' if self.window_resolution == 'output' else '1'
+		return self.texture_class(self.renderer, (self.width, self.height), streaming = True)
+
+	# The renderer's whole surface, in its pixels. The viewport is reset first: SDL keeps the old one
+	# for a moment after a resize, and drawing into it cleared and filled only part of the window
+	def resolve_surface_size(self) -> Tuple[int, int]:
+		try:
+			self.renderer.set_viewport(None)
+		except Exception:
+			pass
+		viewport = self.renderer.get_viewport()
+		return max(1, int(viewport.width)), max(1, int(viewport.height))
 
 	# Pixels of the drawing surface per desktop unit of the window: 1 where the desktop is not scaled
 	# or the process is dpi aware (Windows), 2 or 3 on a scaled macOS or Wayland desktop
 	def resolve_pixel_scale(self) -> float:
 		try:
 			window_width = self.window.size[0]
-			viewport = self.renderer.get_viewport()
-			if window_width > 0 and viewport.width > 0:
-				return viewport.width / window_width
+			surface_width, _ = self.resolve_surface_size()
+			if window_width > 0:
+				return max(1.0, surface_width / window_width)
 		except Exception:
 			pass
 		return 1.0
@@ -331,42 +343,37 @@ class SdlWindowOutput:
 		pixel_scale = self.resolve_pixel_scale()
 		return resolve_windowed_size(self.pygame, max(1, round(self.width / pixel_scale)), max(1, round(self.height / pixel_scale)), display_index, 1.0)
 
+	def resize_window(self) -> None:
+		window_size = self.resolve_windowed_size(self.display_index)
+		if tuple(self.window.size) != window_size:
+			self.window.size = window_size
+			self.wait_for_window()
+
 	def set_title(self, title : str) -> None:
 		self.window.title = title
 
-	# Fullscreen fills the desktop as it is, or, forced to the output resolution, switches the display
-	# to the mode closest to the frame's size. Leaving it gives the window its windowed size back,
-	# which a mode switch had replaced with the frame's
+	# Leaving fullscreen gives a window forced to the output resolution its exact pixel size back
 	def set_fullscreen(self, is_fullscreen : bool) -> None:
 		if is_fullscreen == self.is_fullscreen:
 			return
-		if is_fullscreen and self.window_resolution == 'output':
-			self.window.size = (self.width, self.height)
-			self.window.set_fullscreen(desktop = False)
-		elif is_fullscreen:
+		if is_fullscreen:
 			self.window.set_fullscreen(desktop = True)
 		else:
 			self.window.set_windowed()
 		self.is_fullscreen = is_fullscreen
 		self.wait_for_window()
 		if not is_fullscreen and self.window_resolution == 'output':
-			self.window.size = self.resolve_windowed_size(self.display_index)
-			self.wait_for_window()
+			self.resize_window()
 
-	# Switched in place like everything else: a fullscreen window leaves fullscreen and enters it again
-	# the new way, a windowed one is resized
+	# Switched in place: a new texture for the other scaling, and a windowed window resized. A
+	# fullscreen one stays as it is and only draws the frame the other way
 	def set_window_resolution(self, window_resolution : str) -> None:
 		if window_resolution not in WINDOW_RESOLUTIONS or window_resolution == self.window_resolution:
 			return
-		is_fullscreen = self.is_fullscreen
-
-		if is_fullscreen:
-			self.set_fullscreen(False)
 		self.window_resolution = window_resolution
-		self.window.size = self.resolve_windowed_size(self.display_index)
-		self.wait_for_window()
-		if is_fullscreen:
-			self.set_fullscreen(True)
+		self.texture = self.create_texture()
+		if not self.is_fullscreen:
+			self.resize_window()
 
 	# Fullscreen goes to the display the window manager thinks the window is on, and on X11 a move or
 	# a fullscreen change only takes effect once the window manager has handled it. Going fullscreen
@@ -406,19 +413,29 @@ class SdlWindowOutput:
 				return
 			time.sleep(0.01)
 
-	# The viewport is in the surface's pixels, so with high dpi the frame is scaled to the display's
-	# real resolution rather than to the scaled desktop's
 	def present(self, canvas_surface : Any) -> None:
 		try:
 			self.texture.update(canvas_surface)
 			frame_texture = self.texture
 		except Exception:
 			frame_texture = self.texture_class.from_surface(self.renderer, canvas_surface)
-		viewport = self.renderer.get_viewport()
+		surface_width, surface_height = self.resolve_surface_size()
 		self.renderer.draw_color = (0, 0, 0, 255)
 		self.renderer.clear()
-		frame_texture.draw(dstrect = resolve_fitted_rect(viewport.width, viewport.height, self.width, self.height))
+		frame_texture.draw(dstrect = resolve_frame_rect(surface_width, surface_height, self.width, self.height, self.window_resolution))
 		self.renderer.present()
+
+
+# native fits the frame to the surface. output keeps its pixels exact: shown 1:1, or at the largest
+# whole multiple that fits (a 1920x1080 frame at 2x on a 4K display), centred with black around it;
+# only a frame bigger than the surface is fitted down, as there is no whole multiple below 1
+def resolve_frame_rect(target_width : int, target_height : int, frame_width : int, frame_height : int, window_resolution : str) -> Tuple[int, int, int, int]:
+	if window_resolution == 'output':
+		frame_scale = int(min(target_width // frame_width, target_height // frame_height))
+		if frame_scale >= 1:
+			scaled_width, scaled_height = frame_width * frame_scale, frame_height * frame_scale
+			return (target_width - scaled_width) // 2, (target_height - scaled_height) // 2, scaled_width, scaled_height
+	return resolve_fitted_rect(target_width, target_height, frame_width, frame_height)
 
 
 # For a pygame without the sdl2 window classes: the old single set_mode with SCALED, which already

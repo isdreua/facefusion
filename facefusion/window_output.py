@@ -195,13 +195,16 @@ class WindowStream:
 
 	# Only sent when something actually changed, so the window's on screen display appears on a
 	# switch rather than being redrawn for every frame. The control window gets it always; the output
-	# only while its overlay is on (is_output_status)
-	def push_status(self, source_face_names : List[str], source_face_name : Optional[str], source_face_path : Optional[str], is_bypassed : bool, is_output_status : bool = True) -> None:
+	# only when is_output_status. The face picture goes to the output only with is_output_preview: the
+	# window draws the picture from source_face_path, so the output's copy goes without it
+	def push_status(self, source_face_names : List[str], source_face_name : Optional[str], source_face_path : Optional[str], is_bypassed : bool, is_output_status : bool = True, is_output_preview : bool = False) -> None:
 		status = { 'source_face_names': list(source_face_names), 'source_face_name': source_face_name, 'source_face_path': source_face_path, 'is_bypassed': is_bypassed }
 
 		control_window = self.control_window
 		if control_window:
 			control_window.push_status(status)
+		if not is_output_preview:
+			status = dict(status, source_face_path = None)
 		if not is_output_status or status == self.last_status or self.is_closed or self.is_window_closed:
 			return
 		self.last_status = status
@@ -800,13 +803,15 @@ def apply_window_intents(window_stream : WindowStream, camera_switch : Any = Non
 				logger.debug('unknown overlay mode ' + str(intent_value) + ' was ignored', __name__)
 
 	# The on screen display is part of the overlay, so a run with the overlay off keeps a clean frame
-	# and never names the face it switched to. The control window shows it whatever the overlay is
-	is_output_status = state_manager.get_item('webcam_performance_overlay') in [ 'simple', 'advanced' ]
+	# and never names the face it switched to, unless the face picture was asked for on the output
+	# too (webcam_face_preview_window). The control window shows it whatever the overlay is
+	is_output_preview = state_manager.get_item('webcam_face_preview_window') == 'control_output'
+	is_output_status = is_output_preview or state_manager.get_item('webcam_performance_overlay') in [ 'simple', 'advanced' ]
 	if is_output_status or window_stream.has_control():
 		source_face_name = state_manager.get_item('source_face_name')
 		is_bypassed = bool(state_manager.get_item('webcam_stream_bypass'))
 		# No preview on the raw camera: the selected face is still remembered, but none of it is
 		# reaching the frame, so showing it would claim a swap that is not happening
 		source_face_path = None if is_bypassed else resolve_window_face_path(source_face_name)
-		window_stream.push_status(resolve_window_face_names(), source_face_name, source_face_path, is_bypassed, is_output_status)
+		window_stream.push_status(resolve_window_face_names(), source_face_name, source_face_path, is_bypassed, is_output_status, is_output_preview)
 	return is_running and not window_stream.has_window_closed()

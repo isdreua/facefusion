@@ -117,6 +117,8 @@
     "webcam_window_high_dpi_options": [true, false],
     "webcam_control_window": false,
     "webcam_control_window_options": [true, false],
+    "webcam_face_preview_window": "control",
+    "webcam_face_preview_window_options": ["control", "control_output"],
     "webcam_raw_window": false,
     "webcam_raw_window_options": [true, false],
     "webcam_raw_window_fullscreen": false,

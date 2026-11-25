@@ -584,7 +584,7 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 						is_closing = True
 					# Before the face keys, which share the digits
 					elif camera_id is not None:
-						intent_queue.put(('camera_id', camera_id))
+						intent_queue.put(('camera_id', camera_id, time.monotonic()))
 					elif event.key == pygame.K_ESCAPE:
 						# Escape leaves fullscreen first, so it cannot close the window by surprise
 						if window_output.is_fullscreen:
@@ -593,17 +593,17 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 						else:
 							is_closing = True
 					elif face_index is not None:
-						intent_queue.put(('face_index', face_index))
+						intent_queue.put(('face_index', face_index, time.monotonic()))
 					elif event.key in [ pygame.K_0, pygame.K_KP0 ]:
-						intent_queue.put(('face_none', None))
+						intent_queue.put(('face_none', None, time.monotonic()))
 					elif event.key in [ pygame.K_MINUS, pygame.K_KP_MINUS ]:
-						intent_queue.put(('bypass_on', None))
+						intent_queue.put(('bypass_on', None, time.monotonic()))
 					elif overlay_mode is not None:
-						intent_queue.put(('overlay_mode', overlay_mode))
+						intent_queue.put(('overlay_mode', overlay_mode, time.monotonic()))
 					elif event.key == pygame.K_LEFT:
-						intent_queue.put(('face_step', -1))
+						intent_queue.put(('face_step', -1, time.monotonic()))
 					elif event.key == pygame.K_RIGHT:
-						intent_queue.put(('face_step', 1))
+						intent_queue.put(('face_step', 1, time.monotonic()))
 
 			while True:
 				try:

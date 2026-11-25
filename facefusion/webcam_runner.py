@@ -12,7 +12,7 @@ from facefusion.streamer import apply_stream_face_selector_mode, apply_stream_so
 from facefusion.stream_writer import LatestFrameWriter
 from facefusion.vision import fit_cover_frame, pack_resolution, unpack_resolution
 from facefusion.webcam_config import DEFAULT_SOURCE_FACE_NAME, WEBCAM_HEADLESS_MODES, get_source_faces, load_webcam_config
-from facefusion.window_output import OUTPUT_WINDOW_TITLE, WindowStream, apply_window_intents, open_raw_camera_view, has_window_output, log_window_output_requirement
+from facefusion.window_output import OUTPUT_WINDOW_TITLE, WindowIntentPump, WindowStream, open_raw_camera_view, has_window_output, log_window_output_requirement
 
 
 def run() -> int:
@@ -28,6 +28,7 @@ def run() -> int:
 	stream_writer : Any = None
 	window_stream = None
 	control_overlay = None
+	window_intent_pump = None
 	raw_camera_view = None
 
 	if webcam_mode not in WEBCAM_HEADLESS_MODES:
@@ -94,7 +95,10 @@ def run() -> int:
 		stream_writer.start()
 		if webcam_config.get('webcam_raw_window'):
 			raw_camera_view = open_raw_camera_view(resolve_camera_window_title(webcam_device_id), webcam_fps, webcam_config.get('webcam_raw_window_fullscreen'), webcam_config.get('webcam_raw_window_display'), camera_switch)
-		for capture_vision_frame, capture_time, is_duplicate, timing in multi_process_capture(camera_capture, webcam_fps, webcam_execution_thread_count, (webcam_width, webcam_height), raw_camera_view.submit if raw_camera_view else None, camera_switch, (lambda: apply_window_intents(window_stream, camera_switch)) if window_stream else None):
+		# Keys are read on their own thread from here on, so a stalled pipeline cannot hold them back
+		if window_stream:
+			window_intent_pump = WindowIntentPump(window_stream, camera_switch)
+		for capture_vision_frame, capture_time, is_duplicate, timing in multi_process_capture(camera_capture, webcam_fps, webcam_execution_thread_count, (webcam_width, webcam_height), raw_camera_view.submit if raw_camera_view else None, camera_switch, (lambda: not window_intent_pump.has_stopped()) if window_intent_pump else None):
 			capture_vision_frame = cv2.cvtColor(capture_vision_frame, cv2.COLOR_BGR2RGB)
 			capture_vision_frame = fit_cover_frame(capture_vision_frame, (output_width, output_height))
 			# Here and not in the workers: this loop sees the frames one at a time in delivery order,
@@ -115,9 +119,11 @@ def run() -> int:
 			if control_overlay and is_control_open:
 				control_overlay.submit(capture_time, overlay_mode, is_duplicate, timing)
 			stream_writer.submit(capture_vision_frame, timing, generated_vision_frame)
-			if window_stream and not apply_window_intents(window_stream, camera_switch):
+			if window_intent_pump and window_intent_pump.has_stopped():
 				break
 	finally:
+		if window_intent_pump:
+			window_intent_pump.close()
 		if control_overlay:
 			control_overlay.close()
 		if stream_writer:

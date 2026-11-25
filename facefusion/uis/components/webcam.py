@@ -17,7 +17,7 @@ from facefusion.uis.core import get_ui_component
 from facefusion.uis.types import File
 from facefusion.vision import fit_cover_frame, pack_resolution, restrict_frame, unpack_resolution
 from facefusion.webcam_config import append_source_face_uploads, load_webcam_config, normalize_webcam_resolution
-from facefusion.window_output import SharedWindowTransport, acquire_idle_camera_window, acquire_shared_camera_window, acquire_shared_window_stream, open_raw_camera_view, release_shared_camera_window, apply_window_intents, has_window_output, log_window_output_requirement, release_shared_window_stream
+from facefusion.window_output import SharedWindowTransport, WindowIntentPump, acquire_idle_camera_window, acquire_shared_camera_window, acquire_shared_window_stream, open_raw_camera_view, release_shared_camera_window, has_window_output, log_window_output_requirement, release_shared_window_stream
 
 SOURCE_FILE : Optional[gradio.File] = None
 WEBCAM_IMAGE : Optional[gradio.Image] = None
@@ -218,6 +218,7 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 	window_stream = None
 	window_transport = None
 	control_overlay = None
+	window_intent_pump = None
 	raw_camera_view = None
 	# The camera keeps its own rate; only the transport runs at the generated one. A generated stream
 	# is also paced by capture time, since uneven worker finishing is what makes doubled frames judder
@@ -248,7 +249,10 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 				acquire_shared_camera_window(webcam_width, webcam_height, webcam_fps, resolve_camera_window_title(webcam_device_id), bool(state_manager.get_item('webcam_raw_window_fullscreen')), state_manager.get_item('webcam_raw_window_display') or 0)
 			if state_manager.get_item('webcam_raw_window'):
 				raw_camera_view = open_raw_camera_view(resolve_camera_window_title(webcam_device_id), webcam_fps, bool(state_manager.get_item('webcam_raw_window_fullscreen')), state_manager.get_item('webcam_raw_window_display') or 0, camera_switch, True)
-			for capture_vision_frame, capture_time, is_duplicate, timing in multi_process_capture(camera_capture, webcam_fps, webcam_execution_thread_count, (webcam_width, webcam_height), raw_camera_view.submit if raw_camera_view else None, camera_switch, (lambda: apply_window_intents(window_stream, camera_switch)) if window_stream else None):
+			# Keys are read on their own thread from here on, so a stalled pipeline cannot hold them back
+			if window_stream:
+				window_intent_pump = WindowIntentPump(window_stream, camera_switch)
+			for capture_vision_frame, capture_time, is_duplicate, timing in multi_process_capture(camera_capture, webcam_fps, webcam_execution_thread_count, (webcam_width, webcam_height), raw_camera_view.submit if raw_camera_view else None, camera_switch, (lambda: not window_intent_pump.has_stopped()) if window_intent_pump else None):
 				capture_vision_frame = cv2.cvtColor(capture_vision_frame, cv2.COLOR_BGR2RGB)
 				capture_vision_frame = fit_cover_frame(capture_vision_frame, (output_width, output_height))
 				# Here and not in the workers: this loop sees the frames one at a time in delivery
@@ -277,9 +281,11 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 					yield capture_vision_frame
 				if stream_writer:
 					stream_writer.submit(capture_vision_frame, timing, generated_vision_frame)
-				if window_stream and not apply_window_intents(window_stream, camera_switch):
+				if window_intent_pump and window_intent_pump.has_stopped():
 					break
 		finally:
+			if window_intent_pump:
+				window_intent_pump.close()
 			if control_overlay:
 				control_overlay.close()
 			if stream_writer:

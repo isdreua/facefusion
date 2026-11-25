@@ -1,6 +1,7 @@
 import atexit
 import multiprocessing
 import threading
+import time
 from functools import lru_cache
 from multiprocessing import shared_memory
 from typing import Any, Dict, List, Optional, Tuple
@@ -15,6 +16,10 @@ from facefusion.window_process import FRAME_SLOT_COUNT, WINDOW_RESOLUTIONS, prob
 # How many faces the window can reach. The digit keys stop at 9, so the arrows walk the same nine
 # rather than reaching faces no other key can name
 WINDOW_FACE_KEY_COUNT = 9
+# How often the stream's keys are read, on their own thread rather than between delivered frames
+WINDOW_INTENT_INTERVAL = 0.01
+# A key that waited longer than this between its press and being read is logged at debug
+WINDOW_INTENT_LATE = 0.1
 
 
 # The pip distribution is pygame-ce but it imports as pygame, which it shares with classic pygame;
@@ -73,6 +78,17 @@ def resolve_window_resolution(window_resolution : Any) -> str:
 
 def log_window_output_requirement() -> None:
 	logger.warn('the native output window needs pygame, which is not installed; run "pip install pygame-ce"', __name__)
+
+
+# Key intents carry the time of the press (time.monotonic is system wide, so it is comparable across
+# processes); 'closed' does not. Callers get the plain name and value, and a key that waited too long
+# is logged, so a lag can be placed on the window side or on the reading side
+def resolve_window_intent(window_intent : Tuple[Any, ...]) -> Tuple[str, Any]:
+	if len(window_intent) > 2:
+		intent_wait = time.monotonic() - float(window_intent[2])
+		if intent_wait > WINDOW_INTENT_LATE:
+			logger.debug('window key ' + str(window_intent[0]) + ' was read after ' + str(round(intent_wait * 1000)) + ' ms', __name__)
+	return window_intent[0], window_intent[1]
 
 
 # A LatestFrameWriter transport that hands finished frames to a native window instead of an encoder.
@@ -139,7 +155,7 @@ class WindowStream:
 
 		while True:
 			try:
-				window_intent = self.intent_queue.get_nowait()
+				window_intent = resolve_window_intent(self.intent_queue.get_nowait())
 			except Exception:
 				break
 			if window_intent[0] == 'closed':
@@ -320,7 +336,7 @@ class ControlWindow:
 
 		while True:
 			try:
-				window_intent = self.intent_queue.get_nowait()
+				window_intent = resolve_window_intent(self.intent_queue.get_nowait())
 			except Exception:
 				break
 			if window_intent[0] == 'closed':
@@ -815,3 +831,34 @@ def apply_window_intents(window_stream : WindowStream, camera_switch : Any = Non
 		source_face_path = None if is_bypassed else resolve_window_face_path(source_face_name)
 		window_stream.push_status(resolve_window_face_names(), source_face_name, source_face_path, is_bypassed, is_output_status, is_output_preview)
 	return is_running and not window_stream.has_window_closed()
+
+
+# Reads and applies the stream's keys on a thread of its own. Read between delivered frames, as they
+# were, keys waited out every stall of the pipeline (camera frames still arriving, no processed frame
+# coming out) and then all applied in one burst. The delivery loop only checks is_running
+class WindowIntentPump:
+	def __init__(self, window_stream : WindowStream, camera_switch : Any = None):
+		self.window_stream = window_stream
+		self.camera_switch = camera_switch
+		self.is_running = True
+		self.stop_event = threading.Event()
+		self.thread = threading.Thread(target = self._run, daemon = True)
+		self.thread.start()
+
+	def _run(self) -> None:
+		try:
+			while not self.stop_event.is_set():
+				if not apply_window_intents(self.window_stream, self.camera_switch):
+					self.is_running = False
+					return
+				self.stop_event.wait(WINDOW_INTENT_INTERVAL)
+		except Exception as exception:
+			logger.warn('the window keys stopped being read: ' + str(exception), __name__)
+			self.is_running = False
+
+	def has_stopped(self) -> bool:
+		return not self.is_running or self.window_stream.has_window_closed()
+
+	def close(self) -> None:
+		self.stop_event.set()
+		self.thread.join(1.0)

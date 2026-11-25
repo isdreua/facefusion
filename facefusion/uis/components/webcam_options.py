@@ -33,6 +33,7 @@ WEBCAM_WINDOW_FULLSCREEN_CHECKBOX : Optional[gradio.Checkbox] = None
 WEBCAM_CONTROL_WINDOW_CHECKBOX : Optional[gradio.Checkbox] = None
 WEBCAM_WINDOW_DISPLAY_DROPDOWN : Optional[gradio.Dropdown] = None
 WEBCAM_WINDOW_RESOLUTION_RADIO : Optional[gradio.Radio] = None
+WEBCAM_WINDOW_HIGH_DPI_CHECKBOX : Optional[gradio.Checkbox] = None
 WEBCAM_RAW_WINDOW_CHECKBOX : Optional[gradio.Checkbox] = None
 WEBCAM_RAW_WINDOW_FULLSCREEN_CHECKBOX : Optional[gradio.Checkbox] = None
 WEBCAM_RAW_WINDOW_DISPLAY_DROPDOWN : Optional[gradio.Dropdown] = None
@@ -63,6 +64,7 @@ def render() -> None:
 	global WEBCAM_CONTROL_WINDOW_CHECKBOX
 	global WEBCAM_WINDOW_DISPLAY_DROPDOWN
 	global WEBCAM_WINDOW_RESOLUTION_RADIO
+	global WEBCAM_WINDOW_HIGH_DPI_CHECKBOX
 	global WEBCAM_RAW_WINDOW_CHECKBOX
 	global WEBCAM_RAW_WINDOW_FULLSCREEN_CHECKBOX
 	global WEBCAM_RAW_WINDOW_DISPLAY_DROPDOWN
@@ -95,6 +97,7 @@ def render() -> None:
 	state_manager.init_item('webcam_window_fullscreen', webcam_config.get('webcam_window_fullscreen'))
 	state_manager.init_item('webcam_window_display', webcam_config.get('webcam_window_display'))
 	state_manager.init_item('webcam_window_resolution', webcam_config.get('webcam_window_resolution'))
+	state_manager.init_item('webcam_window_high_dpi', webcam_config.get('webcam_window_high_dpi'))
 	state_manager.init_item('webcam_control_window', webcam_config.get('webcam_control_window'))
 	state_manager.init_item('webcam_raw_window', webcam_config.get('webcam_raw_window'))
 	state_manager.init_item('webcam_raw_window_fullscreen', webcam_config.get('webcam_raw_window_fullscreen'))
@@ -137,6 +140,15 @@ def render() -> None:
 		label = translator.get('uis.webcam_window_resolution_radio'),
 		choices = WEBCAM_WINDOW_RESOLUTIONS,
 		value = state_manager.get_item('webcam_window_resolution'),
+		visible = has_window_output()
+	)
+	# Draws the output window at the display's real pixels on a scaled desktop. Off by default: on a
+	# 4K display that is nine times the pixels of a 720p desktop, drawn on the gpu the processors use.
+	# SDL fixes it when a window is created, so it applies when the window next opens (a stop and
+	# start, or a change of output size)
+	WEBCAM_WINDOW_HIGH_DPI_CHECKBOX = gradio.Checkbox(
+		label = translator.get('uis.webcam_window_high_dpi_checkbox'),
+		value = state_manager.get_item('webcam_window_high_dpi'),
 		visible = has_window_output()
 	)
 	# A second window for watching and steering the stream on a working display while the output
@@ -289,6 +301,7 @@ def render() -> None:
 	register_ui_component('webcam_window_fullscreen_checkbox', WEBCAM_WINDOW_FULLSCREEN_CHECKBOX)
 	register_ui_component('webcam_window_display_dropdown', WEBCAM_WINDOW_DISPLAY_DROPDOWN)
 	register_ui_component('webcam_window_resolution_radio', WEBCAM_WINDOW_RESOLUTION_RADIO)
+	register_ui_component('webcam_window_high_dpi_checkbox', WEBCAM_WINDOW_HIGH_DPI_CHECKBOX)
 	register_ui_component('webcam_control_window_checkbox', WEBCAM_CONTROL_WINDOW_CHECKBOX)
 	register_ui_component('webcam_raw_window_checkbox', WEBCAM_RAW_WINDOW_CHECKBOX)
 	register_ui_component('webcam_raw_window_fullscreen_checkbox', WEBCAM_RAW_WINDOW_FULLSCREEN_CHECKBOX)
@@ -324,6 +337,8 @@ def listen() -> None:
 		WEBCAM_WINDOW_DISPLAY_DROPDOWN.focus(refresh_window_display, outputs = WEBCAM_WINDOW_DISPLAY_DROPDOWN)
 	if WEBCAM_WINDOW_RESOLUTION_RADIO:
 		WEBCAM_WINDOW_RESOLUTION_RADIO.change(update_window_resolution, inputs = WEBCAM_WINDOW_RESOLUTION_RADIO)
+	if WEBCAM_WINDOW_HIGH_DPI_CHECKBOX:
+		WEBCAM_WINDOW_HIGH_DPI_CHECKBOX.change(update_window_high_dpi, inputs = WEBCAM_WINDOW_HIGH_DPI_CHECKBOX)
 	if WEBCAM_CONTROL_WINDOW_CHECKBOX:
 		WEBCAM_CONTROL_WINDOW_CHECKBOX.change(update_control_window, inputs = WEBCAM_CONTROL_WINDOW_CHECKBOX)
 	if WEBCAM_RAW_WINDOW_CHECKBOX:
@@ -368,6 +383,11 @@ def update_window_display(window_display : int) -> None:
 def update_window_resolution(window_resolution : str) -> None:
 	state_manager.set_item('webcam_window_resolution', window_resolution)
 	set_shared_window_resolution(window_resolution)
+
+
+# Read when the output window opens; an open window keeps what it was opened with
+def update_window_high_dpi(window_high_dpi : bool) -> None:
+	state_manager.set_item('webcam_window_high_dpi', bool(window_high_dpi))
 
 
 # Every page load probes the displays again, so a page opened after a display change lists it as it
@@ -536,6 +556,7 @@ def generate_config(webcam_device_id : str, webcam_mode : str, webcam_resolution
 		'webcam_window_fullscreen': bool(state_manager.get_item('webcam_window_fullscreen')),
 		'webcam_window_display': int(state_manager.get_item('webcam_window_display') or 0),
 		'webcam_window_resolution': state_manager.get_item('webcam_window_resolution') or 'native',
+		'webcam_window_high_dpi': bool(state_manager.get_item('webcam_window_high_dpi')),
 		'webcam_control_window': bool(state_manager.get_item('webcam_control_window')),
 		'webcam_raw_window': bool(state_manager.get_item('webcam_raw_window')),
 		'webcam_raw_window_fullscreen': bool(state_manager.get_item('webcam_raw_window_fullscreen')),

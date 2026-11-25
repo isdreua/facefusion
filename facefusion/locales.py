@@ -282,6 +282,7 @@ LOCALES : Locales =\
 			'webcam_output_resolution_dropdown': 'OUTPUT RESOLUTION',
 			'webcam_window_fullscreen_checkbox': 'OUTPUT WINDOW FULLSCREEN',
 			'webcam_window_display_dropdown': 'OUTPUT WINDOW DISPLAY',
+			'webcam_window_high_dpi_checkbox': 'OUTPUT WINDOW HIGH DPI (SHARPER ON SCALED DISPLAYS, COSTS GPU, APPLIES ON NEXT WINDOW OPEN)',
 			'webcam_window_resolution_radio': 'OUTPUT WINDOW QUALITY (NATIVE DISPLAY PIXELS OR FORCED TO OUTPUT RESOLUTION)',
 			'webcam_control_window_checkbox': 'SHOW CONTROL WINDOW',
 			'webcam_raw_window_checkbox': 'SHOW RAW CAMERA IN SEPARATE WINDOW',

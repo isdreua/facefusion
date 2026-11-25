@@ -31,6 +31,7 @@ DEFAULT_WEBCAM_CONFIG : Dict[str, Any] =\
 	'webcam_window_fullscreen': False,
 	'webcam_window_display': 0,
 	'webcam_window_resolution': 'native',
+	'webcam_window_high_dpi': False,
 	'webcam_control_window': False,
 	'webcam_raw_window': False,
 	'webcam_raw_window_fullscreen': False,
@@ -95,6 +96,7 @@ WEBCAM_CONFIG_OPTIONS =\
 	'webcam_window_fullscreen': [ True, False ],
 	'webcam_window_display': WEBCAM_WINDOW_DISPLAYS,
 	'webcam_window_resolution': WEBCAM_WINDOW_RESOLUTIONS,
+	'webcam_window_high_dpi': [ True, False ],
 	'webcam_control_window': [ True, False ],
 	'webcam_raw_window': [ True, False ],
 	'webcam_raw_window_fullscreen': [ True, False ],
@@ -171,6 +173,8 @@ def load_webcam_config(config_path : str) -> Dict[str, Any]:
 		webcam_config['webcam_window_display'] = content.get('webcam_window_display')
 	if content.get('webcam_window_resolution') in WEBCAM_WINDOW_RESOLUTIONS:
 		webcam_config['webcam_window_resolution'] = content.get('webcam_window_resolution')
+	if isinstance(content.get('webcam_window_high_dpi'), bool):
+		webcam_config['webcam_window_high_dpi'] = content.get('webcam_window_high_dpi')
 	if isinstance(content.get('webcam_control_window'), bool):
 		webcam_config['webcam_control_window'] = content.get('webcam_control_window')
 	if isinstance(content.get('webcam_raw_window'), bool):

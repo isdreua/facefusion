@@ -80,8 +80,10 @@ def log_window_output_requirement() -> None:
 # the process main thread, which gradio already owns, and forking a process that holds live
 # onnxruntime or cuda contexts deadlocks
 class WindowStream:
-	def __init__(self, width : int, height : int, fps : Fps, title : str = 'FaceFusion', is_fullscreen : bool = False, window_display : int = 0, pixel_format : str = 'RGB', window_resolution : str = 'native'):
+	def __init__(self, width : int, height : int, fps : Fps, title : str = 'FaceFusion', is_fullscreen : bool = False, window_display : int = 0, pixel_format : str = 'RGB', window_resolution : str = 'native', is_high_dpi : bool = False):
 		self.width = width
+		# Fixed for the life of the window: SDL cannot turn high dpi on or off for an open one
+		self.is_high_dpi = bool(is_high_dpi)
 		self.window_display = int(window_display or 0)
 		self.window_resolution = resolve_window_resolution(window_resolution)
 		self.is_fullscreen = bool(is_fullscreen)
@@ -102,7 +104,7 @@ class WindowStream:
 		self.stop_event = context.Event()
 		self.intent_queue = context.Queue()
 		self.status_queue = context.Queue()
-		self.process = context.Process(target = run_window, args = (self.shared_frames.name, width, height, float(fps), title, bool(is_fullscreen), self.window_display, self.sequence, self.frame_event, self.stop_event, self.intent_queue, self.status_queue, False, pixel_format, self.window_resolution), daemon = True)
+		self.process = context.Process(target = run_window, args = (self.shared_frames.name, width, height, float(fps), title, bool(is_fullscreen), self.window_display, self.sequence, self.frame_event, self.stop_event, self.intent_queue, self.status_queue, False, pixel_format, self.window_resolution, self.is_high_dpi), daemon = True)
 		self.process.start()
 		self.fps = fps
 		self.title = title
@@ -594,14 +596,15 @@ SHARED_WINDOW_STATE : Dict[str, bool] = { 'in_use': False, 'close_pending': Fals
 # Reused when it is still open at the size asked for. The shared memory is sized at creation, so
 # another output size needs another window. Keys pressed while no stream was reading them are
 # dropped, or the next start would replay them as face switches
-def acquire_shared_window_stream(width : int, height : int, fps : Fps, is_fullscreen : bool, window_display : int = 0, is_control : bool = False, window_resolution : str = 'native') -> WindowStream:
+def acquire_shared_window_stream(width : int, height : int, fps : Fps, is_fullscreen : bool, window_display : int = 0, is_control : bool = False, window_resolution : str = 'native', is_high_dpi : bool = False) -> WindowStream:
 	global SHARED_WINDOW_STREAM
 
 	with SHARED_WINDOW_LOCK:
 		if SHARED_WINDOW_STREAM:
 			SHARED_WINDOW_STREAM.poll_events()
-			# A stream still writing keeps its window; the new size is picked up by the next start
-			is_resized = (SHARED_WINDOW_STREAM.width, SHARED_WINDOW_STREAM.height) != (width, height) and not SHARED_WINDOW_STATE.get('in_use')
+			# A stream still writing keeps its window; the new size is picked up by the next start. So is
+			# a high dpi change, which only a new window can take
+			is_resized = ((SHARED_WINDOW_STREAM.width, SHARED_WINDOW_STREAM.height) != (width, height) or SHARED_WINDOW_STREAM.is_high_dpi != bool(is_high_dpi)) and not SHARED_WINDOW_STATE.get('in_use')
 			if SHARED_WINDOW_STREAM.has_window_closed() or is_resized:
 				SHARED_WINDOW_STREAM.close()
 				SHARED_WINDOW_STREAM = None
@@ -614,7 +617,7 @@ def acquire_shared_window_stream(width : int, height : int, fps : Fps, is_fullsc
 			if SHARED_WINDOW_STREAM.window_resolution != resolve_window_resolution(window_resolution):
 				SHARED_WINDOW_STREAM.set_window_resolution(window_resolution)
 		if not SHARED_WINDOW_STREAM:
-			SHARED_WINDOW_STREAM = WindowStream(width, height, fps, OUTPUT_WINDOW_TITLE, is_fullscreen, window_display, window_resolution = window_resolution)
+			SHARED_WINDOW_STREAM = WindowStream(width, height, fps, OUTPUT_WINDOW_TITLE, is_fullscreen, window_display, window_resolution = window_resolution, is_high_dpi = is_high_dpi)
 			SHARED_WINDOW_STREAM.clear()
 		# Reopened here when it was closed by hand, so the option stays what the control window follows
 		if is_control:

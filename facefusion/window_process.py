@@ -175,11 +175,15 @@ WINDOW_RESOLUTIONS = [ 'native', 'output' ]
 # Without it Windows reports a 4K display scaled 300% as 1280x720 and stretches a 1280x720 window
 # over it, which is why the window looked low resolution whatever the frame was. Called in each
 # window and probe process before SDL starts its video subsystem, and only ever there: it is a per
-# process setting, and the browser process is left alone
-def prepare_native_resolution() -> None:
+# process setting, and the browser process is left alone. The probe always asks, so the display list
+# shows real sizes; a window asks only with high dpi on (webcam_window_high_dpi), since drawing at the
+# real pixels of a 4K display costs gpu time the processors share
+def prepare_native_resolution(is_high_dpi : bool = True) -> None:
 	import os
 	import sys
 
+	if not is_high_dpi:
+		return
 	os.environ.setdefault('SDL_WINDOWS_DPI_AWARENESS', 'permonitorv2')
 	os.environ.setdefault('SDL_WINDOWS_DPI_SCALING', '0')
 	os.environ.setdefault('SDL_VIDEO_HIGHDPI_DISABLED', '0')
@@ -270,7 +274,7 @@ def resolve_fitted_rect(target_width : int, target_height : int, frame_width : i
 # window and left stale parts of the old mode on screen. It only changes how the frame is put on
 # the surface (resolve_frame_rect) and, windowed, the window's size
 class SdlWindowOutput:
-	def __init__(self, pygame : Any, width : int, height : int, title : str, is_fullscreen : bool, display_index : Optional[int], window_fraction : float = WINDOW_FRACTION, window_resolution : str = 'native'):
+	def __init__(self, pygame : Any, width : int, height : int, title : str, is_fullscreen : bool, display_index : Optional[int], window_fraction : float = WINDOW_FRACTION, window_resolution : str = 'native', is_high_dpi : bool = False):
 		from pygame._sdl2.video import Renderer, Texture, Window
 
 		self.pygame = pygame
@@ -280,7 +284,9 @@ class SdlWindowOutput:
 		self.window_resolution = window_resolution if window_resolution in WINDOW_RESOLUTIONS else 'native'
 		self.is_fullscreen = bool(is_fullscreen)
 		self.display_index = display_index
-		window_options : Dict[str, Any] = { 'resizable': True, 'allow_high_dpi': True }
+		window_options : Dict[str, Any] = { 'resizable': True }
+		if is_high_dpi:
+			window_options['allow_high_dpi'] = True
 		if display_index is not None:
 			window_options['position'] = resolve_centered_position(display_index)
 		# Created fullscreen rather than switched after, so it never shows a windowed frame first; SDL
@@ -479,9 +485,9 @@ class LegacyWindowOutput:
 		self.pygame.display.flip()
 
 
-def create_window_output(pygame : Any, width : int, height : int, title : str, is_fullscreen : bool, display_index : Optional[int], window_fraction : float = WINDOW_FRACTION, window_resolution : str = 'native') -> Any:
+def create_window_output(pygame : Any, width : int, height : int, title : str, is_fullscreen : bool, display_index : Optional[int], window_fraction : float = WINDOW_FRACTION, window_resolution : str = 'native', is_high_dpi : bool = False) -> Any:
 	try:
-		return SdlWindowOutput(pygame, width, height, title, is_fullscreen, display_index, window_fraction, window_resolution)
+		return SdlWindowOutput(pygame, width, height, title, is_fullscreen, display_index, window_fraction, window_resolution, is_high_dpi)
 	except ImportError:
 		return LegacyWindowOutput(pygame, width, height, title, is_fullscreen, display_index)
 
@@ -521,13 +527,15 @@ def probe_displays(result_queue : Any) -> None:
 # Every other key works the same, so the stream can be controlled from either window
 # The frames are RGB, or BGR (pixel_format) for the camera window, which is handed the camera's own
 # frame as captured rather than a converted copy of it
-def run_window(shared_name : str, width : int, height : int, fps : float, title : str, is_fullscreen : bool, window_display : int, sequence : Any, frame_event : Any, stop_event : Any, intent_queue : Any, status_queue : Any, is_control : bool = False, pixel_format : str = 'RGB', window_resolution : str = 'native') -> None:
+def run_window(shared_name : str, width : int, height : int, fps : float, title : str, is_fullscreen : bool, window_display : int, sequence : Any, frame_event : Any, stop_event : Any, intent_queue : Any, status_queue : Any, is_control : bool = False, pixel_format : str = 'RGB', window_resolution : str = 'native', is_high_dpi : bool = False) -> None:
 	import os
 	import time
 	from multiprocessing import shared_memory
 
 	os.environ.setdefault('PYGAME_HIDE_SUPPORT_PROMPT', '1')
-	prepare_native_resolution()
+	# Only the output window; the control and camera windows are for watching and stay cheap
+	is_high_dpi = bool(is_high_dpi) and not is_control
+	prepare_native_resolution(is_high_dpi)
 
 	import pygame
 
@@ -544,7 +552,7 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 		shared_frames = shared_memory.SharedMemory(name = shared_name)
 		pygame.init()
 		display_index = None if is_control else resolve_display_index(pygame, window_display)
-		window_output = create_window_output(pygame, width, height, title, bool(is_fullscreen) and not is_control, display_index, CONTROL_WINDOW_FRACTION if is_control else WINDOW_FRACTION, 'native' if is_control else window_resolution)
+		window_output = create_window_output(pygame, width, height, title, bool(is_fullscreen) and not is_control, display_index, CONTROL_WINDOW_FRACTION if is_control else WINDOW_FRACTION, 'native' if is_control else window_resolution, is_high_dpi)
 		# The frame and the osd are composed here at the frame's own size, and the window output
 		# scales the result to the window
 		canvas_surface = pygame.Surface((width, height), 0, 32)

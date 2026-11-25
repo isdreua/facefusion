@@ -165,6 +165,62 @@ WINDOW_FRACTION = 0.9
 CONTROL_WINDOW_FRACTION = 0.5
 
 
+# How the output window's drawing surface is sized. native draws at the display's real pixels, the
+# frame scaled to them on the gpu; output forces the surface to the output resolution itself, one
+# frame pixel per screen pixel: windowed at exactly that pixel size, fullscreen in a display mode of
+# that size, so the display itself switches to it
+WINDOW_RESOLUTIONS = [ 'native', 'output' ]
+
+
+# Asks for the display's real pixels instead of the scaled ones a desktop at 150% or 200% hands out.
+# Without it Windows reports a 4K display scaled 300% as 1280x720 and stretches a 1280x720 window
+# over it, which is why the window looked low resolution whatever the frame was. Called in each
+# window and probe process before SDL starts its video subsystem, and only ever there: it is a per
+# process setting, and the browser process is left alone
+def prepare_native_resolution() -> None:
+	import os
+	import sys
+
+	os.environ.setdefault('SDL_WINDOWS_DPI_AWARENESS', 'permonitorv2')
+	os.environ.setdefault('SDL_WINDOWS_DPI_SCALING', '0')
+	os.environ.setdefault('SDL_VIDEO_HIGHDPI_DISABLED', '0')
+	if sys.platform == 'win32':
+		import ctypes
+
+		try:
+			# DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, Windows 10 1703 and later
+			if ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
+				return
+		except Exception:
+			pass
+		try:
+			# PROCESS_PER_MONITOR_DPI_AWARE, Windows 8.1 and later
+			ctypes.windll.shcore.SetProcessDpiAwareness(2)
+			return
+		except Exception:
+			pass
+		try:
+			ctypes.windll.user32.SetProcessDPIAware()
+		except Exception:
+			pass
+
+
+# The display's largest mode, which is its panel's own resolution. Where the desktop is still handed
+# out in scaled units (macOS, Wayland through SDL), this is what shows the display's real size
+def resolve_native_size(pygame : Any, display_index : int, desktop_size : Tuple[int, int]) -> Tuple[int, int]:
+	native_width, native_height = desktop_size
+
+	try:
+		display_modes = pygame.display.list_modes(0, pygame.FULLSCREEN, display_index)
+	except Exception:
+		display_modes = None
+	if isinstance(display_modes, list):
+		for mode_width, mode_height in display_modes:
+			if int(mode_width) * int(mode_height) > native_width * native_height:
+				native_width, native_height = int(mode_width), int(mode_height)
+	return native_width, native_height
+
+
 def resolve_centered_position(display_index : int) -> Tuple[int, int]:
 	return WINDOW_POSITION_CENTERED_DISPLAY | display_index, WINDOW_POSITION_CENTERED_DISPLAY | display_index
 
@@ -205,21 +261,40 @@ def resolve_fitted_rect(target_width : int, target_height : int, frame_width : i
 # capture, which on X11 and PipeWire follows the window itself, not its title) keeps working. The
 # renderer draws the frame fitted into whatever size the window has, so fullscreen fills the display
 # without cropping, the scaling runs on the gpu, and a resized window keeps the picture whole.
-# Synced to the display so a frame lands on a refresh instead of tearing across one
+# Synced to the display so a frame lands on a refresh instead of tearing across one.
+#
+# High dpi is allowed so the drawing surface has the display's real pixels where the desktop is
+# scaled; window sizes and positions stay in the desktop's own units, which the surface's pixel
+# scale (pixels per desktop unit) converts between
 class SdlWindowOutput:
-	def __init__(self, pygame : Any, width : int, height : int, title : str, is_fullscreen : bool, display_index : Optional[int], window_fraction : float = WINDOW_FRACTION):
+	def __init__(self, pygame : Any, width : int, height : int, title : str, is_fullscreen : bool, display_index : Optional[int], window_fraction : float = WINDOW_FRACTION, window_resolution : str = 'native'):
 		from pygame._sdl2.video import Renderer, Texture, Window
 
 		self.pygame = pygame
 		self.width = width
 		self.height = height
+		self.window_fraction = window_fraction
+		self.window_resolution = window_resolution if window_resolution in WINDOW_RESOLUTIONS else 'native'
 		self.is_fullscreen = bool(is_fullscreen)
-		window_options : Dict[str, Any] = { 'resizable': True }
+		self.display_index = display_index
+		window_options : Dict[str, Any] = { 'resizable': True, 'allow_high_dpi': True }
 		if display_index is not None:
 			window_options['position'] = resolve_centered_position(display_index)
 		# Created fullscreen rather than switched after, so it never shows a windowed frame first; SDL
-		# takes the display from the position, and the windowed size is kept for F11
-		self.window = Window(title, size = resolve_windowed_size(pygame, width, height, display_index, window_fraction), fullscreen_desktop = self.is_fullscreen, **window_options)
+		# takes the display from the position, and the windowed size is kept for F11. Forced to the
+		# output resolution, fullscreen is the display mode of the frame's size instead of the desktop
+		if self.is_fullscreen and self.window_resolution == 'output':
+			window_options['fullscreen'] = True
+			window_size = (width, height)
+		else:
+			window_options['fullscreen_desktop'] = self.is_fullscreen
+			window_size = resolve_windowed_size(pygame, width, height, display_index, window_fraction)
+		try:
+			self.window = Window(title, size = window_size, **window_options)
+		except TypeError:
+			# A pygame that does not know the high dpi flag
+			window_options.pop('allow_high_dpi', None)
+			self.window = Window(title, size = window_size, **window_options)
 		try:
 			self.renderer = Renderer(self.window, vsync = True)
 		except Exception:
@@ -227,19 +302,71 @@ class SdlWindowOutput:
 		self.texture = Texture(self.renderer, (width, height), streaming = True)
 		self.texture_class = Texture
 		self.window.show()
+		# The pixel scale is only known once the window has its surface, so a window forced to the
+		# output resolution is given its exact pixel size right after
+		if not self.is_fullscreen and self.window_resolution == 'output':
+			self.window.size = self.resolve_windowed_size(display_index)
+			self.wait_for_window()
+			if display_index is not None:
+				self.window.position = resolve_centered_position(display_index)
+				self.wait_for_window()
+
+	# Pixels of the drawing surface per desktop unit of the window: 1 where the desktop is not scaled
+	# or the process is dpi aware (Windows), 2 or 3 on a scaled macOS or Wayland desktop
+	def resolve_pixel_scale(self) -> float:
+		try:
+			window_width = self.window.size[0]
+			viewport = self.renderer.get_viewport()
+			if window_width > 0 and viewport.width > 0:
+				return viewport.width / window_width
+		except Exception:
+			pass
+		return 1.0
+
+	# native takes the usual share of the display; output is exactly the frame's pixels, shrunk only
+	# when the display cannot hold that many
+	def resolve_windowed_size(self, display_index : Optional[int]) -> Tuple[int, int]:
+		if self.window_resolution != 'output':
+			return resolve_windowed_size(self.pygame, self.width, self.height, display_index, self.window_fraction)
+		pixel_scale = self.resolve_pixel_scale()
+		return resolve_windowed_size(self.pygame, max(1, round(self.width / pixel_scale)), max(1, round(self.height / pixel_scale)), display_index, 1.0)
 
 	def set_title(self, title : str) -> None:
 		self.window.title = title
 
+	# Fullscreen fills the desktop as it is, or, forced to the output resolution, switches the display
+	# to the mode closest to the frame's size. Leaving it gives the window its windowed size back,
+	# which a mode switch had replaced with the frame's
 	def set_fullscreen(self, is_fullscreen : bool) -> None:
 		if is_fullscreen == self.is_fullscreen:
 			return
-		if is_fullscreen:
+		if is_fullscreen and self.window_resolution == 'output':
+			self.window.size = (self.width, self.height)
+			self.window.set_fullscreen(desktop = False)
+		elif is_fullscreen:
 			self.window.set_fullscreen(desktop = True)
 		else:
 			self.window.set_windowed()
 		self.is_fullscreen = is_fullscreen
 		self.wait_for_window()
+		if not is_fullscreen and self.window_resolution == 'output':
+			self.window.size = self.resolve_windowed_size(self.display_index)
+			self.wait_for_window()
+
+	# Switched in place like everything else: a fullscreen window leaves fullscreen and enters it again
+	# the new way, a windowed one is resized
+	def set_window_resolution(self, window_resolution : str) -> None:
+		if window_resolution not in WINDOW_RESOLUTIONS or window_resolution == self.window_resolution:
+			return
+		is_fullscreen = self.is_fullscreen
+
+		if is_fullscreen:
+			self.set_fullscreen(False)
+		self.window_resolution = window_resolution
+		self.window.size = self.resolve_windowed_size(self.display_index)
+		self.wait_for_window()
+		if is_fullscreen:
+			self.set_fullscreen(True)
 
 	# Fullscreen goes to the display the window manager thinks the window is on, and on X11 a move or
 	# a fullscreen change only takes effect once the window manager has handled it. Going fullscreen
@@ -251,7 +378,8 @@ class SdlWindowOutput:
 
 		if is_fullscreen:
 			self.set_fullscreen(False)
-		self.window.size = resolve_windowed_size(self.pygame, self.width, self.height, display_index)
+		self.display_index = display_index
+		self.window.size = self.resolve_windowed_size(display_index)
 		self.wait_for_window()
 		self.window.position = resolve_centered_position(display_index)
 		self.wait_for_window()
@@ -278,6 +406,8 @@ class SdlWindowOutput:
 				return
 			time.sleep(0.01)
 
+	# The viewport is in the surface's pixels, so with high dpi the frame is scaled to the display's
+	# real resolution rather than to the scaled desktop's
 	def present(self, canvas_surface : Any) -> None:
 		try:
 			self.texture.update(canvas_surface)
@@ -324,25 +454,33 @@ class LegacyWindowOutput:
 	def move_to_display(self, display_index : int) -> None:
 		pass
 
+	def set_window_resolution(self, window_resolution : str) -> None:
+		pass
+
 	def present(self, canvas_surface : Any) -> None:
 		self.display_surface.blit(canvas_surface, (0, 0))
 		self.pygame.display.flip()
 
 
-def create_window_output(pygame : Any, width : int, height : int, title : str, is_fullscreen : bool, display_index : Optional[int], window_fraction : float = WINDOW_FRACTION) -> Any:
+def create_window_output(pygame : Any, width : int, height : int, title : str, is_fullscreen : bool, display_index : Optional[int], window_fraction : float = WINDOW_FRACTION, window_resolution : str = 'native') -> Any:
 	try:
-		return SdlWindowOutput(pygame, width, height, title, is_fullscreen, display_index, window_fraction)
+		return SdlWindowOutput(pygame, width, height, title, is_fullscreen, display_index, window_fraction, window_resolution)
 	except ImportError:
 		return LegacyWindowOutput(pygame, width, height, title, is_fullscreen, display_index)
 
 
 # Run in its own short lived spawned process for the same reason the window is: the browser process
 # must not start a video subsystem (macOS allows that only on the main thread, which gradio owns).
-# Reports one desktop size per display in SDL's order, or None when there is no display to ask
+# Being a fresh process every time is also what keeps the answer current: SDL reads the displays
+# once at video init, so nothing here is remembered between probes.
+# Reports per display, in SDL's order, (desktop width, desktop height, native width, native height):
+# the desktop as it is set up now, in real pixels where the process can be made dpi aware, and the
+# panel's own resolution. None when there is no display to ask
 def probe_displays(result_queue : Any) -> None:
 	import os
 
 	os.environ.setdefault('PYGAME_HIDE_SUPPORT_PROMPT', '1')
+	prepare_native_resolution()
 	display_sizes = None
 
 	try:
@@ -350,9 +488,10 @@ def probe_displays(result_queue : Any) -> None:
 
 		pygame.display.init()
 		if hasattr(pygame.display, 'get_desktop_sizes'):
-			display_sizes = [ (int(display_width), int(display_height)) for display_width, display_height in pygame.display.get_desktop_sizes() ]
-		else:
-			display_sizes = [ (0, 0) ] * pygame.display.get_num_displays()
+			display_sizes = []
+			for display_index, (desktop_width, desktop_height) in enumerate(pygame.display.get_desktop_sizes()):
+				desktop_size = (int(desktop_width), int(desktop_height))
+				display_sizes.append(desktop_size + resolve_native_size(pygame, display_index, desktop_size))
 		pygame.quit()
 	except BaseException:
 		display_sizes = None
@@ -365,12 +504,13 @@ def probe_displays(result_queue : Any) -> None:
 # Every other key works the same, so the stream can be controlled from either window
 # The frames are RGB, or BGR (pixel_format) for the camera window, which is handed the camera's own
 # frame as captured rather than a converted copy of it
-def run_window(shared_name : str, width : int, height : int, fps : float, title : str, is_fullscreen : bool, window_display : int, sequence : Any, frame_event : Any, stop_event : Any, intent_queue : Any, status_queue : Any, is_control : bool = False, pixel_format : str = 'RGB') -> None:
+def run_window(shared_name : str, width : int, height : int, fps : float, title : str, is_fullscreen : bool, window_display : int, sequence : Any, frame_event : Any, stop_event : Any, intent_queue : Any, status_queue : Any, is_control : bool = False, pixel_format : str = 'RGB', window_resolution : str = 'native') -> None:
 	import os
 	import time
 	from multiprocessing import shared_memory
 
 	os.environ.setdefault('PYGAME_HIDE_SUPPORT_PROMPT', '1')
+	prepare_native_resolution()
 
 	import pygame
 
@@ -387,7 +527,7 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 		shared_frames = shared_memory.SharedMemory(name = shared_name)
 		pygame.init()
 		display_index = None if is_control else resolve_display_index(pygame, window_display)
-		window_output = create_window_output(pygame, width, height, title, bool(is_fullscreen) and not is_control, display_index, CONTROL_WINDOW_FRACTION if is_control else WINDOW_FRACTION)
+		window_output = create_window_output(pygame, width, height, title, bool(is_fullscreen) and not is_control, display_index, CONTROL_WINDOW_FRACTION if is_control else WINDOW_FRACTION, 'native' if is_control else window_resolution)
 		# The frame and the osd are composed here at the frame's own size, and the window output
 		# scales the result to the window
 		canvas_surface = pygame.Surface((width, height), 0, 32)
@@ -451,12 +591,17 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 					continue
 				# The display dropdown changed while the window is open. Auto drops the pin and leaves
 				# the window where it is; a display that is not attached is ignored the same way
-				if is_control and ('window_display' in received_status or 'window_fullscreen' in received_status):
+				if is_control and ('window_display' in received_status or 'window_fullscreen' in received_status or 'window_resolution' in received_status):
 					continue
 				# The overlay boxes the output does not show, drawn by the parent and laid over the
 				# shared frame here. They stay until the next set replaces them; an empty set clears
 				if 'overlay_patches' in received_status:
 					overlay_patches = resolve_overlay_patches(pygame, received_status.get('overlay_patches') or [])
+					last_sequence = -1
+					continue
+				# The window resolution option changed while the window is open
+				if 'window_resolution' in received_status:
+					window_output.set_window_resolution(str(received_status.get('window_resolution')))
 					last_sequence = -1
 					continue
 				if 'window_display' in received_status:

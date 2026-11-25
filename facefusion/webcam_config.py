@@ -30,6 +30,7 @@ DEFAULT_WEBCAM_CONFIG : Dict[str, Any] =\
 	'webcam_output_resolution': 'copy',
 	'webcam_window_fullscreen': False,
 	'webcam_window_display': 0,
+	'webcam_window_resolution': 'native',
 	'webcam_control_window': False,
 	'webcam_raw_window': False,
 	'webcam_raw_window_fullscreen': False,
@@ -60,6 +61,9 @@ WEBCAM_FRAME_GENERATION_MODES = [ 'none', 'low', 'medium', 'high' ]
 # 0 leaves the placement to the window manager; 1 and up pin the window, windowed and fullscreen
 # alike, to that display, counted from 1 in the order SDL lists them
 WEBCAM_WINDOW_DISPLAYS = [ 0, 1, 2, 3, 4, 5, 6, 7, 8 ]
+# How the output window draws: native at the display's real pixels, output forced to the output
+# resolution one pixel for one, fullscreen in a display mode of that size (window_process.WINDOW_RESOLUTIONS)
+WEBCAM_WINDOW_RESOLUTIONS = [ 'native', 'output' ]
 # Processors skipped for the frame while staying loaded on the device, so a comparison costs a
 # click rather than a model reload. Read off the modules directory the same way the processors
 # checkbox group does, so the two lists cannot disagree; a name that is not in the running chain is
@@ -90,6 +94,7 @@ WEBCAM_CONFIG_OPTIONS =\
 	'webcam_output_resolution': WEBCAM_OUTPUT_RESOLUTIONS,
 	'webcam_window_fullscreen': [ True, False ],
 	'webcam_window_display': WEBCAM_WINDOW_DISPLAYS,
+	'webcam_window_resolution': WEBCAM_WINDOW_RESOLUTIONS,
 	'webcam_control_window': [ True, False ],
 	'webcam_raw_window': [ True, False ],
 	'webcam_raw_window_fullscreen': [ True, False ],
@@ -164,6 +169,8 @@ def load_webcam_config(config_path : str) -> Dict[str, Any]:
 		webcam_config['webcam_window_fullscreen'] = content.get('webcam_window_fullscreen')
 	if isinstance(content.get('webcam_window_display'), int) and not isinstance(content.get('webcam_window_display'), bool) and content.get('webcam_window_display') in WEBCAM_WINDOW_DISPLAYS:
 		webcam_config['webcam_window_display'] = content.get('webcam_window_display')
+	if content.get('webcam_window_resolution') in WEBCAM_WINDOW_RESOLUTIONS:
+		webcam_config['webcam_window_resolution'] = content.get('webcam_window_resolution')
 	if isinstance(content.get('webcam_control_window'), bool):
 		webcam_config['webcam_control_window'] = content.get('webcam_control_window')
 	if isinstance(content.get('webcam_raw_window'), bool):

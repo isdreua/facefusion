@@ -111,6 +111,8 @@
     "webcam_window_fullscreen_options": [true, false],
     "webcam_window_display": 0,
     "webcam_window_display_options": [0, 1, 2, 3, 4, 5, 6, 7, 8],
+    "webcam_window_resolution": "native",
+    "webcam_window_resolution_options": ["native", "output"],
     "webcam_control_window": false,
     "webcam_control_window_options": [true, false],
     "webcam_raw_window": false,

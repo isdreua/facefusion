@@ -10,7 +10,7 @@ from facefusion.common_helper import get_first
 from facefusion.filesystem import is_image
 from facefusion.types import Fps
 from facefusion.webcam_config import NO_SOURCE_FACE_NAME, WEBCAM_PERFORMANCE_OVERLAYS
-from facefusion.window_process import FRAME_SLOT_COUNT, probe_displays, run_window
+from facefusion.window_process import FRAME_SLOT_COUNT, WINDOW_RESOLUTIONS, probe_displays, run_window
 
 # How many faces the window can reach. The digit keys stop at 9, so the arrows walk the same nine
 # rather than reaching faces no other key can name
@@ -31,9 +31,10 @@ def has_window_output() -> bool:
 	return resolve_pygame_module() is not None
 
 
-# The displays attached right now, as one desktop size each in SDL's order, so the display dropdowns
-# offer exactly those. None when pygame is missing or the probe found no display to ask
-def detect_window_displays() -> Optional[List[Tuple[int, int]]]:
+# The displays attached right now, in SDL's order, each as (desktop width, desktop height, native
+# width, native height), so the display dropdowns offer exactly those at their real sizes. Probed
+# afresh on every call, never remembered. None when pygame is missing or the probe found no display
+def detect_window_displays() -> Optional[List[Tuple[int, int, int, int]]]:
 	if not has_window_output():
 		return None
 	context = multiprocessing.get_context('spawn')
@@ -52,7 +53,22 @@ def detect_window_displays() -> Optional[List[Tuple[int, int]]]:
 			probe_process.terminate()
 	if not display_sizes:
 		return None
-	return [ (int(display_width), int(display_height)) for display_width, display_height in display_sizes ]
+	return [ resolve_display_size(display_size) for display_size in display_sizes ]
+
+
+# A probe from before the native size was reported sends two numbers; the native size is then the
+# desktop's
+def resolve_display_size(display_size : Any) -> Tuple[int, int, int, int]:
+	desktop_width, desktop_height = int(display_size[0]), int(display_size[1])
+	if len(display_size) >= 4:
+		return desktop_width, desktop_height, int(display_size[2]), int(display_size[3])
+	return desktop_width, desktop_height, desktop_width, desktop_height
+
+
+def resolve_window_resolution(window_resolution : Any) -> str:
+	if window_resolution in WINDOW_RESOLUTIONS:
+		return str(window_resolution)
+	return 'native'
 
 
 def log_window_output_requirement() -> None:
@@ -64,9 +80,10 @@ def log_window_output_requirement() -> None:
 # the process main thread, which gradio already owns, and forking a process that holds live
 # onnxruntime or cuda contexts deadlocks
 class WindowStream:
-	def __init__(self, width : int, height : int, fps : Fps, title : str = 'FaceFusion', is_fullscreen : bool = False, window_display : int = 0, pixel_format : str = 'RGB'):
+	def __init__(self, width : int, height : int, fps : Fps, title : str = 'FaceFusion', is_fullscreen : bool = False, window_display : int = 0, pixel_format : str = 'RGB', window_resolution : str = 'native'):
 		self.width = width
 		self.window_display = int(window_display or 0)
+		self.window_resolution = resolve_window_resolution(window_resolution)
 		self.is_fullscreen = bool(is_fullscreen)
 		self.height = height
 		self.frame_size = width * height * 3
@@ -85,7 +102,7 @@ class WindowStream:
 		self.stop_event = context.Event()
 		self.intent_queue = context.Queue()
 		self.status_queue = context.Queue()
-		self.process = context.Process(target = run_window, args = (self.shared_frames.name, width, height, float(fps), title, bool(is_fullscreen), self.window_display, self.sequence, self.frame_event, self.stop_event, self.intent_queue, self.status_queue, False, pixel_format), daemon = True)
+		self.process = context.Process(target = run_window, args = (self.shared_frames.name, width, height, float(fps), title, bool(is_fullscreen), self.window_display, self.sequence, self.frame_event, self.stop_event, self.intent_queue, self.status_queue, False, pixel_format, self.window_resolution), daemon = True)
 		self.process.start()
 		self.fps = fps
 		self.title = title
@@ -211,6 +228,16 @@ class WindowStream:
 			return
 		try:
 			self.status_queue.put_nowait({ 'window_fullscreen': self.is_fullscreen })
+		except Exception:
+			pass
+
+	# native or output (see WINDOW_RESOLUTIONS), applied to the open window in place
+	def set_window_resolution(self, window_resolution : str) -> None:
+		self.window_resolution = resolve_window_resolution(window_resolution)
+		if self.is_closed or self.is_window_closed:
+			return
+		try:
+			self.status_queue.put_nowait({ 'window_resolution': self.window_resolution })
 		except Exception:
 			pass
 
@@ -567,7 +594,7 @@ SHARED_WINDOW_STATE : Dict[str, bool] = { 'in_use': False, 'close_pending': Fals
 # Reused when it is still open at the size asked for. The shared memory is sized at creation, so
 # another output size needs another window. Keys pressed while no stream was reading them are
 # dropped, or the next start would replay them as face switches
-def acquire_shared_window_stream(width : int, height : int, fps : Fps, is_fullscreen : bool, window_display : int = 0, is_control : bool = False) -> WindowStream:
+def acquire_shared_window_stream(width : int, height : int, fps : Fps, is_fullscreen : bool, window_display : int = 0, is_control : bool = False, window_resolution : str = 'native') -> WindowStream:
 	global SHARED_WINDOW_STREAM
 
 	with SHARED_WINDOW_LOCK:
@@ -584,8 +611,10 @@ def acquire_shared_window_stream(width : int, height : int, fps : Fps, is_fullsc
 				SHARED_WINDOW_STREAM.set_display(window_display)
 			if SHARED_WINDOW_STREAM.is_fullscreen != bool(is_fullscreen):
 				SHARED_WINDOW_STREAM.set_fullscreen(is_fullscreen)
+			if SHARED_WINDOW_STREAM.window_resolution != resolve_window_resolution(window_resolution):
+				SHARED_WINDOW_STREAM.set_window_resolution(window_resolution)
 		if not SHARED_WINDOW_STREAM:
-			SHARED_WINDOW_STREAM = WindowStream(width, height, fps, OUTPUT_WINDOW_TITLE, is_fullscreen, window_display)
+			SHARED_WINDOW_STREAM = WindowStream(width, height, fps, OUTPUT_WINDOW_TITLE, is_fullscreen, window_display, window_resolution = window_resolution)
 			SHARED_WINDOW_STREAM.clear()
 		# Reopened here when it was closed by hand, so the option stays what the control window follows
 		if is_control:
@@ -611,6 +640,13 @@ def set_shared_window_fullscreen(is_fullscreen : bool) -> None:
 	with SHARED_WINDOW_LOCK:
 		if SHARED_WINDOW_STREAM and not SHARED_WINDOW_STREAM.has_window_closed():
 			SHARED_WINDOW_STREAM.set_fullscreen(is_fullscreen)
+
+
+# The window resolution option resizes the open shared window right away, whether or not a stream runs
+def set_shared_window_resolution(window_resolution : str) -> None:
+	with SHARED_WINDOW_LOCK:
+		if SHARED_WINDOW_STREAM and not SHARED_WINDOW_STREAM.has_window_closed():
+			SHARED_WINDOW_STREAM.set_window_resolution(window_resolution)
 
 
 # The display dropdown moves the open shared window right away, whether or not a stream is running

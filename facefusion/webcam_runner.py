@@ -83,7 +83,7 @@ def run() -> int:
 		# The window is the control channel headless never had: it carries the hotkeys that switch
 		# the source face mid run, which no config file can do
 		if webcam_mode == 'window':
-			window_stream = WindowStream(output_width, output_height, output_fps, OUTPUT_WINDOW_TITLE, webcam_config.get('webcam_window_fullscreen'), webcam_config.get('webcam_window_display'))
+			window_stream = WindowStream(output_width, output_height, output_fps, OUTPUT_WINDOW_TITLE, webcam_config.get('webcam_window_fullscreen'), webcam_config.get('webcam_window_display'), window_resolution = webcam_config.get('webcam_window_resolution'))
 			if webcam_config.get('webcam_control_window'):
 				window_stream.open_control()
 			control_overlay = ControlOverlay(window_stream, output_width, output_height)

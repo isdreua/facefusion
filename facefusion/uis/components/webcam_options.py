@@ -10,8 +10,8 @@ from facefusion.uis import choices as uis_choices
 from facefusion.streamer import apply_stream_source_paths, resolve_source_face_groups
 from facefusion.types import WebcamMode
 from facefusion.uis.core import get_ui_component, register_ui_component
-from facefusion.webcam_config import DEFAULT_SOURCE_FACE_NAME, NO_SOURCE_FACE_NAME, WEBCAM_BYPASSED_PROCESSORS, WEBCAM_CAMERA_BACKENDS, WEBCAM_CONTENT_ANALYSIS_INTERVALS, WEBCAM_FRAME_GENERATION_MODES, WEBCAM_FRAME_SKIPPING_MODES, WEBCAM_INLINE_PREVIEW_RESOLUTIONS, WEBCAM_OUTPUT_RESOLUTIONS, WEBCAM_PERFORMANCE_OVERLAYS, WEBCAM_STATE_KEYS, WEBCAM_WINDOW_DISPLAYS, format_webcam_config, normalize_webcam_resolution, get_source_faces, load_webcam_config, resolve_source_face_directory
-from facefusion.window_output import detect_window_displays, has_window_output, log_window_output_requirement, move_raw_camera_view, move_shared_window_stream, set_camera_window_fullscreen, set_shared_control_window, set_shared_window_fullscreen
+from facefusion.webcam_config import DEFAULT_SOURCE_FACE_NAME, NO_SOURCE_FACE_NAME, WEBCAM_BYPASSED_PROCESSORS, WEBCAM_CAMERA_BACKENDS, WEBCAM_CONTENT_ANALYSIS_INTERVALS, WEBCAM_FRAME_GENERATION_MODES, WEBCAM_FRAME_SKIPPING_MODES, WEBCAM_INLINE_PREVIEW_RESOLUTIONS, WEBCAM_OUTPUT_RESOLUTIONS, WEBCAM_PERFORMANCE_OVERLAYS, WEBCAM_STATE_KEYS, WEBCAM_WINDOW_DISPLAYS, WEBCAM_WINDOW_RESOLUTIONS, format_webcam_config, normalize_webcam_resolution, get_source_faces, load_webcam_config, resolve_source_face_directory
+from facefusion.window_output import detect_window_displays, has_window_output, log_window_output_requirement, move_raw_camera_view, move_shared_window_stream, set_camera_window_fullscreen, set_shared_control_window, set_shared_window_fullscreen, set_shared_window_resolution
 
 WEBCAM_DEVICE_ID_DROPDOWN : Optional[gradio.Dropdown] = None
 # The camera choices the dropdown was last given, so the camera sync can add one it lacks
@@ -32,6 +32,7 @@ WEBCAM_OUTPUT_RESOLUTION_DROPDOWN : Optional[gradio.Dropdown] = None
 WEBCAM_WINDOW_FULLSCREEN_CHECKBOX : Optional[gradio.Checkbox] = None
 WEBCAM_CONTROL_WINDOW_CHECKBOX : Optional[gradio.Checkbox] = None
 WEBCAM_WINDOW_DISPLAY_DROPDOWN : Optional[gradio.Dropdown] = None
+WEBCAM_WINDOW_RESOLUTION_RADIO : Optional[gradio.Radio] = None
 WEBCAM_RAW_WINDOW_CHECKBOX : Optional[gradio.Checkbox] = None
 WEBCAM_RAW_WINDOW_FULLSCREEN_CHECKBOX : Optional[gradio.Checkbox] = None
 WEBCAM_RAW_WINDOW_DISPLAY_DROPDOWN : Optional[gradio.Dropdown] = None
@@ -61,6 +62,7 @@ def render() -> None:
 	global WEBCAM_WINDOW_FULLSCREEN_CHECKBOX
 	global WEBCAM_CONTROL_WINDOW_CHECKBOX
 	global WEBCAM_WINDOW_DISPLAY_DROPDOWN
+	global WEBCAM_WINDOW_RESOLUTION_RADIO
 	global WEBCAM_RAW_WINDOW_CHECKBOX
 	global WEBCAM_RAW_WINDOW_FULLSCREEN_CHECKBOX
 	global WEBCAM_RAW_WINDOW_DISPLAY_DROPDOWN
@@ -92,6 +94,7 @@ def render() -> None:
 	state_manager.init_item('webcam_stream_bypass', False)
 	state_manager.init_item('webcam_window_fullscreen', webcam_config.get('webcam_window_fullscreen'))
 	state_manager.init_item('webcam_window_display', webcam_config.get('webcam_window_display'))
+	state_manager.init_item('webcam_window_resolution', webcam_config.get('webcam_window_resolution'))
 	state_manager.init_item('webcam_control_window', webcam_config.get('webcam_control_window'))
 	state_manager.init_item('webcam_raw_window', webcam_config.get('webcam_raw_window'))
 	state_manager.init_item('webcam_raw_window_fullscreen', webcam_config.get('webcam_raw_window_fullscreen'))
@@ -118,12 +121,22 @@ def render() -> None:
 		value = webcam_config.get('webcam_window_fullscreen'),
 		visible = has_window_output()
 	)
-	# Only the displays attached when the page was built, counted by a short lived window process
+	# The displays attached now, counted by a short lived window process. Probed again on every page
+	# load and whenever a display dropdown is opened (refresh_window_displays), so a display plugged
+	# in or set to another resolution later shows as it is rather than as it was at startup
 	window_displays = detect_window_displays() if has_window_output() else None
 	WEBCAM_WINDOW_DISPLAY_DROPDOWN = gradio.Dropdown(
 		label = translator.get('uis.webcam_window_display_dropdown'),
 		choices = resolve_window_display_choices(window_displays, state_manager.get_item('webcam_window_display')),
 		value = state_manager.get_item('webcam_window_display'),
+		visible = has_window_output()
+	)
+	# native draws at the display's real pixels; output forces the window to the output resolution,
+	# pixel for pixel, fullscreen in a display mode of that size. Applied to an open window in place
+	WEBCAM_WINDOW_RESOLUTION_RADIO = gradio.Radio(
+		label = translator.get('uis.webcam_window_resolution_radio'),
+		choices = WEBCAM_WINDOW_RESOLUTIONS,
+		value = state_manager.get_item('webcam_window_resolution'),
 		visible = has_window_output()
 	)
 	# A second window for watching and steering the stream on a working display while the output
@@ -275,6 +288,7 @@ def render() -> None:
 	register_ui_component('webcam_output_resolution_dropdown', WEBCAM_OUTPUT_RESOLUTION_DROPDOWN)
 	register_ui_component('webcam_window_fullscreen_checkbox', WEBCAM_WINDOW_FULLSCREEN_CHECKBOX)
 	register_ui_component('webcam_window_display_dropdown', WEBCAM_WINDOW_DISPLAY_DROPDOWN)
+	register_ui_component('webcam_window_resolution_radio', WEBCAM_WINDOW_RESOLUTION_RADIO)
 	register_ui_component('webcam_control_window_checkbox', WEBCAM_CONTROL_WINDOW_CHECKBOX)
 	register_ui_component('webcam_raw_window_checkbox', WEBCAM_RAW_WINDOW_CHECKBOX)
 	register_ui_component('webcam_raw_window_fullscreen_checkbox', WEBCAM_RAW_WINDOW_FULLSCREEN_CHECKBOX)
@@ -307,6 +321,9 @@ def listen() -> None:
 		WEBCAM_WINDOW_FULLSCREEN_CHECKBOX.change(update_window_fullscreen, inputs = WEBCAM_WINDOW_FULLSCREEN_CHECKBOX)
 	if WEBCAM_WINDOW_DISPLAY_DROPDOWN:
 		WEBCAM_WINDOW_DISPLAY_DROPDOWN.change(update_window_display, inputs = WEBCAM_WINDOW_DISPLAY_DROPDOWN)
+		WEBCAM_WINDOW_DISPLAY_DROPDOWN.focus(refresh_window_display, outputs = WEBCAM_WINDOW_DISPLAY_DROPDOWN)
+	if WEBCAM_WINDOW_RESOLUTION_RADIO:
+		WEBCAM_WINDOW_RESOLUTION_RADIO.change(update_window_resolution, inputs = WEBCAM_WINDOW_RESOLUTION_RADIO)
 	if WEBCAM_CONTROL_WINDOW_CHECKBOX:
 		WEBCAM_CONTROL_WINDOW_CHECKBOX.change(update_control_window, inputs = WEBCAM_CONTROL_WINDOW_CHECKBOX)
 	if WEBCAM_RAW_WINDOW_CHECKBOX:
@@ -315,6 +332,7 @@ def listen() -> None:
 		WEBCAM_RAW_WINDOW_FULLSCREEN_CHECKBOX.change(update_raw_window_fullscreen, inputs = WEBCAM_RAW_WINDOW_FULLSCREEN_CHECKBOX)
 	if WEBCAM_RAW_WINDOW_DISPLAY_DROPDOWN:
 		WEBCAM_RAW_WINDOW_DISPLAY_DROPDOWN.change(update_raw_window_display, inputs = WEBCAM_RAW_WINDOW_DISPLAY_DROPDOWN)
+		WEBCAM_RAW_WINDOW_DISPLAY_DROPDOWN.focus(refresh_raw_window_display, outputs = WEBCAM_RAW_WINDOW_DISPLAY_DROPDOWN)
 	if WEBCAM_GENERATE_CONFIG_BUTTON and WEBCAM_GENERATE_CONFIG_TEXTBOX:
 		WEBCAM_GENERATE_CONFIG_BUTTON.click(generate_config, inputs =\
 		[
@@ -346,6 +364,36 @@ def update_window_display(window_display : int) -> None:
 	move_shared_window_stream(int(window_display or 0))
 
 
+# Resizes the open output window in place as well as setting it for the next one
+def update_window_resolution(window_resolution : str) -> None:
+	state_manager.set_item('webcam_window_resolution', window_resolution)
+	set_shared_window_resolution(window_resolution)
+
+
+# Every page load probes the displays again, so a page opened after a display change lists it as it
+# is now. Registered by the layout inside the blocks context
+def listen_load(ui : gradio.Blocks) -> None:
+	if WEBCAM_WINDOW_DISPLAY_DROPDOWN and WEBCAM_RAW_WINDOW_DISPLAY_DROPDOWN and has_window_output():
+		ui.load(refresh_window_displays, outputs = [ WEBCAM_WINDOW_DISPLAY_DROPDOWN, WEBCAM_RAW_WINDOW_DISPLAY_DROPDOWN ])
+
+
+def refresh_window_displays() -> Tuple[gradio.Dropdown, gradio.Dropdown]:
+	window_displays = detect_window_displays()
+	return\
+	(
+		gradio.Dropdown(choices = resolve_window_display_choices(window_displays, state_manager.get_item('webcam_window_display'))),
+		gradio.Dropdown(choices = resolve_window_display_choices(window_displays, state_manager.get_item('webcam_raw_window_display')))
+	)
+
+
+def refresh_window_display() -> gradio.Dropdown:
+	return gradio.Dropdown(choices = resolve_window_display_choices(detect_window_displays(), state_manager.get_item('webcam_window_display')))
+
+
+def refresh_raw_window_display() -> gradio.Dropdown:
+	return gradio.Dropdown(choices = resolve_window_display_choices(detect_window_displays(), state_manager.get_item('webcam_raw_window_display')))
+
+
 # Opens or closes the control window beside the open output window; without one open, the next one
 # follows it
 def update_control_window(control_window : bool) -> None:
@@ -368,23 +416,32 @@ def update_raw_window_display(raw_window_display : int) -> None:
 	move_raw_camera_view(int(raw_window_display or 0))
 
 
-# One choice per attached display, labelled with its size so two displays can be told apart. A
-# configured display that is not attached stays selectable, marked as such, so the config value is
-# not silently replaced. When the probe failed, the whole range is offered as before
-def resolve_window_display_choices(window_displays : Optional[List[Tuple[int, int]]], selected_window_display : Optional[int]) -> List[Tuple[str, int]]:
+# One choice per attached display, labelled with its real size so two displays can be told apart and
+# a scaled desktop does not pass for a low resolution one: the native resolution, plus the desktop
+# size when the desktop is set up smaller or scaled. A configured display that is not attached stays
+# selectable, marked as such, so the config value is not silently replaced. When the probe found no
+# display, only that is offered: no display numbers are made up that nothing answered for
+def resolve_window_display_choices(window_displays : Optional[List[Tuple[int, int, int, int]]], selected_window_display : Optional[int]) -> List[Tuple[str, int]]:
 	window_display_choices = [ ('auto', 0) ]
 
-	if window_displays is None:
-		window_display_choices.extend((str(window_display), window_display) for window_display in WEBCAM_WINDOW_DISPLAYS if window_display > 0)
-		return window_display_choices
-	for window_display, (display_width, display_height) in enumerate(window_displays[:max(WEBCAM_WINDOW_DISPLAYS)], start = 1):
-		display_label = str(window_display)
-		if display_width and display_height:
-			display_label += ' (' + str(display_width) + 'x' + str(display_height) + ')'
-		window_display_choices.append((display_label, window_display))
+	for window_display, window_display_size in enumerate((window_displays or [])[:max(WEBCAM_WINDOW_DISPLAYS)], start = 1):
+		window_display_choices.append((resolve_window_display_label(window_display, window_display_size), window_display))
 	if selected_window_display and selected_window_display not in [ choice_value for _, choice_value in window_display_choices ]:
 		window_display_choices.append((str(selected_window_display) + ' (not connected)', selected_window_display))
 	return window_display_choices
+
+
+def resolve_window_display_label(window_display : int, window_display_size : Tuple[int, ...]) -> str:
+	desktop_width, desktop_height = window_display_size[0], window_display_size[1]
+	native_width, native_height = (window_display_size[2], window_display_size[3]) if len(window_display_size) >= 4 else (desktop_width, desktop_height)
+	display_label = str(window_display)
+
+	if native_width and native_height:
+		display_label += ' (' + str(native_width) + 'x' + str(native_height)
+		if desktop_width and desktop_height and (desktop_width, desktop_height) != (native_width, native_height):
+			display_label += ', desktop ' + str(desktop_width) + 'x' + str(desktop_height)
+		display_label += ')'
+	return display_label
 
 
 def update_performance_overlay(performance_overlay : str) -> None:
@@ -478,6 +535,7 @@ def generate_config(webcam_device_id : str, webcam_mode : str, webcam_resolution
 		'webcam_output_resolution': webcam_output_resolution,
 		'webcam_window_fullscreen': bool(state_manager.get_item('webcam_window_fullscreen')),
 		'webcam_window_display': int(state_manager.get_item('webcam_window_display') or 0),
+		'webcam_window_resolution': state_manager.get_item('webcam_window_resolution') or 'native',
 		'webcam_control_window': bool(state_manager.get_item('webcam_control_window')),
 		'webcam_raw_window': bool(state_manager.get_item('webcam_raw_window')),
 		'webcam_raw_window_fullscreen': bool(state_manager.get_item('webcam_raw_window_fullscreen')),

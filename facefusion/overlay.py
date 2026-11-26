@@ -84,6 +84,19 @@ class PerformanceOverlay:
 
 		return vision_frame
 
+	# A copy of the readings, for drawing without the lock. Caller holds stats_lock
+	def create_stats_snapshot(self) -> 'PerformanceOverlay':
+		stats_snapshot = PerformanceOverlay(self.window_size, self.history_size)
+		stats_snapshot.timestamps.extend(self.timestamps)
+		stats_snapshot.processed_timestamps.extend(self.processed_timestamps)
+		stats_snapshot.latencies.extend(self.latencies)
+		stats_snapshot.fps_history.extend(self.fps_history)
+		stats_snapshot.latency_history.extend(self.latency_history)
+		stats_snapshot.last_processed_time = self.last_processed_time
+		stats_snapshot.last_instant_fps = self.last_instant_fps
+		stats_snapshot.last_latency = self.last_latency
+		return stats_snapshot
+
 	# Counts a frame without drawing it, for a stream whose output draws no overlay while the control
 	# window shows one
 	def count(self, capture_time : float, is_duplicate : bool = False) -> None:
@@ -108,16 +121,19 @@ class PerformanceOverlay:
 			return overlay_patches
 		black_canvas, white_canvas = resolve_control_canvases(canvases, frame_width, frame_height)
 		box_rects : List[Tuple[int, int, int, int]] = []
+		# The lock is held only to read: the stream loop takes it on every frame, and drawing both
+		# canvases under it used to hold that loop up to 15 times a second. Read once for both
+		# drawings: peek measures against the current time, and two different readings would not
+		# cancel out between black and white
 		with self.stats_lock:
-			# Read once for both drawings: peek measures against the current time, and two different
-			# readings would not cancel out between black and white
 			stats_readings = self.peek()
-			for canvas in [ black_canvas, white_canvas ]:
-				box_rects.clear()
-				if is_hud_missing:
-					self._render_performance_hud(canvas, 0.0, False, timing, False, True, box_rects, stats_readings)
-				if is_inspector_missing:
-					self._render_pipeline_inspector(canvas, timing, True, box_rects)
+			stats_snapshot = self.create_stats_snapshot()
+		for canvas in [ black_canvas, white_canvas ]:
+			box_rects.clear()
+			if is_hud_missing:
+				stats_snapshot._render_performance_hud(canvas, 0.0, False, timing, False, True, box_rects, stats_readings)
+			if is_inspector_missing:
+				stats_snapshot._render_pipeline_inspector(canvas, timing, True, box_rects)
 		for box_x, box_y, box_w, box_h in box_rects:
 			patch_x, patch_y = max(0, box_x - CONTROL_PATCH_PAD), max(0, box_y - CONTROL_PATCH_PAD)
 			patch_end_x, patch_end_y = min(frame_width, box_x + box_w + CONTROL_PATCH_PAD + 1), min(frame_height, box_y + box_h + CONTROL_PATCH_PAD + 1)

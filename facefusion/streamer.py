@@ -3,9 +3,10 @@ import queue
 import subprocess
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from types import ModuleType
-from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
+from typing import Any, Callable, Deque, Dict, Iterator, List, Optional, Set, Tuple
 
 import cv2
 import numpy
@@ -35,6 +36,12 @@ CONTENT_ANALYSIS_METRICS_LOCK = threading.Lock()
 CONTENT_ANALYSIS_METRICS = { 'runs': 0, 'last_ms': 0.0, 'max_ms': 0.0 }
 WARM_BARRIER_TIMEOUT = 10.0
 IDLE_LISTENER_INTERVAL = 0.1
+# The longest the scheduler sleeps on its wake event; a camera frame or a finished frame wakes it at once
+STREAM_WAKE_TIMEOUT = 0.005
+# How long the delivering side waits for a result before it checks whether the scheduler is still alive
+STREAM_DELIVERY_POLL = 0.1
+# How long stopping a stream waits for the scheduler to release the camera and the workers
+STREAM_SCHEDULER_JOIN_TIMEOUT = 5.0
 # The processors the running stream left out because their stream check failed, so the overlay can
 # tell a processor that is selected from one that is actually touching the frame
 STREAM_SKIPPED_PROCESSORS : List[str] = []
@@ -67,6 +74,9 @@ class CameraCaptureThread(threading.Thread):
 		self.camera_capture = camera_capture
 		self.raw_frame_listener : Optional[Callable[[VisionFrame], None]] = None
 		self.camera_switch : Optional[CameraSwitch] = None
+		# Set after every queued frame, so the scheduler waits on one event for a camera frame or a
+		# finished frame instead of polling the queue
+		self.frame_event : Optional[threading.Event] = None
 		self.frame_queue = queue.Queue(maxsize=1)
 		self.running = True
 		self.daemon = True
@@ -115,6 +125,8 @@ class CameraCaptureThread(threading.Thread):
 						self.frame_queue.put_nowait((capture_time, capture_read_end, frame))
 					except queue.Full:
 						pass
+				if self.frame_event:
+					self.frame_event.set()
 		finally:
 			self.running = False
 
@@ -345,7 +357,132 @@ def has_stream_capacity(pending_total : int, buffered_total : int, max_queue_siz
 	return pending_total < max_queue_size and buffered_total < max_queue_size
 
 
+# Only unfinished work occupies a worker, so results awaiting their turn in the ordered output are not
+# counted; abandoned work that is still running is
+def count_pending_futures(futures : List[Tuple[int, Future[Any]]], discarded_futures : List[Future[Any]]) -> int:
+	pending_total = len(discarded_futures)
+
+	for _, future in futures:
+		if not future.done():
+			pending_total += 1
+	return pending_total
+
+
+# Hands results from the scheduler thread to the thread that delivers them. Adaptive mode keeps the
+# newest when the delivering side falls behind, the same latest-wins rule the camera queue and the
+# writer apply; the ordered modes wait for room instead, so every frame still arrives in order
+class StreamDelivery:
+	def __init__(self, maxsize : int) -> None:
+		self.maxsize = max(1, maxsize)
+		self.items : Deque[Tuple[str, Any]] = deque()
+		self.condition = threading.Condition()
+		self.is_closed = False
+
+	def put(self, stream_frame : Any, is_latest_wins : bool) -> None:
+		with self.condition:
+			while not is_latest_wins and len(self.items) >= self.maxsize and not self.is_closed:
+				self.condition.wait(STREAM_DELIVERY_POLL)
+			if self.is_closed:
+				return
+			if len(self.items) >= self.maxsize:
+				self.items.popleft()
+			self.items.append(('frame', stream_frame))
+			self.condition.notify_all()
+
+	# The end of the stream, or why it failed; always queued, whatever the size
+	def finish(self, failure : Optional[BaseException]) -> None:
+		with self.condition:
+			if not self.is_closed:
+				self.items.append(('end', failure))
+				self.condition.notify_all()
+
+	def take(self, timeout : float) -> Optional[Tuple[str, Any]]:
+		with self.condition:
+			if not self.items:
+				self.condition.wait(timeout)
+			if not self.items:
+				return None
+			stream_item = self.items.popleft()
+			self.condition.notify_all()
+			return stream_item
+
+	def close(self) -> None:
+		with self.condition:
+			self.is_closed = True
+			self.items.clear()
+			self.condition.notify_all()
+
+
+# Runs the scheduler generator on its own thread. Stopped at a yield, it is closed there, which runs
+# its own cleanup (camera, capture thread, executor) on this thread before the caller is told
+def pump_stream_frames(stream_frames : Iterator[Tuple[VisionFrame, float, bool, Dict[str, Any]]], stream_delivery : StreamDelivery, stop_event : threading.Event) -> None:
+	failure : Optional[BaseException] = None
+
+	try:
+		for stream_frame in stream_frames:
+			if stop_event.is_set():
+				break
+			stream_delivery.put(stream_frame, (state_manager.get_item('webcam_frame_skipping') or 'adaptive') == 'adaptive')
+	except BaseException as exception:
+		failure = exception
+	finally:
+		try:
+			stream_frames.close() #type:ignore[attr-defined]
+		except BaseException as exception:
+			failure = failure or exception
+		stream_delivery.finish(failure)
+
+
+# The scheduler used to be this generator itself, so while the caller worked on a delivered frame
+# (colour conversion, frame generation, overlay, hand off to the writer) no finished frame was
+# collected and no camera frame was submitted, and the workers waited. It now runs on a thread of
+# its own and keeps the workers fed whatever the caller does; the caller still sees one frame at a
+# time, in delivery order. The caller's app context goes with it, since that thread cannot detect
+# it from its own stack
 def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, webcam_execution_thread_count : Optional[int] = None, capture_resolution : Optional[Resolution] = None, raw_frame_listener : Optional[Callable[[VisionFrame], None]] = None, camera_switch : Optional[CameraSwitch] = None, idle_listener : Optional[Callable[[], bool]] = None) -> Iterator[Tuple[VisionFrame, float, bool, Dict[str, Any]]]:
+	app_context = detect_app_context()
+	stop_event = threading.Event()
+	stream_delivery = StreamDelivery(max(2, webcam_execution_thread_count or state_manager.get_item('execution_thread_count') or 1))
+	stream_frames = schedule_stream_frames(camera_capture, camera_fps, webcam_execution_thread_count, capture_resolution, raw_frame_listener, camera_switch, idle_listener, app_context, stop_event)
+	scheduler_thread = threading.Thread(target = pump_stream_frames, args = (stream_frames, stream_delivery, stop_event), name = 'stream_scheduler', daemon = True)
+	scheduler_thread.start()
+
+	try:
+		while True:
+			stream_item = stream_delivery.take(STREAM_DELIVERY_POLL)
+			if stream_item is None:
+				# The scheduler always queues its end, so a dead thread with nothing queued is only the
+				# moment between the two; one more look settles it
+				if not scheduler_thread.is_alive():
+					stream_item = stream_delivery.take(0.0)
+					if stream_item is None:
+						return
+				else:
+					continue
+			item_kind, item_value = stream_item
+			if item_kind == 'end':
+				if item_value is not None:
+					raise item_value
+				return
+			yield item_value
+	finally:
+		stop_event.set()
+		stream_delivery.close()
+		scheduler_thread.join(STREAM_SCHEDULER_JOIN_TIMEOUT)
+		if scheduler_thread.is_alive():
+			logger.warn('the stream scheduler did not stop within ' + str(STREAM_SCHEDULER_JOIN_TIMEOUT) + ' seconds', __name__)
+
+
+def schedule_stream_frames(camera_capture : cv2.VideoCapture, camera_fps : Fps, webcam_execution_thread_count : Optional[int], capture_resolution : Optional[Resolution], raw_frame_listener : Optional[Callable[[VisionFrame], None]], camera_switch : Optional[CameraSwitch], idle_listener : Optional[Callable[[], bool]], app_context : AppContext, stop_event : threading.Event) -> Iterator[Tuple[VisionFrame, float, bool, Dict[str, Any]]]:
+	# First, so the setup below reads and writes the caller's state rather than the cli one
+	set_app_context_override(app_context)
+	try:
+		yield from schedule_stream_frames_in_context(camera_capture, camera_fps, webcam_execution_thread_count, capture_resolution, raw_frame_listener, camera_switch, idle_listener, stop_event)
+	finally:
+		set_app_context_override(None)
+
+
+def schedule_stream_frames_in_context(camera_capture : cv2.VideoCapture, camera_fps : Fps, webcam_execution_thread_count : Optional[int], capture_resolution : Optional[Resolution], raw_frame_listener : Optional[Callable[[VisionFrame], None]], camera_switch : Optional[CameraSwitch], idle_listener : Optional[Callable[[], bool]], stop_event : threading.Event) -> Iterator[Tuple[VisionFrame, float, bool, Dict[str, Any]]]:
 	webcam_execution_thread_count = webcam_execution_thread_count or state_manager.get_item('execution_thread_count')
 	# Published so the overlay can name the count the stream actually runs on instead of the global
 	# execution thread count, which no webcam frame is processed with
@@ -382,11 +519,12 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 		# Assigned rather than passed, so the thread keeps its one argument constructor
 		capture_thread.raw_frame_listener = raw_frame_listener
 		capture_thread.camera_switch = camera_switch
+		# A camera frame or a finished frame sets it, so an idle scheduler wakes at once for either
+		wake_event = threading.Event()
+		capture_thread.frame_event = wake_event
 		capture_thread.start()
-		stop_event = threading.Event()
-		
+
 		try:
-			set_app_context_override(detect_app_context())
 			# Sizes the detector's session pool and turns on its angle fan out for as long as this
 			# stream runs
 			set_stream_worker_count(webcam_execution_thread_count)
@@ -398,8 +536,11 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 			analysis_future = None
 
 			while capture_thread.running and not stop_event.is_set():
-				# Throttled to once a second inside the sampler, because this loop also spins on an
-				# empty camera queue
+				# Cleared before anything is looked at, so a camera frame or a finished frame that lands
+				# from here on wakes the wait below instead of being slept through
+				wake_event.clear()
+				# Throttled to once a second inside the sampler, because this loop also runs on every
+				# wake up of an idle scheduler
 				sample_device_memory()
 				discarded_futures = [ future for future in discarded_futures if not future.done() ]
 				skipping_mode = state_manager.get_item('webcam_frame_skipping') or 'adaptive'
@@ -448,15 +589,18 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 							progress.update()
 							yield capture_vision_frame, capture_time, False, timing
 
-				# 2. Read the latest frame from the camera thread (non-blocking yield delay)
-				try:
-					queue_item = capture_thread.frame_queue.get(timeout=0.005)
-					if len(queue_item) == 3:
-						capture_time, capture_read_end, capture_vision_frame = queue_item
-					else:
-						capture_time, capture_vision_frame = queue_item
-						capture_read_end = capture_time
-				except queue.Empty:
+				# 2. Read the latest frame from the camera thread, but only when a worker can take it.
+				# Taken while every worker was busy, it was dropped, and a worker that freed up a moment
+				# later then waited a whole camera interval for the next one; left in the camera's
+				# latest-wins queue, it is there for that worker. Raw passthrough uses no worker
+				is_stream_bypass_requested = bool(state_manager.get_item('webcam_stream_bypass'))
+				queue_item = None
+				if is_stream_bypass_requested or has_stream_capacity(count_pending_futures(futures, discarded_futures), len(futures), max_queue_size):
+					try:
+						queue_item = capture_thread.frame_queue.get(timeout = 0)
+					except queue.Empty:
+						queue_item = None
+				if queue_item is None:
 					# While no frame comes (a camera being reopened or switched to) the caller's loop
 					# body never runs, so its window keys would go unread: Ctrl+0-9 is exactly what
 					# gets out of a camera that is gone. Returning False ends the stream
@@ -464,7 +608,13 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 						idle_listener_time = time.perf_counter()
 						if not idle_listener():
 							break
+					wake_event.wait(STREAM_WAKE_TIMEOUT)
 					continue
+				if len(queue_item) == 3:
+					capture_time, capture_read_end, capture_vision_frame = queue_item
+				else:
+					capture_time, capture_vision_frame = queue_item
+					capture_read_end = capture_time
 				idle_listener_time = time.perf_counter()
 
 				# The camera may negotiate a mode larger than the one requested, so bring the frame down
@@ -494,7 +644,7 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 
 				# 4. Raw passthrough skips the pipeline entirely, which is the whole point of it: the
 				# lowest latency the camera can deliver, and the reference the processed output is judged against
-				if state_manager.get_item('webcam_stream_bypass'):
+				if is_stream_bypass_requested:
 					# Work admitted before the switch would otherwise land as a processed frame after
 					# it, so it is dropped rather than shown
 					if not is_stream_bypassed:
@@ -549,10 +699,7 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 
 					# Only unfinished work occupies a worker, so results awaiting their turn in the ordered
 					# output must not block submission and leave the executor idle behind a slow frame
-					pending_total = len(discarded_futures)
-					for _, future in futures:
-						if not future.done():
-							pending_total += 1
+					pending_total = count_pending_futures(futures, discarded_futures)
 
 					frame_index += 1
 					should_skip = False
@@ -568,20 +715,22 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 						# Only adaptive mode drops a frame once it is in flight, so only adaptive
 						# mode hands the worker a cursor to give up against
 						future = executor.submit(process_stream_frame, source_vision_frames, capture_vision_frame, capture_time, processor_modules, processor_stream_inputs, stream_vision_mask, source_audio_frame, source_voice_frame, face_analysis_features, timing, frame_index, stream_frame_cursor if skipping_mode == 'adaptive' else None)
+						# Wakes the scheduler the moment this frame is done, instead of on its next poll
+						future.add_done_callback(lambda _: wake_event.set())
 						futures.append((frame_index, future))
 
+			# Stopped by the caller, nobody takes the frames still in flight, so they are not waited for;
+			# a camera that ended on its own still hands over what was in flight, in order
 			if stop_event.is_set():
 				camera_capture.release()
-
-			# Yield any remaining frames in order
-			for _, future in futures:
-				stream_result = future.result()
-				if stream_result:
-					capture_vision_frame, capture_time, timing = stream_result
-					progress.update()
-					yield capture_vision_frame, capture_time, False, timing
+			else:
+				for _, future in futures:
+					stream_result = future.result()
+					if stream_result:
+						capture_vision_frame, capture_time, timing = stream_result
+						progress.update()
+						yield capture_vision_frame, capture_time, False, timing
 		finally:
-			set_app_context_override(None)
 			set_stream_worker_count(0)
 			capture_thread.stop()
 			if hasattr(camera_capture, 'release'):

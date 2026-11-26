@@ -126,8 +126,19 @@ def paste_back(temp_vision_frame : VisionFrame, crop_vision_frame : VisionFrame,
 	inverse_vision_mask = cv2.warpAffine(crop_vision_mask, paste_matrix, (paste_width, paste_height)).clip(0, 1)
 	inverse_vision_mask = numpy.expand_dims(inverse_vision_mask, axis = -1)
 	inverse_vision_frame = cv2.warpAffine(crop_vision_frame, paste_matrix, (paste_width, paste_height), borderMode = cv2.BORDER_REPLICATE)
-	paste_vision_frame = paste_vision_frame * (1 - inverse_vision_mask) + inverse_vision_frame * inverse_vision_mask
-	temp_vision_frame[y1:y2, x1:x2] = paste_vision_frame.astype(temp_vision_frame.dtype)
+	# paste * (1 - mask) + inverse * mask, the same operations in the same order and types, so the
+	# result is identical; the steps write into arrays already made instead of a new paste sized array
+	# each, and the cast back writes straight into the frame
+	blend_vision_frame = numpy.multiply(paste_vision_frame, 1 - inverse_vision_mask)
+	if inverse_vision_frame.dtype == numpy.result_type(inverse_vision_frame, inverse_vision_mask):
+		inverse_vision_frame = numpy.multiply(inverse_vision_frame, inverse_vision_mask, out = inverse_vision_frame)
+	else:
+		inverse_vision_frame = inverse_vision_frame * inverse_vision_mask
+	if blend_vision_frame.dtype == numpy.result_type(blend_vision_frame, inverse_vision_frame):
+		blend_vision_frame = numpy.add(blend_vision_frame, inverse_vision_frame, out = blend_vision_frame)
+	else:
+		blend_vision_frame = blend_vision_frame + inverse_vision_frame
+	numpy.copyto(temp_vision_frame[y1:y2, x1:x2], blend_vision_frame, casting = 'unsafe')
 	return temp_vision_frame
 
 

@@ -20,6 +20,7 @@ from facefusion.vision import is_vision_frame
 class FaceAnalysisContext(threading.local):
 	features : Optional[Set[str]] = None
 	cache_bypass = False
+	single_face = False
 
 
 FACE_ANALYSIS_CONTEXT = FaceAnalysisContext()
@@ -44,10 +45,47 @@ def get_face_cache_bypass() -> bool:
 	return getattr(FACE_ANALYSIS_CONTEXT, 'cache_bypass', False)
 
 
+# Analyse only the face select_faces would pick in 'one' mode. Set by select_faces around a stream's
+# own uncached target detection and nowhere else, so a list cut down to one face is never stored in
+# the face store for a caller that expects every face
+def set_single_face_analysis(single_face : bool) -> None:
+	FACE_ANALYSIS_CONTEXT.single_face = single_face
+
+
+def get_single_face_analysis() -> bool:
+	return getattr(FACE_ANALYSIS_CONTEXT, 'single_face', False)
+
+
+# The face that comes first in face_selector.sort_faces_by_order, found from the detector's own boxes
+# and scores before any face is analysed. The same keys and the same stable sort, so it is the face
+# that ordering the analysed faces would have put first
+def resolve_first_face_index(keep_indices : List[int], bounding_boxes : List[BoundingBox], face_scores : List[Score], face_selector_order : Optional[str]) -> int:
+	face_order_keys =\
+	{
+		'left-right': (lambda index: bounding_boxes[index][0], False),
+		'right-left': (lambda index: bounding_boxes[index][0], True),
+		'top-bottom': (lambda index: bounding_boxes[index][1], False),
+		'bottom-top': (lambda index: bounding_boxes[index][1], True),
+		'small-large': (lambda index: (bounding_boxes[index][2] - bounding_boxes[index][0]) * (bounding_boxes[index][3] - bounding_boxes[index][1]), False),
+		'large-small': (lambda index: (bounding_boxes[index][2] - bounding_boxes[index][0]) * (bounding_boxes[index][3] - bounding_boxes[index][1]), True),
+		'best-worst': (lambda index: face_scores[index], True),
+		'worst-best': (lambda index: face_scores[index], False)
+	}
+
+	if face_selector_order in face_order_keys:
+		face_order_key, is_reverse = face_order_keys[face_selector_order]
+		return sorted(keep_indices, key = face_order_key, reverse = is_reverse)[0]
+	return keep_indices[0]
+
+
 def create_faces(vision_frame : VisionFrame, bounding_boxes : List[BoundingBox], face_scores : List[Score], face_landmarks_5 : List[FaceLandmark5]) -> List[Face]:
 	faces = []
 	nms_threshold = get_nms_threshold(state_manager.get_item('face_detector_model'), state_manager.get_item('face_detector_angles'))
 	keep_indices = apply_nms(bounding_boxes, face_scores, state_manager.get_item('face_detector_score'), nms_threshold)
+	# The faces 'one' would drop are not landmarked, embedded or classified: bystanders, a poster or a
+	# television in view each cost those model passes on every frame only to be thrown away
+	if get_single_face_analysis() and len(keep_indices) > 1:
+		keep_indices = [ resolve_first_face_index(list(keep_indices), bounding_boxes, face_scores, state_manager.get_item('face_selector_order')) ]
 
 	for index in keep_indices:
 		bounding_box = bounding_boxes[index]

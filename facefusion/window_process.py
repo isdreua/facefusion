@@ -15,6 +15,8 @@ OSD_PREVIEW_GAP = 6
 # Stands in for the last drawn sequence while the black screen is up, so it is presented once and
 # again only after a resize, never once per frame
 BLACKOUT_SEQUENCE = -2
+# How long new overlay patches wait for the next frame before the current one is drawn again for them
+OVERLAY_PATCH_REDRAW_DELAY = 0.1
 BLACKOUT_MARK_TEXT = 'OUTPUT IS BLACK (B RESTORES)'
 BLACKOUT_MARK_COLOR = (255, 64, 64)
 
@@ -580,6 +582,8 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 	osd_preview_size = resolve_osd_preview_size(width, height)
 	osd_expires_at = 0.0
 	overlay_patches : List[Tuple[int, int, Any]] = []
+	# When a set of patches arrived that no frame has been drawn with yet
+	overlay_patches_received_at : Optional[float] = None
 	# B, the black screen. An output window (and its mirror) draws black and nothing else, overlay and
 	# face switch display included; a control window goes on showing the live frame, marked
 	is_blackout = False
@@ -663,10 +667,13 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 				if is_control and ('window_display' in received_status or 'window_fullscreen' in received_status or 'window_resolution' in received_status):
 					continue
 				# The overlay boxes the output does not show, drawn by the parent and laid over the
-				# shared frame here. They stay until the next set replaces them; an empty set clears
+				# shared frame here. They stay until the next set replaces them; an empty set clears.
+				# A new set goes onto the next frame rather than drawing the current one again, which
+				# cost a whole extra frame draw 15 times a second; only when no frame follows soon (a
+				# stalled or stopped stream) is the current one drawn again for it
 				if 'overlay_patches' in received_status:
 					overlay_patches = resolve_overlay_patches(pygame, received_status.get('overlay_patches') or [])
-					last_sequence = -1
+					overlay_patches_received_at = time.monotonic()
 					continue
 				# H, J or the browser checkbox, through the parent. Shown again, it draws the current
 				# frame at once rather than waiting for the next one
@@ -721,6 +728,7 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 					frame_event.clear()
 			elif current_sequence != last_sequence and current_sequence > 0:
 				last_sequence = current_sequence
+				overlay_patches_received_at = None
 				frame_slot = (current_sequence - 1) % FRAME_SLOT_COUNT
 				frame_offset = frame_slot * frame_size
 				# Drawn straight from the shared slot, with no copy taken first: the parent writes the
@@ -755,6 +763,8 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 						frame_view.release()
 					except BufferError:
 						pass
+			elif overlay_patches_received_at is not None and current_sequence > 0 and time.monotonic() - overlay_patches_received_at > OVERLAY_PATCH_REDRAW_DELAY:
+				last_sequence = -1
 			else:
 				# Nothing new to draw, so wait on the parent instead of spinning; the sequence above
 				# is the real source of truth, which makes a missed event harmless

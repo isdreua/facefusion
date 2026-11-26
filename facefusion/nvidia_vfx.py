@@ -316,6 +316,12 @@ def upload_vision_frame(vision_frame : VisionFrame) -> Any:
 # current output buffer exist, and must not be retained across another run(), so it is copied here
 # and the copy is awaited before the caller lets the effect move on
 def download_vision_frame(effect_output : Any, with_deviation : bool = True) -> Tuple[VisionFrame, Optional[float]]:
+	return finish_download(copy_effect_output(effect_output), with_deviation)
+
+
+# The part of a download the effect's buffer is needed for: its output is copied into memory of our
+# own and the copy is awaited, after which the effect may run again. Called with NVIDIA_VFX_LOCK held
+def copy_effect_output(effect_output : Any) -> Any:
 	array_module = resolve_array_module()
 	dlpack_capsule = effect_output.image if hasattr(effect_output, 'image') else effect_output
 
@@ -324,15 +330,23 @@ def download_vision_frame(effect_output : Any, with_deviation : bool = True) -> 
 
 	if array_module.__name__ == 'cupy':
 		device_vision_frame = array_module.from_dlpack(dlpack_capsule).copy()
-		synchronize_device()
-		deviation = float(device_vision_frame.std()) if with_deviation else None
+	else:
+		device_vision_frame = array_module.from_dlpack(dlpack_capsule).clone()
+	synchronize_device()
+	return device_vision_frame
+
+
+# The rest of a download, on the copy alone, so it runs without the lock: the conversion back to an
+# (H, W, 3) uint8 bgr frame and the device to host read no longer hold up the other effect's users
+def finish_download(device_vision_frame : Any, with_deviation : bool = True) -> Tuple[VisionFrame, Optional[float]]:
+	array_module = resolve_array_module()
+	deviation = float(device_vision_frame.std()) if with_deviation else None
+
+	if array_module.__name__ == 'cupy':
 		device_vision_frame = (device_vision_frame * 255.0).clip(0, 255).astype(array_module.uint8)
 		device_vision_frame = array_module.ascontiguousarray(device_vision_frame.transpose(1, 2, 0)[:, :, ::-1])
 		return array_module.asnumpy(device_vision_frame), deviation
 
-	device_vision_frame = array_module.from_dlpack(dlpack_capsule).clone()
-	synchronize_device()
-	deviation = float(device_vision_frame.std()) if with_deviation else None
 	device_vision_frame = (device_vision_frame * 255.0).clamp(0, 255).to(array_module.uint8)
 	device_vision_frame = device_vision_frame.permute(1, 2, 0).flip(-1).contiguous()
 	return device_vision_frame.cpu().numpy(), deviation
@@ -369,8 +383,9 @@ def apply_super_res(vision_frame : VisionFrame, super_res_mode : str, super_res_
 	if not has_device_headroom(estimate_super_res_bytes(width, height, super_res_scale)):
 		return None
 
-	# Held across the whole section: the effect's output buffer belongs to its last run, so a second
-	# worker entering run() would replace the buffer the first is still downloading
+	# Held until the output is copied out: the effect's output buffer belongs to its last run, so a
+	# second worker entering run() would replace the buffer the first is still copying. The conversion
+	# of that copy and its read back to the host run after the lock, on memory no effect touches
 	try:
 		with NVIDIA_VFX_LOCK:
 			with_deviation = needs_blank_check('super_res')
@@ -382,9 +397,10 @@ def apply_super_res(vision_frame : VisionFrame, super_res_mode : str, super_res_
 			# on stream 0 while inference runs on the given stream, so non_blocking is unsafe here
 			with measure_inference():
 				effect_output = effect.run(device_vision_frame)
-			result_vision_frame, deviation = download_vision_frame(effect_output, with_deviation)
+			device_result_frame = copy_effect_output(effect_output)
 			# Keeps the input and the output wrapper referenced until the copy above has completed
 			del effect_output, device_vision_frame
+		result_vision_frame, deviation = finish_download(device_result_frame, with_deviation)
 	except Exception as exception:
 		warn_once('super_res', 'nvidia-vfx super resolution failed, leaving the frame untouched: ' + str(exception))
 		return None
@@ -400,32 +416,59 @@ def apply_super_res(vision_frame : VisionFrame, super_res_mode : str, super_res_
 
 
 def apply_frame_generation(previous_vision_frame : VisionFrame, vision_frame : VisionFrame, frame_generation_mode : str, shot_change_detection : bool = True) -> Optional[VisionFrame]:
+	device_previous_vision_frame = upload_frame_generation_input(previous_vision_frame)
+
+	if device_previous_vision_frame is None:
+		return None
+	generated_vision_frame, _ = generate_frame(device_previous_vision_frame, vision_frame, frame_generation_mode, shot_change_detection)
+	return generated_vision_frame
+
+
+# A frame put on the device for frame generation. The stream keeps it, so the next interpolation
+# reads it as its previous frame instead of uploading that frame a second time. Uploading copies the
+# host frame before it returns, so the caller may draw into the frame right after
+def upload_frame_generation_input(vision_frame : VisionFrame) -> Optional[Any]:
 	if not has_nvidia_vfx():
 		return None
+
+	try:
+		with NVIDIA_VFX_LOCK:
+			return upload_vision_frame(vision_frame)
+	except Exception as exception:
+		warn_once('frame_generation', 'nvidia-vfx frame generation failed, no frame was interpolated: ' + str(exception) + '. It requires an ada or blackwell gpu')
+		return None
+
+
+# Interpolates between the device frame kept from the last call and this frame, and hands back this
+# frame's device copy for the next call. Only one frame is uploaded per call. The lock is held until
+# the output is copied out, the same as for super resolution
+def generate_frame(device_previous_vision_frame : Any, vision_frame : VisionFrame, frame_generation_mode : str, shot_change_detection : bool = True) -> Tuple[Optional[VisionFrame], Optional[Any]]:
+	if not has_nvidia_vfx():
+		return None, None
 
 	try:
 		with NVIDIA_VFX_LOCK:
 			with_deviation = needs_blank_check('frame_generation')
 			vision_frame_height, vision_frame_width = vision_frame.shape[:2]
 			effect = resolve_frame_generation_effect(resolve_frame_generation_mode(frame_generation_mode), shot_change_detection, vision_frame_width, vision_frame_height)
-			device_previous_vision_frame = upload_vision_frame(previous_vision_frame)
 			device_vision_frame = upload_vision_frame(vision_frame)
 			synchronize_device()
 			with measure_inference():
 				effect_output = effect.run(device_previous_vision_frame, device_vision_frame)
-			result_vision_frame, deviation = download_vision_frame(effect_output, with_deviation)
-			del effect_output, device_vision_frame, device_previous_vision_frame
+			device_result_frame = copy_effect_output(effect_output)
+			del effect_output
+		result_vision_frame, deviation = finish_download(device_result_frame, with_deviation)
 	except Exception as exception:
 		warn_once('frame_generation', 'nvidia-vfx frame generation failed, no frame was interpolated: ' + str(exception) + '. It requires an ada or blackwell gpu')
-		return None
+		return None, None
 
 	if is_blank_result(deviation):
 		warn_once('frame_generation_blank', 'nvidia-vfx frame generation returned a constant image, which is the known silent failure where the bundled cuda kernels have no build for this gpu architecture; disabling it for this session')
 		disable_nvidia_vfx()
-		return None
+		return None, None
 	if with_deviation:
 		mark_blank_checked('frame_generation')
-	return result_vision_frame
+	return result_vision_frame, device_vision_frame
 
 
 def disable_nvidia_vfx() -> None:

@@ -6,7 +6,7 @@ import numpy
 import facefusion.choices
 from facefusion import state_manager
 from facefusion.common_helper import get_first, get_middle
-from facefusion.face_creator import get_face_analysis_features, get_one_face, get_static_faces, set_face_analysis_features, set_face_cache_bypass
+from facefusion.face_creator import get_face_analysis_features, get_one_face, get_static_faces, set_face_analysis_features, set_face_cache_bypass, set_single_face_analysis
 from facefusion.face_tracker import track_faces
 from facefusion.types import Face, FaceSelectorOrder, Gender, Race, Score, VisionFrame
 
@@ -30,6 +30,11 @@ def end_face_selection_context() -> None:
 
 
 def select_faces(reference_vision_frame : VisionFrame, source_vision_frames : List[VisionFrame], target_vision_frames : List[VisionFrame], source_faces : Optional[List[Face]] = None) -> List[Face]:
+	# The source faces only decide an 'auto' gender or race filter. Looked up regardless, they cost a
+	# full copy and checksum of every source photo, per processor and per frame, for a cache hit that
+	# was then thrown away
+	if source_faces is None and not has_auto_face_selector_filter():
+		source_faces = []
 	if source_faces is None:
 		face_analysis_features = get_face_analysis_features()
 		set_face_analysis_features(None)
@@ -43,6 +48,8 @@ def select_faces(reference_vision_frame : VisionFrame, source_vision_frames : Li
 	else:
 		# Streamed target frames are unique, so hashing them for the face store only costs a full frame scan per frame
 		set_face_cache_bypass(FACE_SELECTION_CONTEXT.enabled)
+		# Uncached here, so a stream can analyse just the face it is going to pick
+		set_single_face_analysis(FACE_SELECTION_CONTEXT.enabled and is_single_face_selection())
 		try:
 			if state_manager.get_item('face_tracker_score') > 0:
 				target_faces = track_faces(target_vision_frames, state_manager.get_item('face_tracker_score'))
@@ -50,6 +57,7 @@ def select_faces(reference_vision_frame : VisionFrame, source_vision_frames : Li
 				target_faces = get_static_faces([ get_middle(target_vision_frames) ])
 		finally:
 			set_face_cache_bypass(False)
+			set_single_face_analysis(False)
 		if FACE_SELECTION_CONTEXT.enabled:
 			FACE_SELECTION_CONTEXT.target_faces = target_faces
 
@@ -71,6 +79,22 @@ def select_faces(reference_vision_frame : VisionFrame, source_vision_frames : Li
 			return match_faces
 
 	return []
+
+
+def has_auto_face_selector_filter() -> bool:
+	return state_manager.get_item('face_selector_gender') == 'auto' or state_manager.get_item('face_selector_race') == 'auto'
+
+
+# 'one' keeps the first face of the selector order, which needs only the detector's boxes and scores.
+# Any gender, race or age filter needs every face classified first, so then all are analysed
+def is_single_face_selection() -> bool:
+	if state_manager.get_item('face_selector_mode') != 'one':
+		return False
+	if state_manager.get_item('face_selector_gender') or state_manager.get_item('face_selector_race'):
+		return False
+	face_selector_age_start = state_manager.get_item('face_selector_age_start') or 0
+	face_selector_age_end = state_manager.get_item('face_selector_age_end') or 100
+	return face_selector_age_start <= 0 and face_selector_age_end >= 100
 
 
 def find_match_faces(reference_faces : List[Face], target_faces : List[Face], face_distance : float) -> List[Face]:

@@ -106,6 +106,8 @@ class WindowStream:
 		self.is_fullscreen = bool(is_fullscreen)
 		# Shown when opened; hidden and shown again by sync_window_hidden from webcam_window_hidden
 		self.is_hidden = False
+		# The black screen (B), set by sync_output_blackout from webcam_output_blackout
+		self.is_blackout = False
 		self.height = height
 		self.frame_size = width * height * 3
 		# LatestFrameWriter writes to transport.stdin, the same shim WindowsVirtualCameraStream uses.
@@ -211,6 +213,8 @@ class WindowStream:
 			if self.is_closed or self.is_window_closed:
 				return
 			self.control_window = CompanionWindow(self, CONTROL_WINDOW_TITLE, True)
+			if self.is_blackout:
+				self.control_window.push_message({ 'window_blackout': True })
 
 	def close_control(self) -> None:
 		with self.control_lock:
@@ -238,6 +242,8 @@ class WindowStream:
 			if self.is_closed or self.is_window_closed:
 				return
 			self.mirror_window = CompanionWindow(self, MIRROR_WINDOW_TITLE, False, is_fullscreen, window_display)
+			if self.is_blackout:
+				self.mirror_window.push_message({ 'window_blackout': True })
 
 	def close_mirror(self) -> None:
 		with self.mirror_lock:
@@ -321,6 +327,20 @@ class WindowStream:
 			return
 		try:
 			self.status_queue.put_nowait({ 'window_hidden': self.is_hidden })
+		except Exception:
+			pass
+
+	# Black in this window and its mirror, overlay and all, while the shared frames keep arriving; the
+	# control window keeps the live picture and marks it. The same windows, so a capture survives
+	def set_blackout(self, is_blackout : bool) -> None:
+		self.is_blackout = bool(is_blackout)
+		for companion_window in [ self.control_window, self.mirror_window ]:
+			if companion_window:
+				companion_window.push_message({ 'window_blackout': self.is_blackout })
+		if self.is_closed or self.is_window_closed:
+			return
+		try:
+			self.status_queue.put_nowait({ 'window_blackout': self.is_blackout })
 		except Exception:
 			pass
 
@@ -489,7 +509,7 @@ def resolve_frame_buffer(vision_frame : Any) -> Any:
 # (submit); its own thread only opens the window and reads its keys, so neither the capture nor the
 # processing waits on the window. The window
 # matches the first frame's size, because the camera may not have granted the resolution that was
-# asked for. Only F11 and Esc (fullscreen) work in it, the face keys are ignored,
+# asked for. Only F11 and Esc (fullscreen), Ctrl+0-9 and B work in it, the face keys are ignored,
 # and closing it ends only this view, never the stream
 class RawCameraView:
 	def __init__(self, title : str, fps : Fps, is_fullscreen : bool = False, window_display : int = 0, camera_switch : Any = None, is_shared : bool = False):
@@ -504,6 +524,8 @@ class RawCameraView:
 		self.frame_event = threading.Event()
 		self.is_running = True
 		self.window_stream : Optional[WindowStream] = None
+		# B pressed here writes the state, so the thread needs the caller's context (see WindowIntentPump)
+		self.app_context = detect_app_context()
 		self.thread = threading.Thread(target = self._run, daemon = True)
 		self.thread.start()
 		if camera_switch:
@@ -559,6 +581,7 @@ class RawCameraView:
 	# keys, with or without camera frames (one being reopened or switched to), so Ctrl+0-9 can leave a
 	# camera that is gone and closing the window still works
 	def _run(self) -> None:
+		set_app_context_override(self.app_context)
 		try:
 			while self.is_running:
 				if self.frame_event.wait(0.1):
@@ -577,11 +600,13 @@ class RawCameraView:
 			logger.warn('the raw camera window stopped: ' + str(exception), __name__)
 			self.is_running = False
 
-	# Ctrl+0-9 works here too, since with any output mode but window this is the only window
+	# Ctrl+0-9 and B work here too, since with any output mode but window this is the only window
 	def poll_window_intents(self) -> None:
 		for intent_name, intent_value in self.window_stream.poll_events():
 			if intent_name == 'camera_id' and self.camera_switch:
 				self.camera_switch.request(intent_value)
+			elif intent_name == 'output_blackout':
+				toggle_output_blackout()
 		if self.window_stream.has_window_closed():
 			self.is_running = False
 
@@ -738,6 +763,7 @@ def acquire_shared_window_stream(width : int, height : int, fps : Fps, is_fullsc
 			SHARED_WINDOW_STREAM = WindowStream(width, height, fps, OUTPUT_WINDOW_TITLE, is_fullscreen, window_display, window_resolution = window_resolution, is_high_dpi = is_high_dpi)
 			SHARED_WINDOW_STREAM.clear()
 		sync_window_hidden(SHARED_WINDOW_STREAM)
+		sync_output_blackout(SHARED_WINDOW_STREAM)
 		# Reopened here when it was closed by hand, so the option stays what the control window follows
 		if is_control:
 			SHARED_WINDOW_STREAM.open_control()
@@ -797,6 +823,13 @@ def set_shared_window_hidden() -> None:
 	with SHARED_WINDOW_LOCK:
 		if SHARED_WINDOW_STREAM and not SHARED_WINDOW_STREAM.has_window_closed():
 			sync_window_hidden(SHARED_WINDOW_STREAM)
+
+
+# The black screen button, whether or not a stream runs; a running stream's key thread follows too
+def set_shared_window_blackout() -> None:
+	with SHARED_WINDOW_LOCK:
+		if SHARED_WINDOW_STREAM and not SHARED_WINDOW_STREAM.has_window_closed():
+			sync_output_blackout(SHARED_WINDOW_STREAM)
 
 
 # The window resolution option resizes the open shared window right away, whether or not a stream runs
@@ -951,14 +984,17 @@ def apply_window_intents(window_stream : WindowStream, camera_switch : Any = Non
 		# hidden window has no focus. Two keys rather than one toggle, like A, S and D
 		elif intent_name == 'window_hidden':
 			state_manager.set_item('webcam_window_hidden', bool(intent_value))
+		elif intent_name == 'output_blackout':
+			toggle_output_blackout()
 		elif intent_name == 'overlay_mode':
 			if intent_value in WEBCAM_PERFORMANCE_OVERLAYS:
 				state_manager.set_item('webcam_performance_overlay', intent_value)
 			else:
 				logger.debug('unknown overlay mode ' + str(intent_value) + ' was ignored', __name__)
 
-	# Also follows the browser checkbox, which only writes the state
+	# Also follows the browser checkbox and button, which only write the state
 	sync_window_hidden(window_stream)
+	sync_output_blackout(window_stream)
 
 	# The on screen display is part of the overlay, so a run with the overlay off keeps a clean frame
 	# and never names the face it switched to, unless the face picture was asked for on the output
@@ -980,6 +1016,18 @@ def sync_window_hidden(window_stream : WindowStream) -> None:
 	is_hidden = bool(state_manager.get_item('webcam_window_hidden'))
 	if is_hidden != window_stream.is_hidden:
 		window_stream.set_hidden(is_hidden)
+
+
+# B in any window and the browser button. The state is what counts, as with hiding: the window mode
+# applies it in the window processes (sync_output_blackout), every other mode in the frame itself
+def toggle_output_blackout() -> None:
+	state_manager.set_item('webcam_output_blackout', not state_manager.get_item('webcam_output_blackout'))
+
+
+def sync_output_blackout(window_stream : WindowStream) -> None:
+	is_blackout = bool(state_manager.get_item('webcam_output_blackout'))
+	if is_blackout != window_stream.is_blackout:
+		window_stream.set_blackout(is_blackout)
 
 
 # Reads and applies the stream's keys on a thread of its own. Read between delivered frames, as they

@@ -12,6 +12,11 @@ OSD_MARGIN = 12
 # width of a portrait one - so it keeps the same presence whatever the output resolution is
 OSD_PREVIEW_DIVISOR = 3
 OSD_PREVIEW_GAP = 6
+# Stands in for the last drawn sequence while the black screen is up, so it is presented once and
+# again only after a resize, never once per frame
+BLACKOUT_SEQUENCE = -2
+BLACKOUT_MARK_TEXT = 'OUTPUT IS BLACK (B RESTORES)'
+BLACKOUT_MARK_COLOR = (255, 64, 64)
 
 
 def resolve_face_index(pygame : Any, key : int) -> Optional[int]:
@@ -575,6 +580,10 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 	osd_preview_size = resolve_osd_preview_size(width, height)
 	osd_expires_at = 0.0
 	overlay_patches : List[Tuple[int, int, Any]] = []
+	# B, the black screen. An output window (and its mirror) draws black and nothing else, overlay and
+	# face switch display included; a control window goes on showing the live frame, marked
+	is_blackout = False
+	blackout_mark_surface = None
 	is_closing = False
 
 	try:
@@ -632,6 +641,9 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 						intent_queue.put(('overlay_mode', overlay_mode, time.monotonic()))
 					elif window_hidden is not None:
 						intent_queue.put(('window_hidden', window_hidden, time.monotonic()))
+					# One key, so a toggle: the parent owns the state and flips it
+					elif event.key == pygame.K_b:
+						intent_queue.put(('output_blackout', None, time.monotonic()))
 					elif event.key == pygame.K_LEFT:
 						intent_queue.put(('face_step', -1, time.monotonic()))
 					elif event.key == pygame.K_RIGHT:
@@ -663,6 +675,11 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 						window_output.set_hidden(bool(received_status.get('window_hidden')))
 						last_sequence = -1
 					continue
+				# B or the browser button, through the parent
+				if 'window_blackout' in received_status:
+					is_blackout = bool(received_status.get('window_blackout'))
+					last_sequence = -1
+					continue
 				# The window resolution option changed while the window is open
 				if 'window_resolution' in received_status:
 					window_output.set_window_resolution(str(received_status.get('window_resolution')))
@@ -693,6 +710,15 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 			if getattr(window_output, 'is_hidden', False):
 				frame_event.wait(0.005)
 				frame_event.clear()
+			# The shared frames go on arriving and are simply not drawn, so restoring is instant
+			elif is_blackout and not is_control:
+				if last_sequence != BLACKOUT_SEQUENCE:
+					last_sequence = BLACKOUT_SEQUENCE
+					canvas_surface.fill((0, 0, 0))
+					window_output.present(canvas_surface)
+				else:
+					frame_event.wait(0.005)
+					frame_event.clear()
 			elif current_sequence != last_sequence and current_sequence > 0:
 				last_sequence = current_sequence
 				frame_slot = (current_sequence - 1) % FRAME_SLOT_COUNT
@@ -716,6 +742,11 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 						preview_surface = resolve_osd_preview(pygame, osd_previews, status.get('source_face_path'), osd_preview_size)
 						if preview_surface:
 							canvas_surface.blit(preview_surface, (OSD_MARGIN, OSD_MARGIN + text_surface.get_height() + OSD_PREVIEW_GAP))
+					# Kept up for as long as the output is black, so the operator cannot forget it
+					if is_blackout and is_control:
+						if not blackout_mark_surface:
+							blackout_mark_surface = osd_font.render(BLACKOUT_MARK_TEXT, True, BLACKOUT_MARK_COLOR, (0, 0, 0))
+						canvas_surface.blit(blackout_mark_surface, (OSD_MARGIN, height - OSD_MARGIN - blackout_mark_surface.get_height()))
 					window_output.present(canvas_surface)
 				finally:
 					# The surface holds the shared buffer, which cannot be closed while it is exported

@@ -290,6 +290,8 @@ LOCALES : Locales =\
 			'webcam_mirror_window_display_dropdown': 'MIRROR WINDOW DISPLAY',
 			'webcam_face_preview_window_dropdown': 'FACE SWITCH PICTURE SHOWN IN',
 			'webcam_window_hidden_checkbox': 'HIDE OUTPUT WINDOW (H HIDES, J SHOWS)',
+			'webcam_blackout_button': 'BLACK SCREEN (B)',
+			'webcam_blackout_active_button': 'OUTPUT IS BLACK - CLICK OR PRESS B TO RESTORE',
 			'webcam_raw_window_checkbox': 'SHOW RAW CAMERA IN SEPARATE WINDOW',
 			'webcam_raw_window_fullscreen_checkbox': 'CAMERA WINDOW FULLSCREEN',
 			'webcam_raw_window_display_dropdown': 'CAMERA WINDOW DISPLAY',

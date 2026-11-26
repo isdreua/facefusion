@@ -15,15 +15,16 @@ from facefusion.types import Fps, VisionFrame, WebcamMode
 from facefusion.uis.components.webcam_options import get_local_camera_ids, update_source_face_gallery
 from facefusion.uis.core import get_ui_component
 from facefusion.uis.types import File
-from facefusion.vision import fit_cover_frame, pack_resolution, restrict_frame, unpack_resolution
+from facefusion.vision import create_blackout_frame, fit_cover_frame, pack_resolution, restrict_frame, unpack_resolution
 from facefusion.webcam_config import append_source_face_uploads, load_webcam_config, normalize_webcam_resolution
-from facefusion.window_output import SharedWindowTransport, WindowIntentPump, acquire_idle_camera_window, acquire_shared_camera_window, acquire_shared_window_stream, open_raw_camera_view, release_shared_camera_window, has_window_output, log_window_output_requirement, release_shared_window_stream
+from facefusion.window_output import SharedWindowTransport, WindowIntentPump, acquire_idle_camera_window, acquire_shared_camera_window, acquire_shared_window_stream, open_raw_camera_view, release_shared_camera_window, has_window_output, log_window_output_requirement, release_shared_window_stream, set_shared_window_blackout, toggle_output_blackout
 
 SOURCE_FILE : Optional[gradio.File] = None
 WEBCAM_IMAGE : Optional[gradio.Image] = None
 WEBCAM_START_BUTTON : Optional[gradio.Button] = None
 WEBCAM_STOP_BUTTON : Optional[gradio.Button] = None
 WEBCAM_CAMERA_TIMER : Optional[gradio.Timer] = None
+WEBCAM_BLACKOUT_BUTTON : Optional[gradio.Button] = None
 
 
 def render() -> None:
@@ -32,6 +33,7 @@ def render() -> None:
 	global WEBCAM_START_BUTTON
 	global WEBCAM_STOP_BUTTON
 	global WEBCAM_CAMERA_TIMER
+	global WEBCAM_BLACKOUT_BUTTON
 
 	# Starts and stays empty: it is an intake for adding faces, and configured source paths already
 	# show up in the gallery as a selectable face
@@ -54,6 +56,14 @@ def render() -> None:
 		value = translator.get('uis.stop_button'),
 		size = 'sm',
 		visible = False
+	)
+	# Black output in every mode, overlay included, with or without a stream; B in any window does the
+	# same. Red while black, and kept in step with B by the camera timer below
+	state_manager.init_item('webcam_output_blackout', False)
+	WEBCAM_BLACKOUT_BUTTON = gradio.Button(
+		value = resolve_blackout_label(),
+		variant = resolve_blackout_variant(),
+		size = 'sm'
 	)
 	# The server cannot push to the page, so the page asks: a camera switched with Ctrl+0-9 (or one
 	# being waited for) shows up in the camera dropdown within half a second
@@ -91,10 +101,42 @@ def listen() -> None:
 		webcam_device_id_dropdown.change(switch_running_camera, inputs = webcam_device_id_dropdown)
 		if WEBCAM_CAMERA_TIMER:
 			WEBCAM_CAMERA_TIMER.tick(sync_camera_dropdown, inputs = webcam_device_id_dropdown, outputs = webcam_device_id_dropdown)
+	if WEBCAM_BLACKOUT_BUTTON:
+		WEBCAM_BLACKOUT_BUTTON.click(toggle_blackout, outputs = WEBCAM_BLACKOUT_BUTTON)
+		if WEBCAM_CAMERA_TIMER:
+			WEBCAM_CAMERA_TIMER.tick(sync_blackout_button, inputs = WEBCAM_BLACKOUT_BUTTON, outputs = WEBCAM_BLACKOUT_BUTTON)
 	camera_window_inputs = resolve_camera_window_inputs()
 	if camera_window_inputs:
 		for camera_window_component in camera_window_inputs[:4]:
 			camera_window_component.change(update_camera_window, inputs = camera_window_inputs)
+
+
+def resolve_blackout_label() -> str:
+	if state_manager.get_item('webcam_output_blackout'):
+		return translator.get('uis.webcam_blackout_active_button')
+	return translator.get('uis.webcam_blackout_button')
+
+
+def resolve_blackout_variant() -> str:
+	if state_manager.get_item('webcam_output_blackout'):
+		return 'stop'
+	return 'secondary'
+
+
+# The open output window switches at once; a running stream's frames and key thread follow the state
+def toggle_blackout() -> gradio.Button:
+	toggle_output_blackout()
+	set_shared_window_blackout()
+	return gradio.Button(value = resolve_blackout_label(), variant = resolve_blackout_variant())
+
+
+# Shows what B did. Compared against the label the page has, so an unchanged button is not resent
+def sync_blackout_button(blackout_label : str) -> gradio.Button:
+	if blackout_label == resolve_blackout_label():
+		if hasattr(gradio, 'skip'):
+			return gradio.skip()
+		return gradio.Button()
+	return gradio.Button(value = resolve_blackout_label(), variant = resolve_blackout_variant())
 
 
 # The checkbox values are passed in rather than read from state: their own change handlers write the
@@ -275,6 +317,10 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 				if control_overlay and is_control_open:
 					control_overlay.submit(capture_time, overlay_mode, is_duplicate, timing)
 
+				# The window mode blacks out in its window processes, which keeps the control window live
+				if webcam_mode != 'window' and state_manager.get_item('webcam_output_blackout'):
+					capture_vision_frame = create_blackout_frame(capture_vision_frame)
+					generated_vision_frame = create_blackout_frame(generated_vision_frame) if generated_vision_frame is not None else None
 				if webcam_mode == 'inline':
 					if inline_preview_resolution != 'native':
 						capture_vision_frame = restrict_frame(capture_vision_frame, unpack_resolution(inline_preview_resolution))

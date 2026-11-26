@@ -259,6 +259,13 @@ def fit_contain_frame(vision_frame : VisionFrame, resolution : Resolution) -> Vi
 	return temp_vision_frame
 
 
+# The black screen for outputs that carry the frame itself (udp, v4l2, inline). Taken after the overlay
+# is drawn, so the overlay goes black with it. numpy.zeros asks the system for zeroed pages, so this is
+# far cheaper than writing a frame
+def create_blackout_frame(vision_frame : VisionFrame) -> VisionFrame:
+	return numpy.zeros_like(vision_frame)
+
+
 def fit_cover_frame(vision_frame : VisionFrame, resolution : Resolution) -> VisionFrame:
 	cover_width, cover_height = resolution
 	if vision_frame.shape[:2] == (cover_height, cover_width):

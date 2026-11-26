@@ -53,6 +53,7 @@ def run() -> int:
 	state_manager.init_item('webcam_face_preview_window', webcam_config.get('webcam_face_preview_window'))
 	# A live switch, not a setting: every run starts with the window shown
 	state_manager.init_item('webcam_window_hidden', False)
+	state_manager.init_item('webcam_output_blackout', False)
 	state_manager.init_item('webcam_frame_generation', webcam_config.get('webcam_frame_generation'))
 	state_manager.init_item('webcam_face_enhancer_worker_count', webcam_config.get('webcam_face_enhancer_worker_count'))
 	apply_stream_face_selector_mode()
@@ -122,6 +123,10 @@ def run() -> int:
 			# thread, which draws the boxes the output leaves out
 			if control_overlay and is_control_open:
 				control_overlay.submit(capture_time, overlay_mode, is_duplicate, timing)
+			# The window mode blacks out in its window processes, which keeps the control window live
+			if not window_stream and state_manager.get_item('webcam_output_blackout'):
+				capture_vision_frame = create_blackout_frame(capture_vision_frame)
+				generated_vision_frame = create_blackout_frame(generated_vision_frame) if generated_vision_frame is not None else None
 			stream_writer.submit(capture_vision_frame, timing, generated_vision_frame)
 			if window_intent_pump and window_intent_pump.has_stopped():
 				break

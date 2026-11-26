@@ -90,6 +90,8 @@ def run() -> int:
 			window_stream = WindowStream(output_width, output_height, output_fps, OUTPUT_WINDOW_TITLE, webcam_config.get('webcam_window_fullscreen'), webcam_config.get('webcam_window_display'), window_resolution = webcam_config.get('webcam_window_resolution'), is_high_dpi = webcam_config.get('webcam_window_high_dpi'))
 			if webcam_config.get('webcam_control_window'):
 				window_stream.open_control()
+			if webcam_config.get('webcam_mirror_window'):
+				window_stream.open_mirror(webcam_config.get('webcam_mirror_window_display'), webcam_config.get('webcam_mirror_window_fullscreen'))
 			control_overlay = ControlOverlay(window_stream, output_width, output_height)
 			stream_writer = LatestFrameWriter(lambda: window_stream, output_width, output_height, False, output_fps, output_fps != webcam_fps)
 		else:

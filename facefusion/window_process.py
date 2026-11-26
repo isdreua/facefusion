@@ -552,14 +552,17 @@ def probe_displays(result_queue : Any) -> None:
 # A control window (is_control) is never fullscreen and never pinned: it ignores F11 and the display and fullscreen settings, and Esc simply closes it.
 # Every other key works the same, so the stream can be controlled from either window
 # The frames are RGB, or BGR (pixel_format) for the camera window, which is handed the camera's own
-# frame as captured rather than a converted copy of it
+# frame as captured rather than a converted copy of it. The output's mirror is this same window, not
+# in control mode, reading the output's shared frames: it gets no window_hidden, so H hides only the
+# output, and the parent ignores its 'closed', so closing it ends only the mirror
 def run_window(shared_name : str, width : int, height : int, fps : float, title : str, is_fullscreen : bool, window_display : int, sequence : Any, frame_event : Any, stop_event : Any, intent_queue : Any, status_queue : Any, is_control : bool = False, pixel_format : str = 'RGB', window_resolution : str = 'native', is_high_dpi : bool = False) -> None:
 	import os
 	import time
 	from multiprocessing import shared_memory
 
 	os.environ.setdefault('PYGAME_HIDE_SUPPORT_PROMPT', '1')
-	# Only the output window; the control and camera windows are for watching and stay cheap
+	# Only the output window and its mirror; the control and camera windows are for watching and stay
+	# cheap
 	is_high_dpi = bool(is_high_dpi) and not is_control
 	prepare_native_resolution(is_high_dpi)
 

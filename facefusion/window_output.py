@@ -127,8 +127,10 @@ class WindowStream:
 		self.process.start()
 		self.fps = fps
 		self.title = title
-		self.control_window : Optional[ControlWindow] = None
+		self.control_window : Optional[CompanionWindow] = None
 		self.control_lock = threading.Lock()
+		self.mirror_window : Optional[CompanionWindow] = None
+		self.mirror_lock = threading.Lock()
 
 	# The reader only ever draws the slot of an already bumped sequence, so the frame on screen is
 	# never the one being written. The lock is uncontended on the hot path: it only keeps a close from
@@ -152,6 +154,9 @@ class WindowStream:
 		control_window = self.control_window
 		if control_window:
 			control_window.frame_event.set()
+		mirror_window = self.mirror_window
+		if mirror_window:
+			mirror_window.frame_event.set()
 
 	def poll_events(self) -> List[Tuple[str, Any]]:
 		window_intents : List[Tuple[str, Any]] = []
@@ -167,7 +172,7 @@ class WindowStream:
 
 		if not self.process.is_alive():
 			self.is_window_closed = True
-		return window_intents + self.poll_control_events()
+		return window_intents + self.poll_control_events() + self.poll_mirror_events()
 
 	# The control window's keys count as if pressed in this window. Closing the control window closes
 	# only that, so it is not passed on as a 'closed' that would end the stream
@@ -179,6 +184,17 @@ class WindowStream:
 			if is_control_closed:
 				self.control_window.close()
 				self.control_window = None
+			return window_intents
+
+	# The same for the mirror: its keys count as pressed here, and closing it closes only the mirror
+	def poll_mirror_events(self) -> List[Tuple[str, Any]]:
+		with self.mirror_lock:
+			if not self.mirror_window:
+				return []
+			window_intents, is_mirror_closed = self.mirror_window.poll_events()
+			if is_mirror_closed:
+				self.mirror_window.close()
+				self.mirror_window = None
 			return window_intents
 
 	# A second window for watching and steering the stream: always windowed, never pinned to a
@@ -194,7 +210,7 @@ class WindowStream:
 				self.control_window = None
 			if self.is_closed or self.is_window_closed:
 				return
-			self.control_window = ControlWindow(self, CONTROL_WINDOW_TITLE)
+			self.control_window = CompanionWindow(self, CONTROL_WINDOW_TITLE, True)
 
 	def close_control(self) -> None:
 		with self.control_lock:
@@ -206,6 +222,43 @@ class WindowStream:
 		control_window = self.control_window
 		return bool(control_window and control_window.is_open())
 
+	# A second output window, on a display of its own and fullscreen or not on its own, showing exactly
+	# what this window shows. Like the control window it draws from this window's shared frames, so
+	# the stream copies nothing more for it: each frame costs the stream one event set, and the
+	# drawing happens in the mirror's own process. An open mirror is moved and switched in place
+	def open_mirror(self, window_display : int = 0, is_fullscreen : bool = False) -> None:
+		with self.mirror_lock:
+			if self.mirror_window and self.mirror_window.is_open():
+				self.mirror_window.set_display(window_display)
+				self.mirror_window.set_fullscreen(is_fullscreen)
+				return
+			if self.mirror_window:
+				self.mirror_window.close()
+				self.mirror_window = None
+			if self.is_closed or self.is_window_closed:
+				return
+			self.mirror_window = CompanionWindow(self, MIRROR_WINDOW_TITLE, False, is_fullscreen, window_display)
+
+	def close_mirror(self) -> None:
+		with self.mirror_lock:
+			if self.mirror_window:
+				self.mirror_window.close()
+				self.mirror_window = None
+
+	def has_mirror(self) -> bool:
+		mirror_window = self.mirror_window
+		return bool(mirror_window and mirror_window.is_open())
+
+	def set_mirror_display(self, window_display : int) -> None:
+		mirror_window = self.mirror_window
+		if mirror_window:
+			mirror_window.set_display(window_display)
+
+	def set_mirror_fullscreen(self, is_fullscreen : bool) -> None:
+		mirror_window = self.mirror_window
+		if mirror_window:
+			mirror_window.set_fullscreen(is_fullscreen)
+
 	# Patches as (x, y, width, height, RGBA bytes) in frame coordinates; an empty list clears them
 	def push_overlay_patches(self, overlay_patches : List[Tuple[int, int, int, int, bytes]]) -> None:
 		control_window = self.control_window
@@ -215,7 +268,8 @@ class WindowStream:
 	# Only sent when something actually changed, so the window's on screen display appears on a
 	# switch rather than being redrawn for every frame. The control window gets it always; the output
 	# only when is_output_status. The face picture goes to the output only with is_output_preview: the
-	# window draws the picture from source_face_path, so the output's copy goes without it
+	# window draws the picture from source_face_path, so the output's copy goes without it. The mirror
+	# gets what the output gets, so the two always show the same
 	def push_status(self, source_face_names : List[str], source_face_name : Optional[str], source_face_path : Optional[str], is_bypassed : bool, is_output_status : bool = True, is_output_preview : bool = False) -> None:
 		status = { 'source_face_names': list(source_face_names), 'source_face_name': source_face_name, 'source_face_path': source_face_path, 'is_bypassed': is_bypassed }
 
@@ -224,7 +278,12 @@ class WindowStream:
 			control_window.push_status(status)
 		if not is_output_preview:
 			status = dict(status, source_face_path = None)
-		if not is_output_status or status == self.last_status or self.is_closed or self.is_window_closed:
+		if not is_output_status:
+			return
+		mirror_window = self.mirror_window
+		if mirror_window:
+			mirror_window.push_status(status)
+		if status == self.last_status or self.is_closed or self.is_window_closed:
 			return
 		self.last_status = status
 		try:
@@ -265,9 +324,12 @@ class WindowStream:
 		except Exception:
 			pass
 
-	# native or output (see WINDOW_RESOLUTIONS), applied to the open window in place
+	# native or output (see WINDOW_RESOLUTIONS), applied to the open window and its mirror in place
 	def set_window_resolution(self, window_resolution : str) -> None:
 		self.window_resolution = resolve_window_resolution(window_resolution)
+		mirror_window = self.mirror_window
+		if mirror_window:
+			mirror_window.set_window_resolution(self.window_resolution)
 		if self.is_closed or self.is_window_closed:
 			return
 		try:
@@ -294,8 +356,9 @@ class WindowStream:
 		if self.is_closed:
 			return
 		self.is_closed = True
-		# Before the shared memory goes, since the control window reads from it
+		# Before the shared memory goes, since the control and mirror windows read from it
 		self.close_control()
+		self.close_mirror()
 		self.stop_event.set()
 		self.frame_event.set()
 		self.process.join(2.0)
@@ -323,13 +386,15 @@ class WindowStream:
 # beside it and picked by title in capture software
 OUTPUT_WINDOW_TITLE = 'FaceFusion OUTPUT'
 CONTROL_WINDOW_TITLE = 'FaceFusion CONTROL'
+MIRROR_WINDOW_TITLE = 'FaceFusion MIRROR'
 
 
-# The process behind WindowStream.open_control: the same window process in control mode. It reads the
-# frames and the sequence of the window it belongs to, and has its own events and queues, so each
-# window wakes on its own and the two never race for one event
-class ControlWindow:
-	def __init__(self, window_stream : WindowStream, title : str):
+# The process behind WindowStream.open_control and open_mirror: the same window process, in control
+# mode (is_control) or as a plain output window. It reads the frames and the sequence of the window it
+# belongs to, and has its own events and queues, so each window wakes on its own and none race for
+# one event. The mirror takes the output's window quality and high dpi; a control window ignores both
+class CompanionWindow:
+	def __init__(self, window_stream : WindowStream, title : str, is_control : bool, is_fullscreen : bool = False, window_display : int = 0):
 		context = multiprocessing.get_context('spawn')
 		self.frame_event = context.Event()
 		self.stop_event = context.Event()
@@ -337,7 +402,10 @@ class ControlWindow:
 		self.status_queue = context.Queue()
 		self.last_status : Optional[Dict[str, Any]] = None
 		self.is_closed = False
-		self.process = context.Process(target = run_window, args = (window_stream.shared_frames.name, window_stream.width, window_stream.height, float(window_stream.fps), title, False, 0, window_stream.sequence, self.frame_event, self.stop_event, self.intent_queue, self.status_queue, True), daemon = True)
+		self.is_fullscreen = bool(is_fullscreen) and not is_control
+		self.window_display = 0 if is_control else int(window_display or 0)
+		self.window_resolution = window_stream.window_resolution
+		self.process = context.Process(target = run_window, args = (window_stream.shared_frames.name, window_stream.width, window_stream.height, float(window_stream.fps), title, self.is_fullscreen, self.window_display, window_stream.sequence, self.frame_event, self.stop_event, self.intent_queue, self.status_queue, bool(is_control), 'RGB', self.window_resolution, window_stream.is_high_dpi), daemon = True)
 		self.process.start()
 
 	def is_open(self) -> bool:
@@ -371,6 +439,24 @@ class ControlWindow:
 			self.status_queue.put_nowait(message)
 		except Exception:
 			pass
+
+	# Only a change is sent, since a move or fullscreen switch makes the window wait for it to settle.
+	# A control window drops these messages
+	def set_display(self, window_display : int) -> None:
+		window_display = int(window_display or 0)
+		if window_display != self.window_display:
+			self.window_display = window_display
+			self.push_message({ 'window_display': window_display })
+
+	def set_fullscreen(self, is_fullscreen : bool) -> None:
+		if bool(is_fullscreen) != self.is_fullscreen:
+			self.is_fullscreen = bool(is_fullscreen)
+			self.push_message({ 'window_fullscreen': self.is_fullscreen })
+
+	def set_window_resolution(self, window_resolution : str) -> None:
+		if window_resolution != self.window_resolution:
+			self.window_resolution = window_resolution
+			self.push_message({ 'window_resolution': window_resolution })
 
 	def close(self) -> None:
 		if self.is_closed:
@@ -628,7 +714,7 @@ SHARED_WINDOW_STATE : Dict[str, bool] = { 'in_use': False, 'close_pending': Fals
 # Reused when it is still open at the size asked for. The shared memory is sized at creation, so
 # another output size needs another window. Keys pressed while no stream was reading them are
 # dropped, or the next start would replay them as face switches
-def acquire_shared_window_stream(width : int, height : int, fps : Fps, is_fullscreen : bool, window_display : int = 0, is_control : bool = False, window_resolution : str = 'native', is_high_dpi : bool = False) -> WindowStream:
+def acquire_shared_window_stream(width : int, height : int, fps : Fps, is_fullscreen : bool, window_display : int = 0, is_control : bool = False, window_resolution : str = 'native', is_high_dpi : bool = False, is_mirror : bool = False, mirror_display : int = 0, is_mirror_fullscreen : bool = False) -> WindowStream:
 	global SHARED_WINDOW_STREAM
 
 	with SHARED_WINDOW_LOCK:
@@ -657,6 +743,11 @@ def acquire_shared_window_stream(width : int, height : int, fps : Fps, is_fullsc
 			SHARED_WINDOW_STREAM.open_control()
 		else:
 			SHARED_WINDOW_STREAM.close_control()
+		# The same for the mirror, which is also moved or switched here when its settings changed
+		if is_mirror:
+			SHARED_WINDOW_STREAM.open_mirror(mirror_display, is_mirror_fullscreen)
+		else:
+			SHARED_WINDOW_STREAM.close_mirror()
 		SHARED_WINDOW_STATE['close_pending'] = False
 		return SHARED_WINDOW_STREAM
 
@@ -669,6 +760,29 @@ def set_shared_control_window(is_control : bool) -> None:
 				SHARED_WINDOW_STREAM.open_control()
 			else:
 				SHARED_WINDOW_STREAM.close_control()
+
+
+# The mirror checkbox opens or closes the mirror of the open shared window right away
+def set_shared_mirror_window(is_mirror : bool, mirror_display : int = 0, is_mirror_fullscreen : bool = False) -> None:
+	with SHARED_WINDOW_LOCK:
+		if SHARED_WINDOW_STREAM and not SHARED_WINDOW_STREAM.has_window_closed():
+			if is_mirror:
+				SHARED_WINDOW_STREAM.open_mirror(mirror_display, is_mirror_fullscreen)
+			else:
+				SHARED_WINDOW_STREAM.close_mirror()
+
+
+# The mirror's own fullscreen checkbox and display dropdown, applied to an open mirror in place
+def set_shared_mirror_fullscreen(is_mirror_fullscreen : bool) -> None:
+	with SHARED_WINDOW_LOCK:
+		if SHARED_WINDOW_STREAM:
+			SHARED_WINDOW_STREAM.set_mirror_fullscreen(is_mirror_fullscreen)
+
+
+def move_shared_mirror_window(mirror_display : int) -> None:
+	with SHARED_WINDOW_LOCK:
+		if SHARED_WINDOW_STREAM:
+			SHARED_WINDOW_STREAM.set_mirror_display(mirror_display)
 
 
 # The fullscreen checkbox switches the open shared window right away, whether or not a stream runs

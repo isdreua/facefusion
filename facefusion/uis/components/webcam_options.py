@@ -11,7 +11,7 @@ from facefusion.streamer import apply_stream_source_paths, resolve_source_face_g
 from facefusion.types import WebcamMode
 from facefusion.uis.core import get_ui_component, register_ui_component
 from facefusion.webcam_config import DEFAULT_SOURCE_FACE_NAME, NO_SOURCE_FACE_NAME, WEBCAM_BYPASSED_PROCESSORS, WEBCAM_CAMERA_BACKENDS, WEBCAM_CONTENT_ANALYSIS_INTERVALS, WEBCAM_FRAME_GENERATION_MODES, WEBCAM_FRAME_SKIPPING_MODES, WEBCAM_INLINE_PREVIEW_RESOLUTIONS, WEBCAM_OUTPUT_RESOLUTIONS, WEBCAM_PERFORMANCE_OVERLAYS, WEBCAM_STATE_KEYS, WEBCAM_FACE_PREVIEW_WINDOWS, WEBCAM_WINDOW_DISPLAYS, WEBCAM_WINDOW_RESOLUTIONS, format_webcam_config, normalize_webcam_resolution, get_source_faces, load_webcam_config, resolve_source_face_directory
-from facefusion.window_output import detect_window_displays, has_window_output, log_window_output_requirement, move_raw_camera_view, move_shared_window_stream, set_camera_window_fullscreen, set_shared_control_window, set_shared_window_fullscreen, set_shared_window_hidden, set_shared_window_resolution
+from facefusion.window_output import detect_window_displays, has_window_output, log_window_output_requirement, move_raw_camera_view, move_shared_mirror_window, move_shared_window_stream, set_camera_window_fullscreen, set_shared_control_window, set_shared_mirror_fullscreen, set_shared_mirror_window, set_shared_window_fullscreen, set_shared_window_hidden, set_shared_window_resolution
 
 WEBCAM_DEVICE_ID_DROPDOWN : Optional[gradio.Dropdown] = None
 # The camera choices the dropdown was last given, so the camera sync can add one it lacks
@@ -31,6 +31,9 @@ WEBCAM_CAMERA_BACKEND_DROPDOWN : Optional[gradio.Dropdown] = None
 WEBCAM_OUTPUT_RESOLUTION_DROPDOWN : Optional[gradio.Dropdown] = None
 WEBCAM_WINDOW_FULLSCREEN_CHECKBOX : Optional[gradio.Checkbox] = None
 WEBCAM_CONTROL_WINDOW_CHECKBOX : Optional[gradio.Checkbox] = None
+WEBCAM_MIRROR_WINDOW_CHECKBOX : Optional[gradio.Checkbox] = None
+WEBCAM_MIRROR_WINDOW_FULLSCREEN_CHECKBOX : Optional[gradio.Checkbox] = None
+WEBCAM_MIRROR_WINDOW_DISPLAY_DROPDOWN : Optional[gradio.Dropdown] = None
 WEBCAM_FACE_PREVIEW_WINDOW_DROPDOWN : Optional[gradio.Dropdown] = None
 WEBCAM_WINDOW_HIDDEN_CHECKBOX : Optional[gradio.Checkbox] = None
 WEBCAM_WINDOW_HIDDEN_TIMER : Optional[gradio.Timer] = None
@@ -65,6 +68,9 @@ def render() -> None:
 	global WEBCAM_OUTPUT_RESOLUTION_DROPDOWN
 	global WEBCAM_WINDOW_FULLSCREEN_CHECKBOX
 	global WEBCAM_CONTROL_WINDOW_CHECKBOX
+	global WEBCAM_MIRROR_WINDOW_CHECKBOX
+	global WEBCAM_MIRROR_WINDOW_FULLSCREEN_CHECKBOX
+	global WEBCAM_MIRROR_WINDOW_DISPLAY_DROPDOWN
 	global WEBCAM_FACE_PREVIEW_WINDOW_DROPDOWN
 	global WEBCAM_WINDOW_HIDDEN_CHECKBOX
 	global WEBCAM_WINDOW_HIDDEN_TIMER
@@ -105,6 +111,9 @@ def render() -> None:
 	state_manager.init_item('webcam_window_resolution', webcam_config.get('webcam_window_resolution'))
 	state_manager.init_item('webcam_window_high_dpi', webcam_config.get('webcam_window_high_dpi'))
 	state_manager.init_item('webcam_control_window', webcam_config.get('webcam_control_window'))
+	state_manager.init_item('webcam_mirror_window', webcam_config.get('webcam_mirror_window'))
+	state_manager.init_item('webcam_mirror_window_fullscreen', webcam_config.get('webcam_mirror_window_fullscreen'))
+	state_manager.init_item('webcam_mirror_window_display', webcam_config.get('webcam_mirror_window_display'))
 	state_manager.init_item('webcam_face_preview_window', webcam_config.get('webcam_face_preview_window'))
 	state_manager.init_item('webcam_window_hidden', False)
 	state_manager.init_item('webcam_raw_window', webcam_config.get('webcam_raw_window'))
@@ -166,6 +175,26 @@ def render() -> None:
 	WEBCAM_CONTROL_WINDOW_CHECKBOX = gradio.Checkbox(
 		label = translator.get('uis.webcam_control_window_checkbox'),
 		value = state_manager.get_item('webcam_control_window'),
+		visible = has_window_output()
+	)
+	# A second output window showing the same frames, for another display: a projector, a stage
+	# screen, a capture card. It draws from the output window's own shared frames, so it costs the
+	# stream no frame copy. Window mode only, since only that has an output window to mirror. Its
+	# fullscreen and display are its own and apply to the open mirror in place
+	WEBCAM_MIRROR_WINDOW_CHECKBOX = gradio.Checkbox(
+		label = translator.get('uis.webcam_mirror_window_checkbox'),
+		value = state_manager.get_item('webcam_mirror_window'),
+		visible = has_window_output()
+	)
+	WEBCAM_MIRROR_WINDOW_FULLSCREEN_CHECKBOX = gradio.Checkbox(
+		label = translator.get('uis.webcam_mirror_window_fullscreen_checkbox'),
+		value = state_manager.get_item('webcam_mirror_window_fullscreen'),
+		visible = has_window_output()
+	)
+	WEBCAM_MIRROR_WINDOW_DISPLAY_DROPDOWN = gradio.Dropdown(
+		label = translator.get('uis.webcam_mirror_window_display_dropdown'),
+		choices = resolve_window_display_choices(window_displays, state_manager.get_item('webcam_mirror_window_display')),
+		value = state_manager.get_item('webcam_mirror_window_display'),
 		visible = has_window_output()
 	)
 	# Which windows show the face picture on a face switch: the control window only, or the output
@@ -328,6 +357,9 @@ def render() -> None:
 	register_ui_component('webcam_window_resolution_radio', WEBCAM_WINDOW_RESOLUTION_RADIO)
 	register_ui_component('webcam_window_high_dpi_checkbox', WEBCAM_WINDOW_HIGH_DPI_CHECKBOX)
 	register_ui_component('webcam_control_window_checkbox', WEBCAM_CONTROL_WINDOW_CHECKBOX)
+	register_ui_component('webcam_mirror_window_checkbox', WEBCAM_MIRROR_WINDOW_CHECKBOX)
+	register_ui_component('webcam_mirror_window_fullscreen_checkbox', WEBCAM_MIRROR_WINDOW_FULLSCREEN_CHECKBOX)
+	register_ui_component('webcam_mirror_window_display_dropdown', WEBCAM_MIRROR_WINDOW_DISPLAY_DROPDOWN)
 	register_ui_component('webcam_face_preview_window_dropdown', WEBCAM_FACE_PREVIEW_WINDOW_DROPDOWN)
 	register_ui_component('webcam_window_hidden_checkbox', WEBCAM_WINDOW_HIDDEN_CHECKBOX)
 	register_ui_component('webcam_raw_window_checkbox', WEBCAM_RAW_WINDOW_CHECKBOX)
@@ -368,6 +400,13 @@ def listen() -> None:
 		WEBCAM_WINDOW_HIGH_DPI_CHECKBOX.change(update_window_high_dpi, inputs = WEBCAM_WINDOW_HIGH_DPI_CHECKBOX)
 	if WEBCAM_CONTROL_WINDOW_CHECKBOX:
 		WEBCAM_CONTROL_WINDOW_CHECKBOX.change(update_control_window, inputs = WEBCAM_CONTROL_WINDOW_CHECKBOX)
+	if WEBCAM_MIRROR_WINDOW_CHECKBOX:
+		WEBCAM_MIRROR_WINDOW_CHECKBOX.change(update_mirror_window, inputs = WEBCAM_MIRROR_WINDOW_CHECKBOX)
+	if WEBCAM_MIRROR_WINDOW_FULLSCREEN_CHECKBOX:
+		WEBCAM_MIRROR_WINDOW_FULLSCREEN_CHECKBOX.change(update_mirror_window_fullscreen, inputs = WEBCAM_MIRROR_WINDOW_FULLSCREEN_CHECKBOX)
+	if WEBCAM_MIRROR_WINDOW_DISPLAY_DROPDOWN:
+		WEBCAM_MIRROR_WINDOW_DISPLAY_DROPDOWN.change(update_mirror_window_display, inputs = WEBCAM_MIRROR_WINDOW_DISPLAY_DROPDOWN)
+		WEBCAM_MIRROR_WINDOW_DISPLAY_DROPDOWN.focus(refresh_mirror_window_display, outputs = WEBCAM_MIRROR_WINDOW_DISPLAY_DROPDOWN)
 	if WEBCAM_FACE_PREVIEW_WINDOW_DROPDOWN:
 		WEBCAM_FACE_PREVIEW_WINDOW_DROPDOWN.change(update_face_preview_window, inputs = WEBCAM_FACE_PREVIEW_WINDOW_DROPDOWN)
 	# input, not change: only a click writes the state, so the sync setting the box cannot write back
@@ -428,16 +467,17 @@ def update_window_high_dpi(window_high_dpi : bool) -> None:
 # Every page load probes the displays again, so a page opened after a display change lists it as it
 # is now. Registered by the layout inside the blocks context
 def listen_load(ui : gradio.Blocks) -> None:
-	if WEBCAM_WINDOW_DISPLAY_DROPDOWN and WEBCAM_RAW_WINDOW_DISPLAY_DROPDOWN and has_window_output():
-		ui.load(refresh_window_displays, outputs = [ WEBCAM_WINDOW_DISPLAY_DROPDOWN, WEBCAM_RAW_WINDOW_DISPLAY_DROPDOWN ])
+	if WEBCAM_WINDOW_DISPLAY_DROPDOWN and WEBCAM_RAW_WINDOW_DISPLAY_DROPDOWN and WEBCAM_MIRROR_WINDOW_DISPLAY_DROPDOWN and has_window_output():
+		ui.load(refresh_window_displays, outputs = [ WEBCAM_WINDOW_DISPLAY_DROPDOWN, WEBCAM_RAW_WINDOW_DISPLAY_DROPDOWN, WEBCAM_MIRROR_WINDOW_DISPLAY_DROPDOWN ])
 
 
-def refresh_window_displays() -> Tuple[gradio.Dropdown, gradio.Dropdown]:
+def refresh_window_displays() -> Tuple[gradio.Dropdown, gradio.Dropdown, gradio.Dropdown]:
 	window_displays = detect_window_displays()
 	return\
 	(
 		gradio.Dropdown(choices = resolve_window_display_choices(window_displays, state_manager.get_item('webcam_window_display'))),
-		gradio.Dropdown(choices = resolve_window_display_choices(window_displays, state_manager.get_item('webcam_raw_window_display')))
+		gradio.Dropdown(choices = resolve_window_display_choices(window_displays, state_manager.get_item('webcam_raw_window_display'))),
+		gradio.Dropdown(choices = resolve_window_display_choices(window_displays, state_manager.get_item('webcam_mirror_window_display')))
 	)
 
 
@@ -449,11 +489,32 @@ def refresh_raw_window_display() -> gradio.Dropdown:
 	return gradio.Dropdown(choices = resolve_window_display_choices(detect_window_displays(), state_manager.get_item('webcam_raw_window_display')))
 
 
+def refresh_mirror_window_display() -> gradio.Dropdown:
+	return gradio.Dropdown(choices = resolve_window_display_choices(detect_window_displays(), state_manager.get_item('webcam_mirror_window_display')))
+
+
 # Opens or closes the control window beside the open output window; without one open, the next one
 # follows it
 def update_control_window(control_window : bool) -> None:
 	state_manager.set_item('webcam_control_window', bool(control_window))
 	set_shared_control_window(bool(control_window))
+
+
+# Opens or closes the mirror beside the open output window, on its own display and fullscreen setting;
+# without an output window open, the next one opens it
+def update_mirror_window(mirror_window : bool) -> None:
+	state_manager.set_item('webcam_mirror_window', bool(mirror_window))
+	set_shared_mirror_window(bool(mirror_window), state_manager.get_item('webcam_mirror_window_display') or 0, bool(state_manager.get_item('webcam_mirror_window_fullscreen')))
+
+
+def update_mirror_window_fullscreen(mirror_window_fullscreen : bool) -> None:
+	state_manager.set_item('webcam_mirror_window_fullscreen', bool(mirror_window_fullscreen))
+	set_shared_mirror_fullscreen(bool(mirror_window_fullscreen))
+
+
+def update_mirror_window_display(mirror_window_display : int) -> None:
+	state_manager.set_item('webcam_mirror_window_display', int(mirror_window_display or 0))
+	move_shared_mirror_window(int(mirror_window_display or 0))
 
 
 # Applied to the open window here; a running stream's key thread follows the state as well
@@ -615,6 +676,9 @@ def generate_config(webcam_device_id : str, webcam_mode : str, webcam_resolution
 		'webcam_window_resolution': state_manager.get_item('webcam_window_resolution') or 'native',
 		'webcam_window_high_dpi': bool(state_manager.get_item('webcam_window_high_dpi')),
 		'webcam_control_window': bool(state_manager.get_item('webcam_control_window')),
+		'webcam_mirror_window': bool(state_manager.get_item('webcam_mirror_window')),
+		'webcam_mirror_window_fullscreen': bool(state_manager.get_item('webcam_mirror_window_fullscreen')),
+		'webcam_mirror_window_display': int(state_manager.get_item('webcam_mirror_window_display') or 0),
 		'webcam_face_preview_window': state_manager.get_item('webcam_face_preview_window') or 'control',
 		'webcam_raw_window': bool(state_manager.get_item('webcam_raw_window')),
 		'webcam_raw_window_fullscreen': bool(state_manager.get_item('webcam_raw_window_fullscreen')),

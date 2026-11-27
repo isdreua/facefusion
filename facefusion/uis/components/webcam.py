@@ -17,6 +17,7 @@ from facefusion.uis.core import get_ui_component
 from facefusion.uis.types import File
 from facefusion.vision import create_blackout_frame, fit_cover_frame, pack_resolution, restrict_frame, unpack_resolution
 from facefusion.webcam_config import append_source_face_uploads, load_webcam_config, normalize_webcam_resolution
+from facefusion.webcam_crop import StreamCrop, describe_webcam_crop_error, fit_webcam_crop_box, format_webcam_crop_size, has_webcam_crop_aspect_ratio, resolve_webcam_crop_box, resolve_webcam_stream_resolution
 from facefusion.window_output import SharedWindowTransport, WindowIntentPump, acquire_idle_camera_window, acquire_shared_camera_window, acquire_shared_window_stream, open_raw_camera_view, release_shared_camera_window, has_window_output, log_window_output_requirement, release_shared_window_stream, set_shared_window_blackout, toggle_output_blackout
 
 SOURCE_FILE : Optional[gradio.File] = None
@@ -93,9 +94,11 @@ def listen() -> None:
 		start_event.then(pre_stop)
 		WEBCAM_STOP_BUTTON.click(stop, cancels = start_event, outputs = WEBCAM_IMAGE)
 		WEBCAM_STOP_BUTTON.click(pre_stop, outputs = [ SOURCE_FILE, WEBCAM_IMAGE, WEBCAM_START_BUTTON, WEBCAM_STOP_BUTTON ])
-	if webcam_mode_radio and webcam_resolution_dropdown and webcam_fps_slider and webcam_output_resolution_dropdown:
-		for window_component in [ webcam_mode_radio, webcam_resolution_dropdown, webcam_output_resolution_dropdown ]:
-			window_component.change(update_window_output, inputs = [ webcam_mode_radio, webcam_resolution_dropdown, webcam_fps_slider, webcam_output_resolution_dropdown ])
+	webcam_crop_size_dropdown = get_ui_component('webcam_crop_size_dropdown')
+	webcam_crop_upscale_checkbox = get_ui_component('webcam_crop_upscale_checkbox')
+	if webcam_mode_radio and webcam_resolution_dropdown and webcam_fps_slider and webcam_output_resolution_dropdown and webcam_crop_size_dropdown and webcam_crop_upscale_checkbox:
+		for window_component in [ webcam_mode_radio, webcam_resolution_dropdown, webcam_output_resolution_dropdown, webcam_crop_size_dropdown, webcam_crop_upscale_checkbox ]:
+			window_component.change(update_window_output, inputs = [ webcam_mode_radio, webcam_resolution_dropdown, webcam_fps_slider, webcam_output_resolution_dropdown, webcam_crop_size_dropdown, webcam_crop_upscale_checkbox ])
 	# Picking another camera while streaming switches it in place, no stop and start needed
 	if webcam_device_id_dropdown:
 		webcam_device_id_dropdown.change(switch_running_camera, inputs = webcam_device_id_dropdown)
@@ -166,10 +169,12 @@ def listen_auto_start(ui : gradio.Blocks) -> None:
 	webcam_execution_thread_count_slider = get_ui_component('webcam_execution_thread_count_slider')
 	webcam_camera_backend_dropdown = get_ui_component('webcam_camera_backend_dropdown')
 	webcam_output_resolution_dropdown = get_ui_component('webcam_output_resolution_dropdown')
+	webcam_crop_size_dropdown = get_ui_component('webcam_crop_size_dropdown')
+	webcam_crop_upscale_checkbox = get_ui_component('webcam_crop_upscale_checkbox')
 
 	# Whether or not the stream starts by itself, a page opened with window mode selected has its window
-	if webcam_mode_radio and webcam_resolution_dropdown and webcam_fps_slider and webcam_output_resolution_dropdown:
-		ui.load(update_window_output, inputs = [ webcam_mode_radio, webcam_resolution_dropdown, webcam_fps_slider, webcam_output_resolution_dropdown ])
+	if webcam_mode_radio and webcam_resolution_dropdown and webcam_fps_slider and webcam_output_resolution_dropdown and webcam_crop_size_dropdown and webcam_crop_upscale_checkbox:
+		ui.load(update_window_output, inputs = [ webcam_mode_radio, webcam_resolution_dropdown, webcam_fps_slider, webcam_output_resolution_dropdown, webcam_crop_size_dropdown, webcam_crop_upscale_checkbox ])
 	# Likewise the camera window, whenever its option is on
 	camera_window_inputs = resolve_camera_window_inputs()
 	if camera_window_inputs:
@@ -237,9 +242,20 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 		logger.error('webcam resolution must be WIDTHxHEIGHT with even sides between 16 and 7680', __name__)
 		return
 	webcam_width, webcam_height = unpack_resolution(webcam_resolution)
-	output_resolution, output_width, output_height = resolve_output_resolution(webcam_resolution, webcam_output_resolution)
-	if webcam_width * output_height != output_width * webcam_height:
-		logger.warn('webcam output resolution ' + output_resolution + ' does not match the aspect ratio of capture resolution ' + webcam_resolution + ', edges will be cropped', __name__)
+	# The crop fields move a box out of bounds back inside, but a start can still come first, as it can
+	# for the resolution, and a config's box is only checked here
+	crop_box = resolve_webcam_crop_box(state_manager.get_item('webcam_crop_size'), state_manager.get_item('webcam_crop_offset_x'), state_manager.get_item('webcam_crop_offset_y'))
+	is_crop_upscale = bool(state_manager.get_item('webcam_crop_upscale'))
+	if crop_box and describe_webcam_crop_error((webcam_width, webcam_height), crop_box):
+		logger.error(describe_webcam_crop_error((webcam_width, webcam_height), crop_box), __name__)
+		return
+	if crop_box and is_crop_upscale and not has_webcam_crop_aspect_ratio((webcam_width, webcam_height), crop_box):
+		logger.warn('webcam crop ' + format_webcam_crop_size(crop_box) + ' does not match the aspect ratio of capture resolution ' + webcam_resolution + ', the upscale will stretch it', __name__)
+	stream_resolution = resolve_webcam_stream_resolution(webcam_resolution, crop_box, is_crop_upscale)
+	stream_width, stream_height = unpack_resolution(stream_resolution)
+	output_resolution, output_width, output_height = resolve_output_resolution(stream_resolution, webcam_output_resolution)
+	if stream_width * output_height != output_width * stream_height:
+		logger.warn('webcam output resolution ' + output_resolution + ' does not match the aspect ratio of ' + stream_resolution + ', edges will be cropped', __name__)
 	# Refused rather than downgraded: falling back to inline would hand back the very encoder the
 	# window exists to remove
 	if webcam_mode == 'window' and not has_window_output():
@@ -294,7 +310,9 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 			# Keys are read on their own thread from here on, so a stalled pipeline cannot hold them back
 			if window_stream:
 				window_intent_pump = WindowIntentPump(window_stream, camera_switch)
-			for capture_vision_frame, capture_time, is_duplicate, timing in multi_process_capture(camera_capture, webcam_fps, webcam_execution_thread_count, (webcam_width, webcam_height), raw_camera_view.submit if raw_camera_view else None, camera_switch, (lambda: not window_intent_pump.has_stopped()) if window_intent_pump else None):
+			# Without the upscale and without a crop the frames pass untouched, so no crop is needed at all
+			stream_crop = StreamCrop((webcam_width, webcam_height), is_crop_upscale, crop_box) if crop_box or is_crop_upscale else None
+			for capture_vision_frame, capture_time, is_duplicate, timing in multi_process_capture(camera_capture, webcam_fps, webcam_execution_thread_count, (webcam_width, webcam_height), raw_camera_view.submit if raw_camera_view else None, camera_switch, (lambda: not window_intent_pump.has_stopped()) if window_intent_pump else None, stream_crop):
 				capture_vision_frame = cv2.cvtColor(capture_vision_frame, cv2.COLOR_BGR2RGB)
 				capture_vision_frame = fit_cover_frame(capture_vision_frame, (output_width, output_height))
 				# Here and not in the workers: this loop sees the frames one at a time in delivery
@@ -345,6 +363,8 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 			clear_camera_pool()
 
 
+# Derived from the resolution the processors get, which is the capture resolution unless a crop is left
+# at its own size (webcam_crop.resolve_webcam_stream_resolution)
 def resolve_output_resolution(webcam_resolution : str, webcam_output_resolution : str) -> Tuple[str, int, int]:
 	webcam_width, webcam_height = unpack_resolution(webcam_resolution)
 
@@ -361,13 +381,19 @@ def resolve_output_resolution(webcam_resolution : str, webcam_output_resolution 
 # Selecting the window mode opens the window and keeps it, so it can be placed and captured before
 # anything streams into it; selecting any other mode closes it. Also run on page load and when the
 # size changes, which reopens it at the size the next start will deliver
-def update_window_output(webcam_mode : WebcamMode, webcam_resolution : str, webcam_fps : Fps, webcam_output_resolution : str) -> None:
+# The crop size and upscale come in as inputs rather than from the state their own handlers write, since
+# gradio does not order two handlers of the same event. The offsets never change the size
+def update_window_output(webcam_mode : WebcamMode, webcam_resolution : str, webcam_fps : Fps, webcam_output_resolution : str, webcam_crop_size : str = 'none', webcam_crop_upscale : bool = True) -> None:
 	if webcam_mode != 'window' or not has_window_output():
 		release_shared_window_stream()
 		return
 	webcam_resolution = normalize_webcam_resolution(webcam_resolution)
 	if webcam_resolution:
-		_, output_width, output_height = resolve_output_resolution(webcam_resolution, webcam_output_resolution)
+		crop_box = resolve_webcam_crop_box(webcam_crop_size, 0, 0)
+		if crop_box:
+			crop_box = fit_webcam_crop_box(unpack_resolution(webcam_resolution), crop_box)
+		stream_resolution = resolve_webcam_stream_resolution(webcam_resolution, crop_box, bool(webcam_crop_upscale))
+		_, output_width, output_height = resolve_output_resolution(stream_resolution, webcam_output_resolution)
 		acquire_shared_window_stream(output_width, output_height, resolve_output_fps(webcam_fps), state_manager.get_item('webcam_window_fullscreen'), state_manager.get_item('webcam_window_display') or 0, bool(state_manager.get_item('webcam_control_window')), state_manager.get_item('webcam_window_resolution') or 'native', bool(state_manager.get_item('webcam_window_high_dpi')), bool(state_manager.get_item('webcam_mirror_window')), state_manager.get_item('webcam_mirror_window_display') or 0, bool(state_manager.get_item('webcam_mirror_window_fullscreen')))
 
 

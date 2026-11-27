@@ -31,6 +31,7 @@ from facefusion.stream_abort import StreamAborted, abort_stale_stream_frame, set
 from facefusion.types import AppContext, AudioFrame, Fps, Mask, Resolution, StreamMode, VisionFrame
 from facefusion.vision import extract_vision_mask, is_vision_frame, read_static_images, restrict_frame
 from facefusion.webcam_config import DEFAULT_SOURCE_FACE_NAME, NO_SOURCE_FACE_NAME
+from facefusion.webcam_crop import StreamCrop
 
 CONTENT_ANALYSIS_METRICS_LOCK = threading.Lock()
 CONTENT_ANALYSIS_METRICS = { 'runs': 0, 'last_ms': 0.0, 'max_ms': 0.0 }
@@ -443,11 +444,11 @@ def pump_stream_frames(stream_frames : Iterator[Tuple[VisionFrame, float, bool, 
 # its own and keeps the workers fed whatever the caller does; the caller still sees one frame at a
 # time, in delivery order. The caller's app context goes with it, since that thread cannot detect
 # it from its own stack
-def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, webcam_execution_thread_count : Optional[int] = None, capture_resolution : Optional[Resolution] = None, raw_frame_listener : Optional[Callable[[VisionFrame], None]] = None, camera_switch : Optional[CameraSwitch] = None, idle_listener : Optional[Callable[[], bool]] = None) -> Iterator[Tuple[VisionFrame, float, bool, Dict[str, Any]]]:
+def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, webcam_execution_thread_count : Optional[int] = None, capture_resolution : Optional[Resolution] = None, raw_frame_listener : Optional[Callable[[VisionFrame], None]] = None, camera_switch : Optional[CameraSwitch] = None, idle_listener : Optional[Callable[[], bool]] = None, stream_crop : Optional[StreamCrop] = None) -> Iterator[Tuple[VisionFrame, float, bool, Dict[str, Any]]]:
 	app_context = detect_app_context()
 	stop_event = threading.Event()
 	stream_delivery = StreamDelivery(max(2, webcam_execution_thread_count or state_manager.get_item('execution_thread_count') or 1))
-	stream_frames = schedule_stream_frames(camera_capture, camera_fps, webcam_execution_thread_count, capture_resolution, raw_frame_listener, camera_switch, idle_listener, app_context, stop_event)
+	stream_frames = schedule_stream_frames(camera_capture, camera_fps, webcam_execution_thread_count, capture_resolution, raw_frame_listener, camera_switch, idle_listener, stream_crop, app_context, stop_event)
 	scheduler_thread = threading.Thread(target = pump_stream_frames, args = (stream_frames, stream_delivery, stop_event), name = 'stream_scheduler', daemon = True)
 	scheduler_thread.start()
 
@@ -477,16 +478,16 @@ def multi_process_capture(camera_capture : cv2.VideoCapture, camera_fps : Fps, w
 			logger.warn('the stream scheduler did not stop within ' + str(STREAM_SCHEDULER_JOIN_TIMEOUT) + ' seconds', __name__)
 
 
-def schedule_stream_frames(camera_capture : cv2.VideoCapture, camera_fps : Fps, webcam_execution_thread_count : Optional[int], capture_resolution : Optional[Resolution], raw_frame_listener : Optional[Callable[[VisionFrame], None]], camera_switch : Optional[CameraSwitch], idle_listener : Optional[Callable[[], bool]], app_context : AppContext, stop_event : threading.Event) -> Iterator[Tuple[VisionFrame, float, bool, Dict[str, Any]]]:
+def schedule_stream_frames(camera_capture : cv2.VideoCapture, camera_fps : Fps, webcam_execution_thread_count : Optional[int], capture_resolution : Optional[Resolution], raw_frame_listener : Optional[Callable[[VisionFrame], None]], camera_switch : Optional[CameraSwitch], idle_listener : Optional[Callable[[], bool]], stream_crop : Optional[StreamCrop], app_context : AppContext, stop_event : threading.Event) -> Iterator[Tuple[VisionFrame, float, bool, Dict[str, Any]]]:
 	# First, so the setup below reads and writes the caller's state rather than the cli one
 	set_app_context_override(app_context)
 	try:
-		yield from schedule_stream_frames_in_context(camera_capture, camera_fps, webcam_execution_thread_count, capture_resolution, raw_frame_listener, camera_switch, idle_listener, stop_event)
+		yield from schedule_stream_frames_in_context(camera_capture, camera_fps, webcam_execution_thread_count, capture_resolution, raw_frame_listener, camera_switch, idle_listener, stream_crop, stop_event)
 	finally:
 		set_app_context_override(None)
 
 
-def schedule_stream_frames_in_context(camera_capture : cv2.VideoCapture, camera_fps : Fps, webcam_execution_thread_count : Optional[int], capture_resolution : Optional[Resolution], raw_frame_listener : Optional[Callable[[VisionFrame], None]], camera_switch : Optional[CameraSwitch], idle_listener : Optional[Callable[[], bool]], stop_event : threading.Event) -> Iterator[Tuple[VisionFrame, float, bool, Dict[str, Any]]]:
+def schedule_stream_frames_in_context(camera_capture : cv2.VideoCapture, camera_fps : Fps, webcam_execution_thread_count : Optional[int], capture_resolution : Optional[Resolution], raw_frame_listener : Optional[Callable[[VisionFrame], None]], camera_switch : Optional[CameraSwitch], idle_listener : Optional[Callable[[], bool]], stream_crop : Optional[StreamCrop], stop_event : threading.Event) -> Iterator[Tuple[VisionFrame, float, bool, Dict[str, Any]]]:
 	webcam_execution_thread_count = webcam_execution_thread_count or state_manager.get_item('execution_thread_count')
 	# Published so the overlay can name the count the stream actually runs on instead of the global
 	# execution thread count, which no webcam frame is processed with
@@ -630,6 +631,11 @@ def schedule_stream_frames_in_context(camera_capture : cv2.VideoCapture, camera_
 							has_logged_capture_downscale = True
 							logger.debug('camera delivered ' + str(capture_width) + 'x' + str(capture_height) + ' for requested ' + str(capture_resolution[0]) + 'x' + str(capture_resolution[1]) + ', downscaling to the working resolution', __name__)
 						capture_vision_frame = restrict_frame(capture_vision_frame, capture_resolution)
+				# Cropped at the working resolution, which the box is set in, and before the warm up, the
+				# raw passthrough and the workers, so all of them see the same picture. The camera window
+				# was fed in the capture thread and keeps showing the whole of it
+				if stream_crop and is_vision_frame(capture_vision_frame):
+					capture_vision_frame = stream_crop.apply(capture_vision_frame)
 
 				# Warmed on a real frame at the resolution the workers will see, so each one builds
 				# the effect the stream goes on using rather than a second one on its first frame

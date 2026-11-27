@@ -106,6 +106,8 @@ Padding : TypeAlias = Tuple[int, int, int, int]
 Margin : TypeAlias = Tuple[int, int, int, int]
 Orientation = Literal['landscape', 'portrait']
 Resolution : TypeAlias = Tuple[int, int]
+# Left, top, width and height of a webcam crop, in pixels of the capture resolution
+WebcamCropBox : TypeAlias = Tuple[int, int, int, int]
 AudioMetadata = TypedDict('AudioMetadata',
 {
 	'duration' : Duration,
@@ -404,6 +406,10 @@ StateKey = Literal\
 	'webcam_raw_window_display',
 	'webcam_camera_name',
 	'webcam_frame_generation',
+	'webcam_crop_size',
+	'webcam_crop_offset_x',
+	'webcam_crop_offset_y',
+	'webcam_crop_upscale',
 	'source_face_groups',
 	'source_face_uploads',
 	'source_face_groups_version',
@@ -504,6 +510,10 @@ State = TypedDict('State',
 	'webcam_raw_window_display' : int,
 	'webcam_camera_name' : str,
 	'webcam_frame_generation' : str,
+	'webcam_crop_size' : str,
+	'webcam_crop_offset_x' : int,
+	'webcam_crop_offset_y' : int,
+	'webcam_crop_upscale' : bool,
 	'source_face_groups' : Dict[str, List[str]],
 	'source_face_uploads' : Dict[str, List[str]],
 	'source_face_groups_version' : int,

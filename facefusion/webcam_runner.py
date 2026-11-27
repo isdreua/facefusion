@@ -12,6 +12,7 @@ from facefusion.streamer import apply_stream_face_selector_mode, apply_stream_so
 from facefusion.stream_writer import LatestFrameWriter
 from facefusion.vision import fit_cover_frame, pack_resolution, unpack_resolution
 from facefusion.webcam_config import DEFAULT_SOURCE_FACE_NAME, WEBCAM_HEADLESS_MODES, get_source_faces, load_webcam_config
+from facefusion.webcam_crop import StreamCrop, describe_webcam_crop_error, format_webcam_crop_size, has_webcam_crop_aspect_ratio, resolve_webcam_crop_box, resolve_webcam_stream_resolution
 from facefusion.window_output import OUTPUT_WINDOW_TITLE, WindowIntentPump, WindowStream, open_raw_camera_view, has_window_output, log_window_output_requirement
 
 
@@ -56,21 +57,39 @@ def run() -> int:
 	state_manager.init_item('webcam_output_blackout', False)
 	state_manager.init_item('webcam_frame_generation', webcam_config.get('webcam_frame_generation'))
 	state_manager.init_item('webcam_face_enhancer_worker_count', webcam_config.get('webcam_face_enhancer_worker_count'))
+	# Read by the scheduler on every frame, the same as the browser layout's, though nothing changes
+	# them here once the run has started
+	state_manager.init_item('webcam_crop_size', webcam_config.get('webcam_crop_size', 'none'))
+	state_manager.init_item('webcam_crop_offset_x', webcam_config.get('webcam_crop_offset_x', 0))
+	state_manager.init_item('webcam_crop_offset_y', webcam_config.get('webcam_crop_offset_y', 0))
+	state_manager.init_item('webcam_crop_upscale', webcam_config.get('webcam_crop_upscale', True))
 	apply_stream_face_selector_mode()
 	state_manager.sync_state()
 	webcam_width, webcam_height = unpack_resolution(webcam_resolution)
+	# Refused rather than moved inside: the config asked for a part of the picture it does not have, and
+	# a box shifted to fit would frame something it never asked for
+	crop_box = resolve_webcam_crop_box(webcam_config.get('webcam_crop_size'), webcam_config.get('webcam_crop_offset_x'), webcam_config.get('webcam_crop_offset_y'))
+	is_crop_upscale = bool(webcam_config.get('webcam_crop_upscale', True))
+	if crop_box and describe_webcam_crop_error((webcam_width, webcam_height), crop_box):
+		logger.error(describe_webcam_crop_error((webcam_width, webcam_height), crop_box), __name__)
+		return 2
+	if crop_box and is_crop_upscale and not has_webcam_crop_aspect_ratio((webcam_width, webcam_height), crop_box):
+		logger.warn('webcam crop ' + format_webcam_crop_size(crop_box) + ' does not match the aspect ratio of capture resolution ' + webcam_resolution + ', the upscale will stretch it', __name__)
+	# The output follows the frames the processors get, which are the crop's size when it is not upscaled
+	stream_resolution = resolve_webcam_stream_resolution(webcam_resolution, crop_box, is_crop_upscale)
+	stream_width, stream_height = unpack_resolution(stream_resolution)
 	if webcam_output_resolution == 'copy':
-		output_resolution = webcam_resolution
-		output_width, output_height = webcam_width, webcam_height
+		output_resolution = stream_resolution
+		output_width, output_height = stream_width, stream_height
 	elif webcam_output_resolution.startswith('x'):
 		output_scale = int(webcam_output_resolution[1:])
-		output_resolution = pack_resolution((webcam_width * output_scale, webcam_height * output_scale))
+		output_resolution = pack_resolution((stream_width * output_scale, stream_height * output_scale))
 		output_width, output_height = unpack_resolution(output_resolution)
 	else:
 		output_resolution = webcam_output_resolution
 		output_width, output_height = unpack_resolution(webcam_output_resolution)
-	if webcam_width * output_height != output_width * webcam_height:
-		logger.warn('webcam output resolution ' + output_resolution + ' does not match the aspect ratio of capture resolution ' + webcam_resolution + ', edges will be cropped', __name__)
+	if stream_width * output_height != output_width * stream_height:
+		logger.warn('webcam output resolution ' + output_resolution + ' does not match the aspect ratio of ' + stream_resolution + ', edges will be cropped', __name__)
 	# Same first open as the browser's, retried until the camera opens (Ctrl+C ends it)
 	camera_switch = CameraSwitch(webcam_device_id, webcam_width, webcam_height, webcam_fps, webcam_camera_backend)
 	camera_capture = camera_switch.open_selected_capture()
@@ -103,7 +122,9 @@ def run() -> int:
 		# Keys are read on their own thread from here on, so a stalled pipeline cannot hold them back
 		if window_stream:
 			window_intent_pump = WindowIntentPump(window_stream, camera_switch)
-		for capture_vision_frame, capture_time, is_duplicate, timing in multi_process_capture(camera_capture, webcam_fps, webcam_execution_thread_count, (webcam_width, webcam_height), raw_camera_view.submit if raw_camera_view else None, camera_switch, (lambda: not window_intent_pump.has_stopped()) if window_intent_pump else None):
+		# Without the upscale and without a crop the frames pass untouched, so no crop is needed at all
+		stream_crop = StreamCrop((webcam_width, webcam_height), is_crop_upscale, crop_box) if crop_box or is_crop_upscale else None
+		for capture_vision_frame, capture_time, is_duplicate, timing in multi_process_capture(camera_capture, webcam_fps, webcam_execution_thread_count, (webcam_width, webcam_height), raw_camera_view.submit if raw_camera_view else None, camera_switch, (lambda: not window_intent_pump.has_stopped()) if window_intent_pump else None, stream_crop):
 			capture_vision_frame = cv2.cvtColor(capture_vision_frame, cv2.COLOR_BGR2RGB)
 			capture_vision_frame = fit_cover_frame(capture_vision_frame, (output_width, output_height))
 			# Here and not in the workers: this loop sees the frames one at a time in delivery order,

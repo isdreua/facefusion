@@ -28,6 +28,10 @@ DEFAULT_WEBCAM_CONFIG : Dict[str, Any] =\
 	'webcam_face_enhancer_worker_count': 0,
 	'webcam_camera_backend': 'auto',
 	'webcam_output_resolution': 'copy',
+	'webcam_crop_size': 'none',
+	'webcam_crop_offset_x': 0,
+	'webcam_crop_offset_y': 0,
+	'webcam_crop_upscale': True,
 	'webcam_window_fullscreen': False,
 	'webcam_window_display': 0,
 	'webcam_window_resolution': 'native',
@@ -81,6 +85,10 @@ WEBCAM_INLINE_PREVIEW_RESOLUTIONS = [ 'native', '320x240', '640x480', '960x540',
 WEBCAM_CAMERA_BACKENDS = [ 'auto', 'msmf', 'dshow' ] if is_windows() else [ 'auto' ]
 WEBCAM_OUTPUT_SCALES = [ 'x2', 'x3', 'x4' ]
 WEBCAM_OUTPUT_RESOLUTIONS = [ 'copy' ] + WEBCAM_OUTPUT_SCALES + WEBCAM_RESOLUTIONS
+# The part of the camera picture the stream works on, none for all of it. Typed sizes are accepted on
+# the same terms as a capture resolution; where the box sits is checked against the capture
+# resolution when a stream starts, since that is the one thing a size alone cannot be checked against
+WEBCAM_CROP_SIZES = [ 'none' ] + WEBCAM_RESOLUTIONS
 # Headless has no browser to stream into, so inline is the one mode it cannot serve
 WEBCAM_HEADLESS_MODES = [ webcam_mode for webcam_mode in WEBCAM_MODES if webcam_mode != 'inline' ]
 WEBCAM_CONFIG_OPTIONS =\
@@ -100,6 +108,8 @@ WEBCAM_CONFIG_OPTIONS =\
 	'webcam_face_enhancer_worker_count': list(range(0, 9)),
 	'webcam_camera_backend': WEBCAM_CAMERA_BACKENDS,
 	'webcam_output_resolution': WEBCAM_OUTPUT_RESOLUTIONS,
+	'webcam_crop_size': WEBCAM_CROP_SIZES,
+	'webcam_crop_upscale': [ True, False ],
 	'webcam_window_fullscreen': [ True, False ],
 	'webcam_window_display': WEBCAM_WINDOW_DISPLAYS,
 	'webcam_window_resolution': WEBCAM_WINDOW_RESOLUTIONS,
@@ -178,6 +188,14 @@ def load_webcam_config(config_path : str) -> Dict[str, Any]:
 		webcam_config['webcam_camera_backend'] = content.get('webcam_camera_backend')
 	if content.get('webcam_output_resolution') in WEBCAM_OUTPUT_RESOLUTIONS:
 		webcam_config['webcam_output_resolution'] = content.get('webcam_output_resolution')
+	if normalize_webcam_crop_size(content.get('webcam_crop_size')):
+		webcam_config['webcam_crop_size'] = normalize_webcam_crop_size(content.get('webcam_crop_size'))
+	if normalize_webcam_crop_offset(content.get('webcam_crop_offset_x')) is not None:
+		webcam_config['webcam_crop_offset_x'] = normalize_webcam_crop_offset(content.get('webcam_crop_offset_x'))
+	if normalize_webcam_crop_offset(content.get('webcam_crop_offset_y')) is not None:
+		webcam_config['webcam_crop_offset_y'] = normalize_webcam_crop_offset(content.get('webcam_crop_offset_y'))
+	if isinstance(content.get('webcam_crop_upscale'), bool):
+		webcam_config['webcam_crop_upscale'] = content.get('webcam_crop_upscale')
 	if isinstance(content.get('webcam_window_fullscreen'), bool):
 		webcam_config['webcam_window_fullscreen'] = content.get('webcam_window_fullscreen')
 	if isinstance(content.get('webcam_window_display'), int) and not isinstance(content.get('webcam_window_display'), bool) and content.get('webcam_window_display') in WEBCAM_WINDOW_DISPLAYS:
@@ -230,6 +248,21 @@ def normalize_webcam_resolution(resolution : Any) -> Optional[str]:
 	width, height = int(resolution_match.group(1)), int(resolution_match.group(2))
 	if all(WEBCAM_RESOLUTION_RANGE[0] <= side <= WEBCAM_RESOLUTION_RANGE[1] and side % 2 == 0 for side in (width, height)):
 		return str(width) + 'x' + str(height)
+	return None
+
+
+# none, or a size read the way a capture resolution is: even sides in range, written WIDTHxHEIGHT
+def normalize_webcam_crop_size(crop_size : Any) -> Optional[str]:
+	if isinstance(crop_size, str) and crop_size.strip().lower() == 'none':
+		return 'none'
+	return normalize_webcam_resolution(crop_size)
+
+
+# A whole number of pixels from the left or top edge. Booleans are ints to python and are refused, and
+# so is anything past the largest capture side, which no box could start at
+def normalize_webcam_crop_offset(crop_offset : Any) -> Optional[int]:
+	if isinstance(crop_offset, int) and not isinstance(crop_offset, bool) and 0 <= crop_offset <= WEBCAM_RESOLUTION_RANGE[1]:
+		return crop_offset
 	return None
 
 

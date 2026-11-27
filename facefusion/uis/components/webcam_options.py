@@ -1,4 +1,4 @@
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 import gradio
 
@@ -10,7 +10,8 @@ from facefusion.uis import choices as uis_choices
 from facefusion.streamer import apply_stream_source_paths, resolve_source_face_groups
 from facefusion.types import WebcamMode
 from facefusion.uis.core import get_ui_component, register_ui_component
-from facefusion.webcam_config import DEFAULT_SOURCE_FACE_NAME, NO_SOURCE_FACE_NAME, WEBCAM_BYPASSED_PROCESSORS, WEBCAM_CAMERA_BACKENDS, WEBCAM_CONTENT_ANALYSIS_INTERVALS, WEBCAM_FRAME_GENERATION_MODES, WEBCAM_FRAME_SKIPPING_MODES, WEBCAM_INLINE_PREVIEW_RESOLUTIONS, WEBCAM_OUTPUT_RESOLUTIONS, WEBCAM_PERFORMANCE_OVERLAYS, WEBCAM_STATE_KEYS, WEBCAM_FACE_PREVIEW_WINDOWS, WEBCAM_WINDOW_DISPLAYS, WEBCAM_WINDOW_RESOLUTIONS, format_webcam_config, normalize_webcam_resolution, get_source_faces, load_webcam_config, resolve_source_face_directory
+from facefusion.webcam_config import DEFAULT_SOURCE_FACE_NAME, NO_SOURCE_FACE_NAME, WEBCAM_BYPASSED_PROCESSORS, WEBCAM_CAMERA_BACKENDS, WEBCAM_CONTENT_ANALYSIS_INTERVALS, WEBCAM_CROP_SIZES, WEBCAM_FRAME_GENERATION_MODES, WEBCAM_FRAME_SKIPPING_MODES, WEBCAM_INLINE_PREVIEW_RESOLUTIONS, WEBCAM_OUTPUT_RESOLUTIONS, WEBCAM_PERFORMANCE_OVERLAYS, WEBCAM_STATE_KEYS, WEBCAM_FACE_PREVIEW_WINDOWS, WEBCAM_WINDOW_DISPLAYS, WEBCAM_WINDOW_RESOLUTIONS, format_webcam_config, normalize_webcam_crop_size, normalize_webcam_resolution, get_source_faces, load_webcam_config, resolve_source_face_directory
+from facefusion.webcam_crop import WEBCAM_CROP_ZOOM_RANGE, WEBCAM_CROP_ZOOM_STEP, coerce_webcam_crop_offset, fit_webcam_crop_box, format_webcam_crop_size, resolve_webcam_crop_box, resolve_webcam_crop_zoom, zoom_webcam_crop_box
 from facefusion.window_output import detect_window_displays, has_window_output, log_window_output_requirement, move_raw_camera_view, move_shared_mirror_window, move_shared_window_stream, set_camera_window_fullscreen, set_shared_control_window, set_shared_mirror_fullscreen, set_shared_mirror_window, set_shared_window_fullscreen, set_shared_window_hidden, set_shared_window_resolution
 
 WEBCAM_DEVICE_ID_DROPDOWN : Optional[gradio.Dropdown] = None
@@ -29,6 +30,11 @@ WEBCAM_EXECUTION_THREAD_COUNT_SLIDER : Optional[gradio.Slider] = None
 WEBCAM_FACE_ENHANCER_WORKER_COUNT_SLIDER : Optional[gradio.Slider] = None
 WEBCAM_CAMERA_BACKEND_DROPDOWN : Optional[gradio.Dropdown] = None
 WEBCAM_OUTPUT_RESOLUTION_DROPDOWN : Optional[gradio.Dropdown] = None
+WEBCAM_CROP_SIZE_DROPDOWN : Optional[gradio.Dropdown] = None
+WEBCAM_CROP_ZOOM_SLIDER : Optional[gradio.Slider] = None
+WEBCAM_CROP_OFFSET_X_NUMBER : Optional[gradio.Number] = None
+WEBCAM_CROP_OFFSET_Y_NUMBER : Optional[gradio.Number] = None
+WEBCAM_CROP_UPSCALE_CHECKBOX : Optional[gradio.Checkbox] = None
 WEBCAM_WINDOW_FULLSCREEN_CHECKBOX : Optional[gradio.Checkbox] = None
 WEBCAM_CONTROL_WINDOW_CHECKBOX : Optional[gradio.Checkbox] = None
 WEBCAM_MIRROR_WINDOW_CHECKBOX : Optional[gradio.Checkbox] = None
@@ -66,6 +72,11 @@ def render() -> None:
 	global WEBCAM_FACE_ENHANCER_WORKER_COUNT_SLIDER
 	global WEBCAM_CAMERA_BACKEND_DROPDOWN
 	global WEBCAM_OUTPUT_RESOLUTION_DROPDOWN
+	global WEBCAM_CROP_SIZE_DROPDOWN
+	global WEBCAM_CROP_ZOOM_SLIDER
+	global WEBCAM_CROP_OFFSET_X_NUMBER
+	global WEBCAM_CROP_OFFSET_Y_NUMBER
+	global WEBCAM_CROP_UPSCALE_CHECKBOX
 	global WEBCAM_WINDOW_FULLSCREEN_CHECKBOX
 	global WEBCAM_CONTROL_WINDOW_CHECKBOX
 	global WEBCAM_MIRROR_WINDOW_CHECKBOX
@@ -121,6 +132,10 @@ def render() -> None:
 	state_manager.init_item('webcam_raw_window_display', webcam_config.get('webcam_raw_window_display'))
 	state_manager.init_item('webcam_frame_generation', webcam_config.get('webcam_frame_generation'))
 	state_manager.init_item('webcam_face_enhancer_worker_count', webcam_config.get('webcam_face_enhancer_worker_count'))
+	state_manager.init_item('webcam_crop_size', webcam_config.get('webcam_crop_size'))
+	state_manager.init_item('webcam_crop_offset_x', webcam_config.get('webcam_crop_offset_x'))
+	state_manager.init_item('webcam_crop_offset_y', webcam_config.get('webcam_crop_offset_y'))
+	state_manager.init_item('webcam_crop_upscale', webcam_config.get('webcam_crop_upscale'))
 	WEBCAM_DEVICE_ID_DROPDOWN = gradio.Dropdown(
 		value = webcam_device_id,
 		label = translator.get('uis.webcam_device_id_dropdown'),
@@ -246,6 +261,41 @@ def render() -> None:
 		value = webcam_config.get('resolution'),
 		allow_custom_value = True
 	)
+	# The part of the camera picture the stream works on, in pixels of the capture resolution. Typed sizes
+	# are allowed like the resolution's, and a box that does not fit the capture is moved back inside on
+	# change (update_webcam_crop). The zoom writes the same fields, keeping the crop's centre. Read from
+	# the state by the scheduler on every frame, so a running stream follows the offsets at once, and
+	# the size too while upscaling, since only then does the output size stay the same
+	WEBCAM_CROP_SIZE_DROPDOWN = gradio.Dropdown(
+		label = translator.get('uis.webcam_crop_size_dropdown'),
+		choices = WEBCAM_CROP_SIZES,
+		value = state_manager.get_item('webcam_crop_size'),
+		allow_custom_value = True
+	)
+	WEBCAM_CROP_ZOOM_SLIDER = gradio.Slider(
+		label = translator.get('uis.webcam_crop_zoom_slider'),
+		value = resolve_crop_zoom(webcam_config.get('resolution')),
+		step = WEBCAM_CROP_ZOOM_STEP,
+		minimum = WEBCAM_CROP_ZOOM_RANGE[0],
+		maximum = WEBCAM_CROP_ZOOM_RANGE[1]
+	)
+	with gradio.Row():
+		WEBCAM_CROP_OFFSET_X_NUMBER = gradio.Number(
+			label = translator.get('uis.webcam_crop_offset_x_number'),
+			value = state_manager.get_item('webcam_crop_offset_x'),
+			precision = 0,
+			step = 1
+		)
+		WEBCAM_CROP_OFFSET_Y_NUMBER = gradio.Number(
+			label = translator.get('uis.webcam_crop_offset_y_number'),
+			value = state_manager.get_item('webcam_crop_offset_y'),
+			precision = 0,
+			step = 1
+		)
+	WEBCAM_CROP_UPSCALE_CHECKBOX = gradio.Checkbox(
+		label = translator.get('uis.webcam_crop_upscale_checkbox'),
+		value = state_manager.get_item('webcam_crop_upscale')
+	)
 	WEBCAM_FPS_SLIDER = gradio.Slider(
 		label = translator.get('uis.webcam_fps_slider'),
 		value = webcam_config.get('fps'),
@@ -352,6 +402,11 @@ def render() -> None:
 	register_ui_component('webcam_face_enhancer_worker_count_slider', WEBCAM_FACE_ENHANCER_WORKER_COUNT_SLIDER)
 	register_ui_component('webcam_camera_backend_dropdown', WEBCAM_CAMERA_BACKEND_DROPDOWN)
 	register_ui_component('webcam_output_resolution_dropdown', WEBCAM_OUTPUT_RESOLUTION_DROPDOWN)
+	register_ui_component('webcam_crop_size_dropdown', WEBCAM_CROP_SIZE_DROPDOWN)
+	register_ui_component('webcam_crop_zoom_slider', WEBCAM_CROP_ZOOM_SLIDER)
+	register_ui_component('webcam_crop_offset_x_number', WEBCAM_CROP_OFFSET_X_NUMBER)
+	register_ui_component('webcam_crop_offset_y_number', WEBCAM_CROP_OFFSET_Y_NUMBER)
+	register_ui_component('webcam_crop_upscale_checkbox', WEBCAM_CROP_UPSCALE_CHECKBOX)
 	register_ui_component('webcam_window_fullscreen_checkbox', WEBCAM_WINDOW_FULLSCREEN_CHECKBOX)
 	register_ui_component('webcam_window_display_dropdown', WEBCAM_WINDOW_DISPLAY_DROPDOWN)
 	register_ui_component('webcam_window_resolution_radio', WEBCAM_WINDOW_RESOLUTION_RADIO)
@@ -380,6 +435,16 @@ def listen() -> None:
 		WEBCAM_RESOLUTION_DROPDOWN.change(update_webcam_resolution, inputs = WEBCAM_RESOLUTION_DROPDOWN, outputs = WEBCAM_RESOLUTION_DROPDOWN)
 	if WEBCAM_FRAME_GENERATION_RADIO:
 		WEBCAM_FRAME_GENERATION_RADIO.change(update_frame_generation, inputs = WEBCAM_FRAME_GENERATION_RADIO)
+	webcam_crop_components = [ WEBCAM_RESOLUTION_DROPDOWN, WEBCAM_CROP_SIZE_DROPDOWN, WEBCAM_CROP_OFFSET_X_NUMBER, WEBCAM_CROP_OFFSET_Y_NUMBER, WEBCAM_CROP_ZOOM_SLIDER ]
+	if all(webcam_crop_components):
+		# The capture resolution is in the list because a box that fitted the old one may not fit the new
+		for webcam_crop_component in webcam_crop_components[:4]:
+			webcam_crop_component.change(update_webcam_crop, inputs = webcam_crop_components, outputs = webcam_crop_components[1:])
+		# release rather than change: once per drag, so a crop left at its own size does not reopen the
+		# output window at every step on the way
+		WEBCAM_CROP_ZOOM_SLIDER.release(zoom_webcam_crop, inputs = webcam_crop_components, outputs = webcam_crop_components[1:4])
+	if WEBCAM_CROP_UPSCALE_CHECKBOX:
+		WEBCAM_CROP_UPSCALE_CHECKBOX.change(update_webcam_crop_upscale, inputs = WEBCAM_CROP_UPSCALE_CHECKBOX)
 	if WEBCAM_FACE_ENHANCER_WORKER_COUNT_SLIDER:
 		WEBCAM_FACE_ENHANCER_WORKER_COUNT_SLIDER.change(update_face_enhancer_worker_count, inputs = WEBCAM_FACE_ENHANCER_WORKER_COUNT_SLIDER)
 	if WEBCAM_CONTENT_ANALYSIS_INTERVAL_SLIDER:
@@ -469,6 +534,10 @@ def update_window_high_dpi(window_high_dpi : bool) -> None:
 def listen_load(ui : gradio.Blocks) -> None:
 	if WEBCAM_WINDOW_DISPLAY_DROPDOWN and WEBCAM_RAW_WINDOW_DISPLAY_DROPDOWN and WEBCAM_MIRROR_WINDOW_DISPLAY_DROPDOWN and has_window_output():
 		ui.load(refresh_window_displays, outputs = [ WEBCAM_WINDOW_DISPLAY_DROPDOWN, WEBCAM_RAW_WINDOW_DISPLAY_DROPDOWN, WEBCAM_MIRROR_WINDOW_DISPLAY_DROPDOWN ])
+	# A config's crop is checked against its resolution as the page opens, not only once start refuses it
+	webcam_crop_components = [ WEBCAM_RESOLUTION_DROPDOWN, WEBCAM_CROP_SIZE_DROPDOWN, WEBCAM_CROP_OFFSET_X_NUMBER, WEBCAM_CROP_OFFSET_Y_NUMBER, WEBCAM_CROP_ZOOM_SLIDER ]
+	if all(webcam_crop_components):
+		ui.load(update_webcam_crop, inputs = webcam_crop_components, outputs = webcam_crop_components[1:])
 
 
 def refresh_window_displays() -> Tuple[gradio.Dropdown, gradio.Dropdown, gradio.Dropdown]:
@@ -601,6 +670,94 @@ def update_webcam_resolution(webcam_resolution : str) -> gradio.Dropdown:
 	return gradio.Dropdown(value = load_webcam_config(state_manager.get_item('webcam_config')).get('resolution'))
 
 
+# Keeps the crop fields to a box that can be taken: a size typed wrong goes back to the last good one,
+# and a box past an edge of the capture is cut to it and moved back inside, saying so. Writes the state
+# itself rather than waiting for the change its own correction fires, so a running stream never reads a
+# box out of bounds. A field already right is skipped, so the correction settles after one round
+def update_webcam_crop(webcam_resolution : str, crop_size : str, crop_offset_x : Optional[float], crop_offset_y : Optional[float], crop_zoom : float) -> Tuple[gradio.Dropdown, gradio.Number, gradio.Number, gradio.Slider]:
+	normalized_crop_size = normalize_webcam_crop_size(crop_size or 'none')
+
+	if not normalized_crop_size:
+		gradio.Warning(translator.get('uis.webcam_crop_size_invalid').format(crop_size = crop_size))
+		normalized_crop_size = state_manager.get_item('webcam_crop_size') or 'none'
+	crop_box = resolve_webcam_crop_box(normalized_crop_size, crop_offset_x, crop_offset_y)
+	capture_resolution = resolve_capture_resolution(webcam_resolution)
+	if crop_box and capture_resolution:
+		fitted_crop_box = fit_webcam_crop_box(capture_resolution, crop_box)
+		if fitted_crop_box != crop_box:
+			gradio.Warning(translator.get('uis.webcam_crop_out_of_bounds').format(crop_size = format_webcam_crop_size(crop_box), crop_offset_x = crop_box[0], crop_offset_y = crop_box[1], resolution = normalize_webcam_resolution(webcam_resolution), fitted_crop_size = format_webcam_crop_size(fitted_crop_box), fitted_crop_offset_x = fitted_crop_box[0], fitted_crop_offset_y = fitted_crop_box[1]))
+		crop_box = fitted_crop_box
+	# Without a resolution to check against, a box is still held to offsets from 0
+	if crop_box and not capture_resolution:
+		crop_box = (max(0, crop_box[0]), max(0, crop_box[1]), crop_box[2], crop_box[3])
+	# Without a crop the offsets mean nothing, so they stay as typed, held only to a whole number from 0
+	if crop_box:
+		normalized_crop_offset_x, normalized_crop_offset_y = crop_box[0], crop_box[1]
+	else:
+		normalized_crop_offset_x, normalized_crop_offset_y = max(0, coerce_webcam_crop_offset(crop_offset_x)), max(0, coerce_webcam_crop_offset(crop_offset_y))
+	normalized_crop_size = format_webcam_crop_size(crop_box) if crop_box else normalized_crop_size
+
+	state_manager.set_item('webcam_crop_size', normalized_crop_size)
+	state_manager.set_item('webcam_crop_offset_x', normalized_crop_offset_x)
+	state_manager.set_item('webcam_crop_offset_y', normalized_crop_offset_y)
+	crop_size_update = gradio.Dropdown(value = normalized_crop_size) if normalized_crop_size != crop_size else skip_component_update(gradio.Dropdown)
+	crop_offset_x_update = gradio.Number(value = normalized_crop_offset_x) if crop_offset_x is not None and normalized_crop_offset_x != crop_offset_x else skip_component_update(gradio.Number)
+	crop_offset_y_update = gradio.Number(value = normalized_crop_offset_y) if crop_offset_y is not None and normalized_crop_offset_y != crop_offset_y else skip_component_update(gradio.Number)
+	crop_zoom_update = skip_component_update(gradio.Slider)
+	if capture_resolution and abs(resolve_webcam_crop_zoom(capture_resolution, crop_box) - float(crop_zoom or 0)) > WEBCAM_CROP_ZOOM_STEP / 2:
+		crop_zoom_update = gradio.Slider(value = resolve_webcam_crop_zoom(capture_resolution, crop_box))
+	return crop_size_update, crop_offset_x_update, crop_offset_y_update, crop_zoom_update
+
+
+# Replaces the crop with one of the capture's aspect ratio at the zoom, around the centre of the crop
+# there was. The fields it sets fire their own change, which finds them in bounds and settles
+def zoom_webcam_crop(webcam_resolution : str, crop_size : str, crop_offset_x : Optional[float], crop_offset_y : Optional[float], crop_zoom : float) -> Tuple[gradio.Dropdown, gradio.Number, gradio.Number]:
+	capture_resolution = resolve_capture_resolution(webcam_resolution)
+
+	if not capture_resolution:
+		return skip_component_update(gradio.Dropdown), skip_component_update(gradio.Number), skip_component_update(gradio.Number)
+	crop_box = resolve_webcam_crop_box(normalize_webcam_crop_size(crop_size) or state_manager.get_item('webcam_crop_size'), crop_offset_x, crop_offset_y)
+	if crop_box:
+		crop_box = fit_webcam_crop_box(capture_resolution, crop_box)
+	crop_box = zoom_webcam_crop_box(capture_resolution, crop_zoom, crop_box)
+	zoomed_crop_offset_x, zoomed_crop_offset_y = (crop_box[0], crop_box[1]) if crop_box else (0, 0)
+
+	state_manager.set_item('webcam_crop_size', format_webcam_crop_size(crop_box))
+	state_manager.set_item('webcam_crop_offset_x', zoomed_crop_offset_x)
+	state_manager.set_item('webcam_crop_offset_y', zoomed_crop_offset_y)
+	return gradio.Dropdown(value = format_webcam_crop_size(crop_box)), gradio.Number(value = zoomed_crop_offset_x), gradio.Number(value = zoomed_crop_offset_y)
+
+
+# Fixed when a stream starts, like the output size it decides; the output window follows the change
+# through webcam.update_window_output
+def update_webcam_crop_upscale(crop_upscale : bool) -> None:
+	state_manager.set_item('webcam_crop_upscale', bool(crop_upscale))
+
+
+def resolve_capture_resolution(webcam_resolution : str) -> Optional[Tuple[int, int]]:
+	normalized_webcam_resolution = normalize_webcam_resolution(webcam_resolution)
+
+	if normalized_webcam_resolution:
+		capture_width, capture_height = map(int, normalized_webcam_resolution.split('x'))
+		return capture_width, capture_height
+	return None
+
+
+def resolve_crop_zoom(webcam_resolution : str) -> float:
+	capture_resolution = resolve_capture_resolution(webcam_resolution)
+	crop_box = resolve_webcam_crop_box(state_manager.get_item('webcam_crop_size'), state_manager.get_item('webcam_crop_offset_x'), state_manager.get_item('webcam_crop_offset_y'))
+
+	if capture_resolution:
+		return resolve_webcam_crop_zoom(capture_resolution, crop_box)
+	return WEBCAM_CROP_ZOOM_RANGE[0]
+
+
+def skip_component_update(component_class : type) -> Any:
+	if hasattr(gradio, 'skip'):
+		return gradio.skip()
+	return component_class()
+
+
 def update_frame_generation(frame_generation : str) -> None:
 	state_manager.set_item('webcam_frame_generation', frame_generation)
 
@@ -671,6 +828,10 @@ def generate_config(webcam_device_id : str, webcam_mode : str, webcam_resolution
 		'webcam_face_enhancer_worker_count': state_manager.get_item('webcam_face_enhancer_worker_count') or 0,
 		'webcam_camera_backend': webcam_camera_backend,
 		'webcam_output_resolution': webcam_output_resolution,
+		'webcam_crop_size': state_manager.get_item('webcam_crop_size') or 'none',
+		'webcam_crop_offset_x': int(state_manager.get_item('webcam_crop_offset_x') or 0),
+		'webcam_crop_offset_y': int(state_manager.get_item('webcam_crop_offset_y') or 0),
+		'webcam_crop_upscale': bool(state_manager.get_item('webcam_crop_upscale')),
 		'webcam_window_fullscreen': bool(state_manager.get_item('webcam_window_fullscreen')),
 		'webcam_window_display': int(state_manager.get_item('webcam_window_display') or 0),
 		'webcam_window_resolution': state_manager.get_item('webcam_window_resolution') or 'native',

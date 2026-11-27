@@ -23,22 +23,45 @@ CAMERA_RETRY_DELAY = 0.1
 CAMERA_RETRY_LOG_INTERVAL = 50
 # Set by the browser's stop button, so a start still waiting for its camera gives up
 CAMERA_OPEN_CANCEL = threading.Event()
+# Asked of every local camera. Left to choose, many USB webcams send uncompressed YUY2, which the USB
+# bandwidth holds to a few frames a second at 1080p. A camera without MJPG keeps the format it had
+CAMERA_FOURCC = 'MJPG'
 
 
-def configure_camera_capture(camera_capture : cv2.VideoCapture, width : Optional[int] = None, height : Optional[int] = None, fps : Optional[int] = None) -> None:
+# The fourcc is asked for before the resolution, the order most drivers expect. DirectShow restarts the
+# device on a resolution or fps change and picks its format again, which can drop it, so it is asked for
+# once more when the camera does not report it afterwards
+def configure_camera_capture(camera_capture : cv2.VideoCapture, width : Optional[int] = None, height : Optional[int] = None, fps : Optional[int] = None, fourcc : Optional[str] = None) -> None:
 	property_results = []
+	fourcc_code = cv2.VideoWriter_fourcc(*fourcc) if fourcc else None
+	if fourcc_code is not None:
+		property_results.append(('fourcc', fourcc, camera_capture.set(cv2.CAP_PROP_FOURCC, fourcc_code)))
 	if width is not None:
 		property_results.append(('width', width, camera_capture.set(cv2.CAP_PROP_FRAME_WIDTH, width)))
 	if height is not None:
 		property_results.append(('height', height, camera_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, height)))
 	if fps is not None:
 		property_results.append(('fps', fps, camera_capture.set(cv2.CAP_PROP_FPS, fps)))
+	if fourcc_code is not None and any(value is not None for value in [ width, height, fps ]) and hasattr(camera_capture, 'get') and int(camera_capture.get(cv2.CAP_PROP_FOURCC)) != fourcc_code:
+		property_results.append(('fourcc_again', fourcc, camera_capture.set(cv2.CAP_PROP_FOURCC, fourcc_code)))
 	property_results.append(('buffer', 1, camera_capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)))
 	backend_name = camera_capture.getBackendName() if hasattr(camera_capture, 'getBackendName') else 'unknown'
 	negotiated = None
 	if hasattr(camera_capture, 'get'):
-		negotiated = (camera_capture.get(cv2.CAP_PROP_FRAME_WIDTH), camera_capture.get(cv2.CAP_PROP_FRAME_HEIGHT), camera_capture.get(cv2.CAP_PROP_FPS))
+		negotiated = (camera_capture.get(cv2.CAP_PROP_FRAME_WIDTH), camera_capture.get(cv2.CAP_PROP_FRAME_HEIGHT), camera_capture.get(cv2.CAP_PROP_FPS), decode_fourcc(camera_capture.get(cv2.CAP_PROP_FOURCC)))
 	logger.debug('camera configuration backend=' + str(backend_name) + ' results=' + str(property_results) + ' negotiated=' + str(negotiated), __name__)
+
+
+# Backends report the fourcc as a number. Some report a code that is not four letters (a raw format id,
+# or 0 when they do not know), which is shown as hex rather than as unreadable characters
+def decode_fourcc(fourcc_value : float) -> str:
+	fourcc_code = int(fourcc_value)
+	if fourcc_code <= 0:
+		return 'unknown'
+	fourcc_text = ''.join(chr((fourcc_code >> (8 * index)) & 0xFF) for index in range(4))
+	if fourcc_text.isascii() and fourcc_text.isalnum():
+		return fourcc_text
+	return hex(fourcc_code)
 
 
 def get_camera_backend_flag(backend : str) -> int:
@@ -116,7 +139,7 @@ def open_local_camera_capture(camera_id : int, width : Optional[int] = None, hei
 			camera_capture = cv2.VideoCapture(camera_id, cv2.CAP_ANY)
 
 		if camera_capture.isOpened():
-			configure_camera_capture(camera_capture, width, height, fps)
+			configure_camera_capture(camera_capture, width, height, fps, CAMERA_FOURCC)
 			CAMERA_POOL_SET['capture'][camera_key] = camera_capture
 		else:
 			# Released so the next attempt does not find the device still held by this one

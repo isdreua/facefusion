@@ -368,9 +368,12 @@ def count_pending_futures(futures : List[Tuple[int, Future[Any]]], discarded_fut
 	return pending_total
 
 
-# Hands results from the scheduler thread to the thread that delivers them. Adaptive mode keeps the
-# newest when the delivering side falls behind, the same latest-wins rule the camera queue and the
-# writer apply; the ordered modes wait for room instead, so every frame still arrives in order
+# Hands results from the scheduler thread to the thread that delivers them. Adaptive mode keeps one
+# frame waiting, the newest: a frame the delivering side has not taken yet is replaced by the next
+# one, the same latest-wins rule the camera queue and the writer apply. A deeper queue there handed
+# out its oldest frame first, so a delivering side that fell behind showed frames one interval old
+# for every extra place. The ordered modes queue up to maxsize and wait for room instead, so every
+# frame still arrives in order
 class StreamDelivery:
 	def __init__(self, maxsize : int) -> None:
 		self.maxsize = max(1, maxsize)
@@ -384,8 +387,9 @@ class StreamDelivery:
 				self.condition.wait(STREAM_DELIVERY_POLL)
 			if self.is_closed:
 				return
-			if len(self.items) >= self.maxsize:
-				self.items.popleft()
+			# Only frames are queued until the end, so clearing never drops the end of the stream
+			if is_latest_wins:
+				self.items.clear()
 			self.items.append(('frame', stream_frame))
 			self.condition.notify_all()
 
@@ -720,10 +724,10 @@ def schedule_stream_frames_in_context(camera_capture : cv2.VideoCapture, camera_
 						futures.append((frame_index, future))
 
 			# Stopped by the caller, nobody takes the frames still in flight, so they are not waited for;
-			# a camera that ended on its own still hands over what was in flight, in order
-			if stop_event.is_set():
-				camera_capture.release()
-			else:
+			# a camera that ended on its own still hands over what was in flight, in order. The camera is
+			# released in the finally below, after the capture thread has been told to stop: released
+			# here, before that, the capture thread could still take it for lost and start reopening it
+			if not stop_event.is_set():
 				for _, future in futures:
 					stream_result = future.result()
 					if stream_result:

@@ -13,7 +13,7 @@ OSD_MARGIN = 12
 OSD_PREVIEW_DIVISOR = 3
 OSD_PREVIEW_GAP = 6
 # Stands in for the last drawn sequence while the black screen is up, so it is presented once and
-# again only after a resize, never once per frame
+# again only after a resize or a change to the overlay kept on it, never once per frame
 BLACKOUT_SEQUENCE = -2
 # How long new overlay patches wait for the next frame before the current one is drawn again for them
 OVERLAY_PATCH_REDRAW_DELAY = 0.1
@@ -123,6 +123,16 @@ def resolve_overlay_patches(pygame : Any, received_patches : List[Any]) -> List[
 		except Exception:
 			continue
 	return overlay_patches
+
+
+# The face switch display: the text, and under it the face picture when there is one. The picture
+# is drawn only while the text is up, so switching faces shows what was switched to rather than
+# leaving a thumbnail sitting on the frame
+def draw_osd(canvas_surface : Any, osd_font : Any, osd_text : str, preview_surface : Any) -> None:
+	text_surface = osd_font.render(osd_text, True, (255, 255, 255), (0, 0, 0))
+	canvas_surface.blit(text_surface, (OSD_MARGIN, OSD_MARGIN))
+	if preview_surface:
+		canvas_surface.blit(preview_surface, (OSD_MARGIN, OSD_MARGIN + text_surface.get_height() + OSD_PREVIEW_GAP))
 
 
 # A third of the frame's shorter side, which is the height of a landscape window and the width of a
@@ -585,8 +595,13 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 	# When a set of patches arrived that no frame has been drawn with yet
 	overlay_patches_received_at : Optional[float] = None
 	# B, the black screen. An output window (and its mirror) draws black and nothing else, overlay and
-	# face switch display included; a control window goes on showing the live frame, marked
+	# face switch display included, unless the overlay is kept on it (is_blackout_overlay): then the
+	# boxes the parent drew on black (blackout_patches) and the face switch display are drawn over the
+	# black. A control window goes on showing the live frame, marked
 	is_blackout = False
+	is_blackout_overlay = False
+	blackout_patches : List[Tuple[int, int, Any]] = []
+	is_blackout_osd_shown = False
 	blackout_mark_surface = None
 	is_closing = False
 
@@ -682,10 +697,20 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 						window_output.set_hidden(bool(received_status.get('window_hidden')))
 						last_sequence = -1
 					continue
-				# B or the browser button, through the parent
+				# B, the browser button or its overlay checkbox, through the parent. The boxes are
+				# dropped on every change, so a later black screen never opens with old readings
 				if 'window_blackout' in received_status:
 					is_blackout = bool(received_status.get('window_blackout'))
+					is_blackout_overlay = is_blackout and bool(received_status.get('blackout_overlay'))
+					blackout_patches = []
 					last_sequence = -1
+					continue
+				# The overlay boxes for the black screen, replaced 15 times a second while it keeps
+				# the overlay. One that arrives after the overlay was dropped is ignored
+				if 'blackout_patches' in received_status:
+					if is_blackout_overlay:
+						blackout_patches = resolve_overlay_patches(pygame, received_status.get('blackout_patches') or [])
+						last_sequence = -1
 					continue
 				# The window resolution option changed while the window is open
 				if 'window_resolution' in received_status:
@@ -717,11 +742,19 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 			if getattr(window_output, 'is_hidden', False):
 				frame_event.wait(0.005)
 				frame_event.clear()
-			# The shared frames go on arriving and are simply not drawn, so restoring is instant
+			# The shared frames go on arriving and are simply not drawn, so restoring is instant. With
+			# the overlay kept, drawn again when its boxes change and when the face switch display
+			# comes up or goes away
 			elif is_blackout and not is_control:
-				if last_sequence != BLACKOUT_SEQUENCE:
+				osd_text = resolve_osd_text(status) if is_blackout_overlay and time.monotonic() < osd_expires_at else None
+				if last_sequence != BLACKOUT_SEQUENCE or bool(osd_text) != is_blackout_osd_shown:
 					last_sequence = BLACKOUT_SEQUENCE
+					is_blackout_osd_shown = bool(osd_text)
 					canvas_surface.fill((0, 0, 0))
+					for patch_x, patch_y, patch_surface in blackout_patches:
+						canvas_surface.blit(patch_surface, (patch_x, patch_y))
+					if osd_text:
+						draw_osd(canvas_surface, osd_font, osd_text, resolve_osd_preview(pygame, osd_previews, status.get('source_face_path'), osd_preview_size))
 					window_output.present(canvas_surface)
 				else:
 					frame_event.wait(0.005)
@@ -743,13 +776,7 @@ def run_window(shared_name : str, width : int, height : int, fps : float, title 
 						canvas_surface.blit(patch_surface, (patch_x, patch_y))
 					osd_text = resolve_osd_text(status)
 					if osd_text and time.monotonic() < osd_expires_at:
-						text_surface = osd_font.render(osd_text, True, (255, 255, 255), (0, 0, 0))
-						canvas_surface.blit(text_surface, (OSD_MARGIN, OSD_MARGIN))
-						# Under the text, and only while the text is up, so switching faces shows what
-						# was switched to rather than leaving a thumbnail sitting on the frame
-						preview_surface = resolve_osd_preview(pygame, osd_previews, status.get('source_face_path'), osd_preview_size)
-						if preview_surface:
-							canvas_surface.blit(preview_surface, (OSD_MARGIN, OSD_MARGIN + text_surface.get_height() + OSD_PREVIEW_GAP))
+						draw_osd(canvas_surface, osd_font, osd_text, resolve_osd_preview(pygame, osd_previews, status.get('source_face_path'), osd_preview_size))
 					# Kept up for as long as the output is black, so the operator cannot forget it
 					if is_blackout and is_control:
 						if not blackout_mark_surface:

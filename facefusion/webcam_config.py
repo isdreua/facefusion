@@ -41,6 +41,7 @@ DEFAULT_WEBCAM_CONFIG : Dict[str, Any] =\
 	'webcam_mirror_window_fullscreen': False,
 	'webcam_mirror_window_display': 0,
 	'webcam_face_preview_window': 'control',
+	'webcam_blackout_overlay': False,
 	'webcam_raw_window': False,
 	'webcam_raw_window_fullscreen': False,
 	'webcam_raw_window_display': 0,
@@ -119,6 +120,7 @@ WEBCAM_CONFIG_OPTIONS =\
 	'webcam_mirror_window_fullscreen': [ True, False ],
 	'webcam_mirror_window_display': WEBCAM_WINDOW_DISPLAYS,
 	'webcam_face_preview_window': WEBCAM_FACE_PREVIEW_WINDOWS,
+	'webcam_blackout_overlay': [ True, False ],
 	'webcam_raw_window': [ True, False ],
 	'webcam_raw_window_fullscreen': [ True, False ],
 	'webcam_raw_window_display': WEBCAM_WINDOW_DISPLAYS,
@@ -214,6 +216,8 @@ def load_webcam_config(config_path : str) -> Dict[str, Any]:
 		webcam_config['webcam_mirror_window_display'] = content.get('webcam_mirror_window_display')
 	if content.get('webcam_face_preview_window') in WEBCAM_FACE_PREVIEW_WINDOWS:
 		webcam_config['webcam_face_preview_window'] = content.get('webcam_face_preview_window')
+	if isinstance(content.get('webcam_blackout_overlay'), bool):
+		webcam_config['webcam_blackout_overlay'] = content.get('webcam_blackout_overlay')
 	if isinstance(content.get('webcam_raw_window'), bool):
 		webcam_config['webcam_raw_window'] = content.get('webcam_raw_window')
 	if isinstance(content.get('webcam_raw_window_fullscreen'), bool):

@@ -148,6 +148,33 @@ class PerformanceOverlay:
 			white_canvas[patch_y:patch_end_y, patch_x:patch_end_x] = 255
 		return overlay_patches
 
+	# The boxes the output shows, for an output on the black screen that keeps its overlay. Drawn on
+	# black rather than on the frame, so nothing of the picture shows through the semi-transparent box
+	# background, and drawn plain (unmarked) at the place they have on the output frame. Over black the
+	# drawing is the final look, so every patch is opaque. The same patch format as the control ones
+	def render_blackout_patches(self, frame_width : int, frame_height : int, output_mode : str, timing : Optional[Dict[str, Any]], canvases : Dict[str, Any]) -> List[Tuple[int, int, int, int, bytes]]:
+		overlay_patches : List[Tuple[int, int, int, int, bytes]] = []
+
+		if output_mode not in [ 'simple', 'advanced' ]:
+			return overlay_patches
+		black_canvas, _ = resolve_control_canvases(canvases, frame_width, frame_height)
+		box_rects : List[Tuple[int, int, int, int]] = []
+		with self.stats_lock:
+			stats_readings = self.peek()
+			stats_snapshot = self.create_stats_snapshot()
+		stats_snapshot._render_performance_hud(black_canvas, 0.0, False, timing, False, False, box_rects, stats_readings)
+		if output_mode == 'advanced':
+			stats_snapshot._render_pipeline_inspector(black_canvas, timing, False, box_rects)
+		for box_x, box_y, box_w, box_h in box_rects:
+			patch_x, patch_y = max(0, box_x - CONTROL_PATCH_PAD), max(0, box_y - CONTROL_PATCH_PAD)
+			patch_end_x, patch_end_y = min(frame_width, box_x + box_w + CONTROL_PATCH_PAD + 1), min(frame_height, box_y + box_h + CONTROL_PATCH_PAD + 1)
+			patch_color = black_canvas[patch_y:patch_end_y, patch_x:patch_end_x]
+			patch_alpha = numpy.full(patch_color.shape[:2], 255, dtype = numpy.uint8)
+			overlay_patches.append((patch_x, patch_y, patch_end_x - patch_x, patch_end_y - patch_y, numpy.dstack([ patch_color, patch_alpha ]).tobytes()))
+			# Cleared again, since the control patches are drawn on the same canvas
+			black_canvas[patch_y:patch_end_y, patch_x:patch_end_x] = 0
+		return overlay_patches
+
 	def _render_performance_hud(self, vision_frame : VisionFrame, capture_time : float, is_duplicate : bool = False, timing : Optional[Dict[str, Any]] = None, is_counted : bool = True, is_marked : bool = False, box_rects : Optional[List[Tuple[int, int, int, int]]] = None, stats_readings : Optional[Tuple[float, float, float, float, float]] = None) -> VisionFrame:
 		if stats_readings is not None:
 			instant_fps, avg_fps, instant_lat, avg_lat, output_fps = stats_readings
@@ -461,29 +488,34 @@ def resolve_control_canvases(canvases : Dict[str, Any], frame_width : int, frame
 
 
 # Draws the control window's extra overlay boxes on a thread of its own, so the stream loop only
-# hands over the latest readings (submit) and never waits on the drawing. Lives as long as one stream
+# hands over the latest readings (submit) and never waits on the drawing. Also draws the output's own
+# boxes for the black screen when the overlay is kept on it (window_stream.is_blackout_overlay): the
+# output window draws black there, and its frame, which carries the boxes, is the control window's
+# live picture. Lives as long as one stream
 class ControlOverlay:
 	def __init__(self, window_stream : Any, frame_width : int, frame_height : int, performance_overlay : Optional[PerformanceOverlay] = None):
 		self.window_stream = window_stream
 		self.frame_width = frame_width
 		self.frame_height = frame_height
 		self.performance_overlay = performance_overlay or PERFORMANCE_OVERLAY
-		self.latest_reading : Optional[Tuple[str, Dict[str, Any]]] = None
+		self.latest_reading : Optional[Tuple[str, Dict[str, Any], bool]] = None
 		self.reading_lock = threading.Lock()
 		self.stop_event = threading.Event()
 		self.canvases : Dict[str, Any] = {}
 		self.has_patches = False
+		self.has_blackout_patches = False
 		self.thread = threading.Thread(target = self._run, daemon = True)
 		self.thread.start()
 
-	# Called on the stream loop for every frame while the control window is open. The timing is copied
-	# (shallowly) because the writer thread goes on adding to it. With no overlay on the output,
-	# nothing else counts the frame for the readings, so it is counted here
-	def submit(self, capture_time : float, output_mode : str, is_duplicate : bool, timing : Dict[str, Any]) -> None:
+	# Called on the stream loop for every frame while the control window is open or the output keeps
+	# its overlay on the black screen. The timing is copied (shallowly) because the writer thread goes
+	# on adding to it. With no overlay on the output, nothing else counts the frame for the readings,
+	# so it is counted here
+	def submit(self, capture_time : float, output_mode : str, is_duplicate : bool, timing : Dict[str, Any], is_control_open : bool = True) -> None:
 		if output_mode not in [ 'simple', 'advanced' ]:
 			self.performance_overlay.count(capture_time, is_duplicate)
 		with self.reading_lock:
-			self.latest_reading = (output_mode, dict(timing))
+			self.latest_reading = (output_mode, dict(timing), is_control_open)
 
 	def _run(self) -> None:
 		while not self.stop_event.wait(CONTROL_OVERLAY_INTERVAL):
@@ -492,15 +524,36 @@ class ControlOverlay:
 				self.latest_reading = None
 			if latest_reading is None:
 				continue
-			output_mode, timing = latest_reading
-			try:
-				overlay_patches = self.performance_overlay.render_control_patches(self.frame_width, self.frame_height, output_mode, timing, self.canvases)
-			except Exception:
-				continue
-			# Nothing to send while the output shows everything and nothing was sent before
-			if overlay_patches or self.has_patches:
-				self.window_stream.push_overlay_patches(overlay_patches)
-				self.has_patches = bool(overlay_patches)
+			output_mode, timing, is_control_open = latest_reading
+			if is_control_open:
+				self._push_control_patches(output_mode, timing)
+			# Read here rather than with the reading, so a black screen switched off meanwhile is not
+			# drawn for once more
+			if getattr(self.window_stream, 'is_blackout_overlay', False):
+				self._push_blackout_patches(output_mode, timing)
+			else:
+				# The output window drops its boxes itself when the black screen changes
+				self.has_blackout_patches = False
+
+	def _push_control_patches(self, output_mode : str, timing : Dict[str, Any]) -> None:
+		try:
+			overlay_patches = self.performance_overlay.render_control_patches(self.frame_width, self.frame_height, output_mode, timing, self.canvases)
+		except Exception:
+			return
+		# Nothing to send while the output shows everything and nothing was sent before
+		if overlay_patches or self.has_patches:
+			self.window_stream.push_overlay_patches(overlay_patches)
+			self.has_patches = bool(overlay_patches)
+
+	def _push_blackout_patches(self, output_mode : str, timing : Dict[str, Any]) -> None:
+		try:
+			overlay_patches = self.performance_overlay.render_blackout_patches(self.frame_width, self.frame_height, output_mode, timing, self.canvases)
+		except Exception:
+			return
+		# A frame too small for any box leaves nothing to send
+		if overlay_patches or self.has_blackout_patches:
+			self.window_stream.push_blackout_patches(overlay_patches)
+			self.has_blackout_patches = bool(overlay_patches)
 
 	# The boxes go with the stream, so a stopped stream's black frame is not left with readings on it
 	def close(self) -> None:
@@ -509,3 +562,6 @@ class ControlOverlay:
 		if self.has_patches:
 			self.window_stream.push_overlay_patches([])
 			self.has_patches = False
+		if self.has_blackout_patches:
+			self.window_stream.push_blackout_patches([])
+			self.has_blackout_patches = False

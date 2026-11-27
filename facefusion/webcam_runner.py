@@ -55,6 +55,7 @@ def run() -> int:
 	# A live switch, not a setting: every run starts with the window shown
 	state_manager.init_item('webcam_window_hidden', False)
 	state_manager.init_item('webcam_output_blackout', False)
+	state_manager.init_item('webcam_blackout_overlay', webcam_config.get('webcam_blackout_overlay'))
 	state_manager.init_item('webcam_frame_generation', webcam_config.get('webcam_frame_generation'))
 	state_manager.init_item('webcam_face_enhancer_worker_count', webcam_config.get('webcam_face_enhancer_worker_count'))
 	# Read by the scheduler on every frame, the same as the browser layout's, though nothing changes
@@ -136,16 +137,24 @@ def run() -> int:
 			if overlay_mode in [ 'simple', 'advanced' ] or is_control_open:
 				timing['frame_generation'] = frame_generator.get_stats()
 				timing['writer_stats'] = stream_writer.get_stats()
+			# The window mode blacks out in its window processes, which keeps the control window live.
+			# Every other mode blacks out the frame: before the overlay is drawn when the overlay is kept
+			# on the black screen, so none of the picture shows through its boxes, and after it otherwise
+			is_frame_blackout = not window_stream and bool(state_manager.get_item('webcam_output_blackout'))
+			is_frame_blackout_overlay = is_frame_blackout and bool(state_manager.get_item('webcam_blackout_overlay'))
+			if is_frame_blackout_overlay:
+				capture_vision_frame = create_blackout_frame(capture_vision_frame)
+				generated_vision_frame = create_blackout_frame(generated_vision_frame) if generated_vision_frame is not None else None
 			if overlay_mode in [ 'simple', 'advanced' ]:
 				if generated_vision_frame is not None:
 					generated_vision_frame = PERFORMANCE_OVERLAY.render(generated_vision_frame, capture_time, overlay_mode, is_duplicate, timing, True)
 				capture_vision_frame = PERFORMANCE_OVERLAY.render(capture_vision_frame, capture_time, overlay_mode, is_duplicate, timing)
 			# The control window shows the output's own frames; only the readings go to its overlay
-			# thread, which draws the boxes the output leaves out
-			if control_overlay and is_control_open:
-				control_overlay.submit(capture_time, overlay_mode, is_duplicate, timing)
-			# The window mode blacks out in its window processes, which keeps the control window live
-			if not window_stream and state_manager.get_item('webcam_output_blackout'):
+			# thread, which draws the boxes the output leaves out, and the output's boxes on black for
+			# a black screen that keeps the overlay
+			if control_overlay and (is_control_open or window_stream.is_blackout_overlay):
+				control_overlay.submit(capture_time, overlay_mode, is_duplicate, timing, is_control_open)
+			if is_frame_blackout and not is_frame_blackout_overlay:
 				capture_vision_frame = create_blackout_frame(capture_vision_frame)
 				generated_vision_frame = create_blackout_frame(generated_vision_frame) if generated_vision_frame is not None else None
 			stream_writer.submit(capture_vision_frame, timing, generated_vision_frame)

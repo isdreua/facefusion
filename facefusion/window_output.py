@@ -108,8 +108,10 @@ class WindowStream:
 		self.is_fullscreen = bool(is_fullscreen)
 		# Shown when opened; hidden and shown again by sync_window_hidden from webcam_window_hidden
 		self.is_hidden = False
-		# The black screen (B), set by sync_output_blackout from webcam_output_blackout
+		# The black screen (B), set by sync_output_blackout from webcam_output_blackout, and whether it
+		# keeps the overlay (webcam_blackout_overlay, with an overlay on)
 		self.is_blackout = False
+		self.is_blackout_overlay = False
 		self.height = height
 		self.frame_size = width * height * 3
 		# LatestFrameWriter writes to transport.stdin, the same shim WindowsVirtualCameraStream uses.
@@ -216,7 +218,7 @@ class WindowStream:
 				return
 			self.control_window = CompanionWindow(self, CONTROL_WINDOW_TITLE, True)
 			if self.is_blackout:
-				self.control_window.push_message({ 'window_blackout': True })
+				self.control_window.push_message(self.resolve_blackout_message())
 
 	def close_control(self) -> None:
 		with self.control_lock:
@@ -245,7 +247,7 @@ class WindowStream:
 				return
 			self.mirror_window = CompanionWindow(self, MIRROR_WINDOW_TITLE, False, is_fullscreen, window_display)
 			if self.is_blackout:
-				self.mirror_window.push_message({ 'window_blackout': True })
+				self.mirror_window.push_message(self.resolve_blackout_message())
 
 	def close_mirror(self) -> None:
 		with self.mirror_lock:
@@ -272,6 +274,20 @@ class WindowStream:
 		control_window = self.control_window
 		if control_window:
 			control_window.push_message({ 'overlay_patches': overlay_patches })
+
+	# The boxes for the black screen that keeps the overlay, drawn on black (render_blackout_patches),
+	# in the same format. To this window and its mirror only: the control window keeps the live frame,
+	# which carries the output's boxes already
+	def push_blackout_patches(self, overlay_patches : List[Tuple[int, int, int, int, bytes]]) -> None:
+		mirror_window = self.mirror_window
+		if mirror_window:
+			mirror_window.push_message({ 'blackout_patches': overlay_patches })
+		if self.is_closed or self.is_window_closed:
+			return
+		try:
+			self.status_queue.put_nowait({ 'blackout_patches': overlay_patches })
+		except Exception:
+			pass
 
 	# Only sent when something actually changed, so the window's on screen display appears on a
 	# switch rather than being redrawn for every frame. The control window gets it always; the output
@@ -332,19 +348,26 @@ class WindowStream:
 		except Exception:
 			pass
 
-	# Black in this window and its mirror, overlay and all, while the shared frames keep arriving; the
-	# control window keeps the live picture and marks it. The same windows, so a capture survives
-	def set_blackout(self, is_blackout : bool) -> None:
+	# Black in this window and its mirror while the shared frames keep arriving: overlay and all, or
+	# with is_blackout_overlay, black under the overlay boxes (push_blackout_patches) and the face
+	# switch display. The control window keeps the live picture and marks it. The same windows, so a
+	# capture survives
+	def set_blackout(self, is_blackout : bool, is_blackout_overlay : bool = False) -> None:
 		self.is_blackout = bool(is_blackout)
+		self.is_blackout_overlay = self.is_blackout and bool(is_blackout_overlay)
+		blackout_message = self.resolve_blackout_message()
 		for companion_window in [ self.control_window, self.mirror_window ]:
 			if companion_window:
-				companion_window.push_message({ 'window_blackout': self.is_blackout })
+				companion_window.push_message(blackout_message)
 		if self.is_closed or self.is_window_closed:
 			return
 		try:
-			self.status_queue.put_nowait({ 'window_blackout': self.is_blackout })
+			self.status_queue.put_nowait(blackout_message)
 		except Exception:
 			pass
+
+	def resolve_blackout_message(self) -> Dict[str, Any]:
+		return { 'window_blackout': self.is_blackout, 'blackout_overlay': self.is_blackout_overlay }
 
 	# native or output (see WINDOW_RESOLUTIONS), applied to the open window and its mirror in place
 	def set_window_resolution(self, window_resolution : str) -> None:
@@ -844,7 +867,8 @@ def set_shared_window_hidden() -> None:
 			sync_window_hidden(SHARED_WINDOW_STREAM)
 
 
-# The black screen button, whether or not a stream runs; a running stream's key thread follows too
+# The black screen button and its overlay checkbox, whether or not a stream runs; a running stream's
+# key thread follows too
 def set_shared_window_blackout() -> None:
 	with SHARED_WINDOW_LOCK:
 		if SHARED_WINDOW_STREAM and not SHARED_WINDOW_STREAM.has_window_closed():
@@ -1043,10 +1067,12 @@ def toggle_output_blackout() -> None:
 	state_manager.set_item('webcam_output_blackout', not state_manager.get_item('webcam_output_blackout'))
 
 
+# The overlay is kept only while there is one, so the A, S and D keys switch it on the black screen too
 def sync_output_blackout(window_stream : WindowStream) -> None:
 	is_blackout = bool(state_manager.get_item('webcam_output_blackout'))
-	if is_blackout != window_stream.is_blackout:
-		window_stream.set_blackout(is_blackout)
+	is_blackout_overlay = is_blackout and bool(state_manager.get_item('webcam_blackout_overlay')) and state_manager.get_item('webcam_performance_overlay') in [ 'simple', 'advanced' ]
+	if is_blackout != window_stream.is_blackout or is_blackout_overlay != window_stream.is_blackout_overlay:
+		window_stream.set_blackout(is_blackout, is_blackout_overlay)
 
 
 # Reads and applies the stream's keys on a thread of its own. Read between delivered frames, as they

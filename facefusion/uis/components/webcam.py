@@ -26,6 +26,7 @@ WEBCAM_START_BUTTON : Optional[gradio.Button] = None
 WEBCAM_STOP_BUTTON : Optional[gradio.Button] = None
 WEBCAM_CAMERA_TIMER : Optional[gradio.Timer] = None
 WEBCAM_BLACKOUT_BUTTON : Optional[gradio.Button] = None
+WEBCAM_BLACKOUT_OVERLAY_CHECKBOX : Optional[gradio.Checkbox] = None
 
 
 def render() -> None:
@@ -35,6 +36,7 @@ def render() -> None:
 	global WEBCAM_STOP_BUTTON
 	global WEBCAM_CAMERA_TIMER
 	global WEBCAM_BLACKOUT_BUTTON
+	global WEBCAM_BLACKOUT_OVERLAY_CHECKBOX
 
 	# Starts and stays empty: it is an intake for adding faces, and configured source paths already
 	# show up in the gallery as a selectable face
@@ -65,6 +67,13 @@ def render() -> None:
 		value = resolve_blackout_label(),
 		variant = resolve_blackout_variant(),
 		size = 'sm'
+	)
+	# Leaves the performance overlay up on the black screen, when one is on, in every mode: on the
+	# output window and its mirror, and drawn on the black frame elsewhere. Seeded from the config by
+	# webcam_options.render, and applied at once, black or not, stream or not
+	WEBCAM_BLACKOUT_OVERLAY_CHECKBOX = gradio.Checkbox(
+		label = translator.get('uis.webcam_blackout_overlay_checkbox'),
+		value = bool(state_manager.get_item('webcam_blackout_overlay'))
 	)
 	# The server cannot push to the page, so the page asks: a camera switched with Ctrl+0-9 (or one
 	# being waited for) shows up in the camera dropdown within half a second
@@ -108,6 +117,8 @@ def listen() -> None:
 		WEBCAM_BLACKOUT_BUTTON.click(toggle_blackout, outputs = WEBCAM_BLACKOUT_BUTTON)
 		if WEBCAM_CAMERA_TIMER:
 			WEBCAM_CAMERA_TIMER.tick(sync_blackout_button, inputs = WEBCAM_BLACKOUT_BUTTON, outputs = WEBCAM_BLACKOUT_BUTTON)
+	if WEBCAM_BLACKOUT_OVERLAY_CHECKBOX:
+		WEBCAM_BLACKOUT_OVERLAY_CHECKBOX.change(update_blackout_overlay, inputs = WEBCAM_BLACKOUT_OVERLAY_CHECKBOX)
 	camera_window_inputs = resolve_camera_window_inputs()
 	if camera_window_inputs:
 		for camera_window_component in camera_window_inputs[:4]:
@@ -131,6 +142,12 @@ def toggle_blackout() -> gradio.Button:
 	toggle_output_blackout()
 	set_shared_window_blackout()
 	return gradio.Button(value = resolve_blackout_label(), variant = resolve_blackout_variant())
+
+
+# An open output window that is black takes the overlay up or down at once
+def update_blackout_overlay(blackout_overlay : bool) -> None:
+	state_manager.set_item('webcam_blackout_overlay', bool(blackout_overlay))
+	set_shared_window_blackout()
 
 
 # Shows what B did. Compared against the label the page has, so an unchanged button is not resent
@@ -326,17 +343,26 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 				if overlay_mode in [ 'simple', 'advanced' ] or is_control_open:
 					timing['frame_generation'] = frame_generator.get_stats()
 					timing['writer_stats'] = stream_writer.get_stats() if stream_writer else None
+				# The window mode blacks out in its window processes, which keeps the control window
+				# live. Every other mode blacks out the frame: before the overlay is drawn when the
+				# overlay is kept on the black screen, so none of the picture shows through its boxes,
+				# and after it otherwise
+				is_frame_blackout = webcam_mode != 'window' and bool(state_manager.get_item('webcam_output_blackout'))
+				is_frame_blackout_overlay = is_frame_blackout and bool(state_manager.get_item('webcam_blackout_overlay'))
+				if is_frame_blackout_overlay:
+					capture_vision_frame = create_blackout_frame(capture_vision_frame)
+					generated_vision_frame = create_blackout_frame(generated_vision_frame) if generated_vision_frame is not None else None
 				if overlay_mode in [ 'simple', 'advanced' ]:
 					if generated_vision_frame is not None:
 						generated_vision_frame = PERFORMANCE_OVERLAY.render(generated_vision_frame, capture_time, overlay_mode, is_duplicate, timing, True)
 					capture_vision_frame = PERFORMANCE_OVERLAY.render(capture_vision_frame, capture_time, overlay_mode, is_duplicate, timing)
 				# The control window shows the output's own frames; only the readings go to its overlay
-				# thread, which draws the boxes the output leaves out
-				if control_overlay and is_control_open:
-					control_overlay.submit(capture_time, overlay_mode, is_duplicate, timing)
+				# thread, which draws the boxes the output leaves out, and the output's boxes on black
+				# for a black screen that keeps the overlay
+				if control_overlay and (is_control_open or window_stream.is_blackout_overlay):
+					control_overlay.submit(capture_time, overlay_mode, is_duplicate, timing, is_control_open)
 
-				# The window mode blacks out in its window processes, which keeps the control window live
-				if webcam_mode != 'window' and state_manager.get_item('webcam_output_blackout'):
+				if is_frame_blackout and not is_frame_blackout_overlay:
 					capture_vision_frame = create_blackout_frame(capture_vision_frame)
 					generated_vision_frame = create_blackout_frame(generated_vision_frame) if generated_vision_frame is not None else None
 				if webcam_mode == 'inline':

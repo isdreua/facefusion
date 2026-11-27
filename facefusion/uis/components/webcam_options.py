@@ -126,6 +126,7 @@ def render() -> None:
 	state_manager.init_item('webcam_mirror_window_fullscreen', webcam_config.get('webcam_mirror_window_fullscreen'))
 	state_manager.init_item('webcam_mirror_window_display', webcam_config.get('webcam_mirror_window_display'))
 	state_manager.init_item('webcam_face_preview_window', webcam_config.get('webcam_face_preview_window'))
+	state_manager.init_item('webcam_blackout_overlay', webcam_config.get('webcam_blackout_overlay'))
 	state_manager.init_item('webcam_window_hidden', False)
 	state_manager.init_item('webcam_raw_window', webcam_config.get('webcam_raw_window'))
 	state_manager.init_item('webcam_raw_window_fullscreen', webcam_config.get('webcam_raw_window_fullscreen'))
@@ -841,6 +842,7 @@ def generate_config(webcam_device_id : str, webcam_mode : str, webcam_resolution
 		'webcam_mirror_window_fullscreen': bool(state_manager.get_item('webcam_mirror_window_fullscreen')),
 		'webcam_mirror_window_display': int(state_manager.get_item('webcam_mirror_window_display') or 0),
 		'webcam_face_preview_window': state_manager.get_item('webcam_face_preview_window') or 'control',
+		'webcam_blackout_overlay': bool(state_manager.get_item('webcam_blackout_overlay')),
 		'webcam_raw_window': bool(state_manager.get_item('webcam_raw_window')),
 		'webcam_raw_window_fullscreen': bool(state_manager.get_item('webcam_raw_window_fullscreen')),
 		'webcam_raw_window_display': int(state_manager.get_item('webcam_raw_window_display') or 0),
